@@ -1,0 +1,69 @@
+# Powerlevel10k prompt layout.
+typeset -g POWERLEVEL9K_MODE=nerdfont-v3
+
+# Keep context, path and Git information together on the first line. The prompt
+# character is deliberately the only element on the second line.
+typeset -g POWERLEVEL9K_LEFT_PROMPT_ELEMENTS=(
+  dir
+  vcs
+  newline
+  prompt_char
+)
+typeset -g POWERLEVEL9K_RIGHT_PROMPT_ELEMENTS=(
+  status
+  command_execution_time
+  background_jobs
+  time
+)
+
+# The explicit `newline` element above creates exactly two prompt lines.
+typeset -g POWERLEVEL9K_PROMPT_ON_NEWLINE=false
+typeset -g POWERLEVEL9K_RPROMPT_ON_NEWLINE=false
+typeset -g POWERLEVEL9K_PROMPT_ADD_NEWLINE=false
+typeset -g POWERLEVEL9K_MULTILINE_FIRST_PROMPT_PREFIX='%F{240}╭─%f '
+typeset -g POWERLEVEL9K_MULTILINE_NEWLINE_PROMPT_PREFIX='%F{240}╰─%f'
+typeset -g POWERLEVEL9K_MULTILINE_LAST_PROMPT_PREFIX='%F{240}╰─%f'
+typeset -g POWERLEVEL9K_MULTILINE_FIRST_PROMPT_SUFFIX=
+typeset -g POWERLEVEL9K_MULTILINE_NEWLINE_PROMPT_SUFFIX=
+typeset -g POWERLEVEL9K_MULTILINE_LAST_PROMPT_SUFFIX=
+
+# Plain colored text: no powerline blocks, caps or filled backgrounds.
+typeset -g POWERLEVEL9K_LEFT_SEGMENT_SEPARATOR=''
+typeset -g POWERLEVEL9K_RIGHT_SEGMENT_SEPARATOR=''
+typeset -g POWERLEVEL9K_LEFT_SUBSEGMENT_SEPARATOR=' '
+typeset -g POWERLEVEL9K_RIGHT_SUBSEGMENT_SEPARATOR=' '
+typeset -g POWERLEVEL9K_LEFT_PROMPT_FIRST_SEGMENT_START_SYMBOL=
+typeset -g POWERLEVEL9K_LEFT_PROMPT_LAST_SEGMENT_END_SYMBOL=
+typeset -g POWERLEVEL9K_RIGHT_PROMPT_FIRST_SEGMENT_START_SYMBOL=' '
+typeset -g POWERLEVEL9K_RIGHT_PROMPT_LAST_SEGMENT_END_SYMBOL=
+typeset -g POWERLEVEL9K_BACKGROUND=
+typeset -g POWERLEVEL9K_DIR_BACKGROUND=
+typeset -g POWERLEVEL9K_VCS_BACKGROUND=
+typeset -g POWERLEVEL9K_PROMPT_CHAR_BACKGROUND=
+typeset -g POWERLEVEL9K_STATUS_BACKGROUND=
+typeset -g POWERLEVEL9K_COMMAND_EXECUTION_TIME_BACKGROUND=
+typeset -g POWERLEVEL9K_BACKGROUND_JOBS_BACKGROUND=
+typeset -g POWERLEVEL9K_TIME_BACKGROUND=
+
+# A green prompt marks a successful command; red marks a failed one.
+typeset -g POWERLEVEL9K_PROMPT_CHAR_OK_VIINS_CONTENT_EXPANSION='❯'
+typeset -g POWERLEVEL9K_PROMPT_CHAR_ERROR_VIINS_CONTENT_EXPANSION='❯'
+typeset -g POWERLEVEL9K_PROMPT_CHAR_LEFT_LEFT_WHITESPACE=
+typeset -g POWERLEVEL9K_PROMPT_CHAR_LEFT_RIGHT_WHITESPACE=
+typeset -g POWERLEVEL9K_PROMPT_CHAR_OK_VIINS_FOREGROUND='#76b080'
+typeset -g POWERLEVEL9K_PROMPT_CHAR_ERROR_VIINS_FOREGROUND=196
+
+typeset -g POWERLEVEL9K_DIR_FOREGROUND=31
+typeset -g POWERLEVEL9K_DIR_SHORTEN_STRATEGY=truncate_to_unique
+typeset -g POWERLEVEL9K_DIR_MAX_LENGTH=80
+typeset -g POWERLEVEL9K_VCS_CLEAN_FOREGROUND='#76b080'
+typeset -g POWERLEVEL9K_VCS_MODIFIED_FOREGROUND='#76b080'
+typeset -g POWERLEVEL9K_VCS_UNTRACKED_FOREGROUND='#76b080'
+typeset -g POWERLEVEL9K_COMMAND_EXECUTION_TIME_THRESHOLD=3
+typeset -g POWERLEVEL9K_TIME_FORMAT='%D{%H:%M}'
+
+# Avoid repeating a full two-line prompt for every command in scrollback.
+typeset -g POWERLEVEL9K_TRANSIENT_PROMPT=always
+
+# Apply changes when this file is sourced in an existing interactive shell.
+(( ! $+functions[p10k] )) || p10k reload
