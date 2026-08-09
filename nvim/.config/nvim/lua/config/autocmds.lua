@@ -1,0 +1,1 @@
+-- Add file-local automation here when needed. LazyVim's safe defaults remain enabled.
