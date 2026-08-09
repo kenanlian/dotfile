@@ -11,6 +11,14 @@ alias mkdir='mkdir -p'
 alias gst='git status --short --branch'
 alias glog='git log --graph --decorate --oneline --all'
 
-# macOS conveniences.
-alias copy='pbcopy'
-alias paste='pbpaste'
+# Clipboard conveniences on macOS and common Linux desktop environments.
+if (( $+commands[pbcopy] && $+commands[pbpaste] )); then
+  alias copy='pbcopy'
+  alias paste='pbpaste'
+elif (( $+commands[wl-copy] && $+commands[wl-paste] )); then
+  alias copy='wl-copy'
+  alias paste='wl-paste'
+elif (( $+commands[xclip] )); then
+  alias copy='xclip -selection clipboard'
+  alias paste='xclip -selection clipboard -out'
+fi

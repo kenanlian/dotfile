@@ -6,6 +6,9 @@ unsetopt beep
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' 'r:|=*' 'l:|=* r:|=*'
 zstyle ':completion:*' menu select
 
-# Use terminal colors for supported BSD/macOS tools.
-export CLICOLOR=1
-export LSCOLORS='Gxfxcxdxbxegedabagacad'
+# BSD `ls` (macOS) reads these variables. GNU `ls` on Linux uses LS_COLORS,
+# which is initialized by Oh My Zsh when available.
+if [[ "$OSTYPE" == darwin* ]]; then
+  export CLICOLOR=1
+  export LSCOLORS='Gxfxcxdxbxegedabagacad'
+fi
