@@ -81,3 +81,11 @@ unset config_file
 if [[ -r "$HOME/.zshrc.local" ]]; then
   source "$HOME/.zshrc.local"
 fi
+
+# Use the local proxy only on macOS.
+if [[ "$OSTYPE" == darwin* ]]; then
+  export HTTP_PROXY=http://127.0.0.1:8118
+  export HTTPS_PROXY=http://127.0.0.1:8118
+  export http_proxy="$HTTP_PROXY"
+  export https_proxy="$HTTPS_PROXY"
+fi
