@@ -2,10 +2,8 @@
 description: Executes straightforward, well-scoped delegated tasks that require limited reasoning and have clear boundaries.
 mode: subagent
 model: opencode-go/deepseek-v4-flash#high
-permissions:
-  - action: subagent
-    resource: "*"
-    effect: deny
+permission:
+  task: deny
 ---
 
 You are a junior worker for bounded delegated tasks.

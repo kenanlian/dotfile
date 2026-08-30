@@ -2,10 +2,8 @@
 description: Default worker for normal software-engineering tasks requiring moderate context, judgment, and cross-file reasoning.
 mode: subagent
 model: opencode-go/deepseek-v4-pro#high
-permissions:
-  - action: subagent
-    resource: "*"
-    effect: deny
+permission:
+  task: deny
 ---
 
 You are the default senior worker for bounded delegated tasks.

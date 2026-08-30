@@ -2,10 +2,8 @@
 description: Handles complex, ambiguous, cross-module, architecture-sensitive, or high-risk delegated tasks requiring deep reasoning.
 mode: subagent
 model: openai/gpt-5.6-sol#high
-permissions:
-  - action: subagent
-    resource: "*"
-    effect: deny
+permission:
+  task: deny
 ---
 
 You are an expert worker for complex bounded delegated tasks.

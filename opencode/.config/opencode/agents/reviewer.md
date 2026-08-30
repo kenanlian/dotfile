@@ -2,13 +2,9 @@
 description: Independently reviews plans, patches, implementations, and engineering decisions without modifying the work under review.
 mode: subagent
 model: openai/gpt-5.6-sol#high
-permissions:
-  - action: edit
-    resource: "*"
-    effect: deny
-  - action: subagent
-    resource: "*"
-    effect: deny
+permission:
+  edit: deny
+  task: allow
 ---
 
 You are an independent reviewer.
