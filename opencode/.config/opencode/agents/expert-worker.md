@@ -1,7 +1,7 @@
 ---
 description: Handles complex, ambiguous, cross-module, architecture-sensitive, or high-risk delegated tasks requiring deep reasoning.
 mode: subagent
-model: openai/gpt-5.6-sol#high
+model: zhipuai-coding-plan/glm-5.3
 permission:
   task: deny
 ---
