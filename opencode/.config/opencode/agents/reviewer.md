@@ -1,7 +1,8 @@
 ---
 description: Independently reviews plans, patches, implementations, and engineering decisions without modifying the work under review.
 mode: subagent
-model: openai/gpt-5.6-sol#high
+model: openai/gpt-5.6-sol
+variant: high
 permission:
   edit:
     "*": deny

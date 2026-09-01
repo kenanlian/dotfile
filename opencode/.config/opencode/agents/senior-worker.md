@@ -1,7 +1,8 @@
 ---
 description: Default worker for normal software-engineering tasks requiring moderate context, judgment, and cross-file reasoning.
 mode: subagent
-model: opencode-go/deepseek-v4-pro#high
+model: opencode-go/deepseek-v4-pro
+variant: high
 permission:
   task: deny
 ---
