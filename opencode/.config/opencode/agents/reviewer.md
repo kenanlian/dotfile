@@ -8,6 +8,20 @@ permission:
     ".dev/plan-review/*/round-??-review.md": allow
     ".dev/review/*/round-??-review-patch.md": allow
     ".dev/review/*/round-??-plan-conformance.md": allow
+  bash:
+    "*": deny
+    "git status": allow
+    "git status *": allow
+    "git diff": allow
+    "git diff *": allow
+    "git log": allow
+    "git log *": allow
+    "git show *": allow
+    "git rev-parse *": allow
+    "git merge-base *": allow
+    "git ls-files *": allow
+    "git grep *": allow
+    "git cat-file *": allow
   task: deny
 ---
 
@@ -19,7 +33,7 @@ Your only write authority is the exact raw-review artifact path supplied by the 
 
 When a raw-review artifact path is provided, write the complete review report directly to that file before returning. Return only the compact control result required by the review skill; do not reproduce the full persisted report in the parent-facing response.
 
-Do not launch or delegate to another subagent. Perform the review yourself, using repository read/search tools as needed.
+Do not launch or delegate to another subagent. Perform the review yourself, using repository read/search tools and the permitted read-only Git commands as needed. Do not run builds, tests, formatters, generators, migrations, installs, or other state-changing shell commands.
 
 Do not assume the author's reasoning is correct. Distinguish confirmed findings from inference and uncertainty. Prioritize actionable correctness, regression, contract, integration, data/security, and verification issues over stylistic preferences.
 
