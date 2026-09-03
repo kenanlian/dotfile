@@ -88,4 +88,8 @@ if [[ "$OSTYPE" == darwin* ]]; then
   export HTTPS_PROXY=http://127.0.0.1:8118
   export http_proxy="$HTTP_PROXY"
   export https_proxy="$HTTPS_PROXY"
+  # Bypass the local proxy for Zhipu endpoints; MonoProxy intermittently
+  # blackholes open.bigmodel.cn, which hangs OpenCode SSE streams.
+  export NO_PROXY="localhost,127.0.0.1,.bigmodel.cn,bigmodel.cn,.z.ai,z.ai"
+  export no_proxy="$NO_PROXY"
 fi
