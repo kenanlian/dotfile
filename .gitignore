@@ -2,3 +2,4 @@
 *.local
 *.backup-*
 /.dev
+opencode/.config/opencode/delegation.local.json

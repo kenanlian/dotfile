@@ -1,0 +1,16 @@
+{
+  "reviewer": {
+    "backend": "native",
+    "backends": {
+      "cursor-cli": {
+        "command": "node",
+        "args": [
+          "/Users/kenan/.hermes/skills/autonomous-ai-agents/cursor-delegate/scripts/review-relay.mjs",
+          "--model", "composer-2.5",
+          "--cd", "{repo}",
+          "--artifact", "{artifact}"
+        ]
+      }
+    }
+  }
+}
