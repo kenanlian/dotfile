@@ -1,0 +1,37 @@
+{
+  "agents": {
+    "explorer": {
+      "backend": "native",
+      "agent_file": "explorer",
+      "model": "opencode-go/deepseek-v4-flash"
+    },
+    "junior": {
+      "backend": "native",
+      "agent_file": "junior",
+      "model": "opencode-go/deepseek-v4-pro"
+    },
+    "senior": {
+      "backend": "native",
+      "agent_file": "senior",
+      "model": "zai-coding-cn/glm-5.3"
+    },
+    "expert": {
+      "backend": "cursor",
+      "model": "claude-opus-5-thinking-high"
+    },
+    "reviewer": {
+      "backend": "native",
+      "agent_file": "reviewer",
+      "model": "zai-coding-cn/glm-5.3"
+    }
+  },
+  "nesting": {
+    "allow": [
+      "reviewer"
+    ]
+  },
+  "limits": {
+    "max_runtime_ms": 1800000,
+    "output_cap_kb": 50
+  }
+}
