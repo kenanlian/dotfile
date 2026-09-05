@@ -8,7 +8,7 @@ GNU Stow symbolic links.
 - `zsh`: lightweight Oh My Zsh configuration, aliases, functions, and options
 - `nvim`: LazyVim-based Neovim configuration for lightweight file editing
 - `opencode`: OpenCode user configuration and delegated-agent definitions
-- `pi`: Pi coding-agent `delegate_agent` routing (`~/.pi/agent/delegate-agent.json`)
+- `pi`: Pi coding-agent `delegate_agent` routing (`~/.pi/agent/delegate-agent.json`) and a Stow-managed `~/.pi/agent/skills` symlink to the sibling `agent_skills/skills` root. `~/.pi/agent/settings.json` is not stowed.
 
 Each package mirrors its destination beneath `$HOME`. Machine-specific values
 and secrets should remain in local override files and must not be committed.
