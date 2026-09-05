@@ -2,7 +2,7 @@
 
 The main Skill owns lifecycle, board routing, UI classification, and authority. This reference owns coding-agent transport stages, permission modes, prompt shapes, and exact-session mechanics.
 
-Default transport is OpenCode. Use Cursor, Codex, or Pi only when the user explicitly selected that tool for the current task.
+Default transport is Pi. Use OpenCode, Cursor, or Codex only when the user explicitly selected that tool for the current task.
 
 ## Skill source and discovery
 

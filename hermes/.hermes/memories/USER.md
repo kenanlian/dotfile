@@ -20,4 +20,4 @@
 §
 Cursor/Codex 默认无超时；仅需会话内监控时按 3 分钟切片，简单任务每片检查，复杂任务每 15–30 分钟结合进程、result/events 与计划状态判断；健康运行不结束或重启。
 §
-开发委派默认用 OpenCode；Cursor/Codex 仅在柯楠明确指定时使用。
+开发委派默认用 Pi（pi-delegate）；OpenCode/Cursor/Codex 仅在柯楠明确指定时使用。

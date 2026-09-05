@@ -57,8 +57,8 @@ Recognition: monitor-woken runs arrive as "Cronjob Response: t_<id> development-
 
 ## Delegation Policy
 
-- Default to **OpenCode**. Use Cursor, Codex, or **Pi** only when the user explicitly selects it for the current task.
-- **Pi** is a formal selectable transport in gradual migration: same lifecycle, same one-monitor model, via the `pi-delegate` adapter. Choosing Pi means every stage of the card (discussion, planning, execution, rework) stays on Pi unless the user says otherwise.
+- Default to **Pi**. Use OpenCode, Cursor, or Codex only when the user explicitly selects it for the current task.
+- **Pi** is the primary transport via the `pi-delegate` adapter: same lifecycle, same one-monitor model. Choosing Pi means every stage of the card (discussion, planning, execution, rework) stays on Pi unless the user says otherwise.
 - Preserve the current implementer for same-scope rework when its outer session is resumable.
 - Load only the selected transport adapter; it owns mechanics, not workflow decisions.
 - Do not ask which agent to use when the user has not specified one.
@@ -71,7 +71,7 @@ Route `~/Secret-Projects/<project>` to a dedicated board matching the project di
 
 Work happens directly in the project repository on its main branch — the board's default workdir anchors the worker and the coding agent there. Never use scratch or git-worktree workspaces for project cards; landing is a local commit plus the authorized push, not a branch merge.
 
-A dispatcher-owned card is launched by its claimed Watson worker. Put any external tool/model choice in the card body. Kanban `model`/`provider` fields configure the **Hermes worker**, not Cursor, Codex, or OpenCode. The creating session must not also launch the external Relay; execution initiation belongs to the dispatcher worker and terminal takeover to monitor-woken sessions (see Session Roles). Use `initial_status: blocked` only for a real immediate human-operations gate.
+A dispatcher-owned card is launched by its claimed Watson worker. Put any external tool/model choice in the card body. Kanban `model`/`provider` fields configure the **Hermes worker**, not the coding agent (Pi, OpenCode, Cursor, or Codex). The creating session must not also launch the external Relay; execution initiation belongs to the dispatcher worker and terminal takeover to monitor-woken sessions (see Session Roles). Use `initial_status: blocked` only for a real immediate human-operations gate.
 
 Read `hermes-kanban-workflows` for board provisioning, dependencies, dispatch mechanics, and reconciliation.
 
@@ -155,7 +155,7 @@ Return to the user before changing ambiguous visible behavior, scope, compatibil
 ## Non-Negotiable Invariants
 
 - One correctly routed card per independent development task; none for internal operations.
-- OpenCode by default; Cursor/Codex/Pi only by explicit task-scoped request.
+- Pi by default; OpenCode/Cursor/Codex only by explicit task-scoped request.
 - No brainstorming Skill exists in this workflow.
 - `intent: unconverged` blocks planning and implementation.
 - Internal reviews stay inside their owning coding-agent parent; Watson never invokes `delegate-work`.
