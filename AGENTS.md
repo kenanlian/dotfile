@@ -10,7 +10,7 @@ package mirrors the paths it creates beneath `$HOME`:
   `init.lua`, core settings in `lua/config/`, plugin specs in `lua/plugins/`,
   and the pinned `lazy-lock.json`.
 - Package-specific setup notes live in `zsh/README.md` and `nvim/README.md`.
-- `pi/.pi/agent/` stows to `~/.pi/agent/`. Tracked files are `delegate-agent.json` and the `skills` symlink to the sibling `agent_skills/skills` root. Do not stow `settings.json`; Pi owns `theme`, `defaultProvider`, `defaultModel`, and `lastChangelogVersion` there.
+- `pi/.pi/agent/` stows to `~/.pi/agent/`. Tracked files are `delegate-agent.json` and the `skills` symlink to the sibling `agent_skills/skills` root. Do not stow `settings.json`; Pi owns `theme`, `defaultProvider`, `defaultModel`, and `lastChangelogVersion` there. Machine-local route overrides live in the untracked `~/.pi/agent/delegate-agent.local.json`, merged on top of the tracked config by the pi-delegate-agent extension.
 
 Keep new files in the package and relative path that Stow should link. For
 example, add `nvim/.config/nvim/lua/plugins/git.lua` for a Neovim plugin spec.
