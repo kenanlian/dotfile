@@ -1,0 +1,1 @@
+User prefers to call me (Hermes Agent) by the nickname "小龙" (Xiǎolóng). Respond to this name naturally in conversations.
