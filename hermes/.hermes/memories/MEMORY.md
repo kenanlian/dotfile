@@ -12,7 +12,7 @@ Feishu 发消息/@人：~/.hermes/scripts/feishu.py send --chat 群名 --at 名�
 §
 Pi 为默认委派宿主（delegate_agent、key 已配）；app 配置本体放 ~/Secret-Projects/dotfile 软链。OpenCode 已降为备选：zhipuai-coding-plan/glm-5.3 variant high（k3 已下线），轻量档 opencode-go/deepseek-v4-pro；dotfile reviewer 允许委派 subagent、勿禁 task。
 §
-开发 Relay：每卡一个 `development-monitor.v2` state+wrapper+10 分钟 Cron；schedule 必须写 `every 10m`；新 Relay 只 `generation+=1` 换 `out_dir`。state 手写严格用枚举 closed/idle/relay_running（大写 RUNNING 非法→BAD_STATE 永久静默）且 attempt 必含 process_identity；故障先跑 classify_monitor_state()。卡 done 后非 source 删 Cron/wrapper。
+开发工作流：`development-orchestrator` 唯一入口；draft 卡=`triage`+`assignee=default`，收敛后由 `kanban_finalize_intent` 原子晋级；plan-driven 从卡片新建 Planning Parent，再从 Plan 新建 Execution Parent，不传 Origin Session。Kanban/Relay 只管机械层；每卡一个 v2 state+wrapper+`every 10m` Cron，状态仅 `idle|relay_running|closed`，新 Relay 只 generation+1/换 out_dir。
 §
 柯楠偏好自动化先做可运行 MVP：默认信任模型指令遵循，只保留高风险防线，遇到真实问题再增强可靠性；讨论先给最小统一接口，不预演复杂失败矩阵；明确“先讨论”时不实施。
 §
