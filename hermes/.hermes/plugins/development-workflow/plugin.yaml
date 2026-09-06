@@ -1,0 +1,16 @@
+name: development-workflow
+version: 0.1.0
+description: >-
+  Development workflow intent finalization for the default-profile
+  orchestrator. Registers the narrow kanban_finalize_intent tool: a guarded,
+  read-back-verified wrapper around hermes_cli.kanban_db.specify_triage_task()
+  that atomically finalizes a converged development-task.v1 Card from triage.
+  Origin/orchestrator-only; performs no arbitrary status, claim, or SQL
+  mutation.
+author: Kenan
+kind: standalone
+platforms:
+  - linux
+  - macos
+provides_tools:
+  - kanban_finalize_intent

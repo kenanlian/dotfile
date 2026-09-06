@@ -6,6 +6,7 @@ symlinks per custom skill:
 
 - `SOUL.md` (both profiles), `memories/MEMORY.md` + `USER.md` (both profiles)
 - `scripts/feishu.py`, `scripts/development_relay_gate.py`
+- user plugin `plugins/development-workflow/` (`kanban_finalize_intent`)
 - 23 self-authored skills under `skills/<category>/<name>/`
 - `profiles/executor/skills/devops/feishu-messaging/`
 
@@ -14,6 +15,16 @@ symlinks per custom skill:
 ```sh
 stow --dir "$PWD" --target "$HOME" hermes
 ```
+
+## User plugin compatibility
+
+`plugins/development-workflow/` is stowed to
+`~/.hermes/plugins/development-workflow` and enabled with
+`hermes plugins enable development-workflow`. It wraps Hermes' internal
+`hermes_cli.kanban_db.specify_triage_task()` API rather than patching Core or
+writing SQLite directly. The files survive `hermes update`, but the internal
+API is version-coupled: rerun the plugin's focused temporary-`HERMES_HOME`
+tests after each Hermes update and adapt the plugin if the API changes.
 
 ## Deliberately NOT managed here
 

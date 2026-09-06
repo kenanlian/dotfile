@@ -1,7 +1,7 @@
 ---
 name: development-orchestrator
 description: Proxy development through Cursor, Codex, OpenCode, or Pi.
-version: 0.11.0
+version: 0.12.0
 author: 柯楠, Hermes Agent
 license: MIT
 platforms: [macos]
@@ -13,167 +13,158 @@ metadata:
 
 # Development Orchestrator
 
-Act as Kenan's product proxy while an external coding agent owns engineering. Every independent development task has one Kanban card; complexity chooses direct delegation versus `write-plan`/`execute-plan`, while UI scope alone determines whether Watson performs behavior acceptance.
+Use this Skill as Kenan's single entry point for work that may change source code, tests, builds, migrations, developer tooling, generated runtime behavior, or product behavior. One development Card carries intent from discussion through engineering, acceptance, landing, and completion.
 
-## When to Use
+Watson is the user-facing name of the `default` Hermes profile; durable routing always uses `default`.
 
-Load for requests that may change source code, tests, builds, migrations, developer tooling, generated runtime behavior, or product behavior.
+## Layering and ownership
 
-Do not use for read-only research, implementation-free discussion, personal notes, or routine coordination/artifact writes that do not change project behavior.
+```text
+L1 development-orchestrator      product/development control plane
+L2 hermes-kanban-workflows       durable Kanban and Relay mechanics
+L3 selected *-delegate adapter   Coding Agent transport mechanics
+L4 external Coding Agent Skills  engineering workflow internals
+```
 
-## Ownership
+Dependencies are one-way. This Skill owns user intent, route selection, authority, UI classification, top-level commissioning, Watson behavior acceptance, landing, and completion. Lower layers expose public results; they must not redefine policy.
 
-### Watson: product control plane
+The selected Coding Agent parent owns repository investigation, technical design, planning, implementation, tests, integration, internal delegation/review, and a verified handoff. Its `write-plan` and `execute-plan` internals are opaque to Hermes. Never reproduce or directly adjudicate internal reviewer names, rounds, model routing, work-package scheduling, or persistence formats.
 
-Watson owns scope, observable success, card state, coding-agent selection, user decisions, top-level commissioning, UI behavior acceptance, landing authority, and completion. A Watson session woken by a monitor becomes the active orchestrator: it verifies durable state, updates the user, and continues the authorized lifecycle.
+Before creating, finalizing, routing, transitioning, reconciling, or completing a development Card—or operating its Relay monitor—load `hermes-kanban-workflows`.
 
-Watson does **not** write, repair, refactor, or code-review product code. It also does not dispatch or adjudicate `review-plan`, `review-patch`, or `review-plan-conformance`; those remain internal to the coding-agent parent.
+## Session roles
 
-### Coding agent: engineering control plane
+Handoffs use the Card and monitor state, never conversation memory.
 
-The selected parent owns repository investigation, technical design, planning, implementation, tests, integration, internal delegation/review, and a verified handoff.
+- **Origin default-profile session** — interactive session with Kenan. Owns intent convergence and dispatch authorization. It may commission temporary read-only repository grounding, but never implementation, `write-plan`, `execute-plan`, writable rework, landing, or release work.
+- **Dispatcher-spawned default worker** — headless worker created after a converged assigned Card reaches `ready`. Begins with `kanban_show()`, validates the complete Card contract, selects the recorded route, dispatches the Coding Agent, and arms the Card monitor.
+- **Monitor-woken default-profile session** — reconstructs terminal state from durable evidence and continues an already-authorized lifecycle. It does not defer ordinary continuation to the Origin session.
 
-- Planning parent: `write-plan` plus its internal `review-plan` loop.
-- Execution parent: fresh `execute-plan`, final verification, and risk-selected internal execution reviews.
-- Direct parent: bounded implementation plus focused verification without `execute-plan`.
+At most one role actively orchestrates a Card. The Origin grounding Session is ephemeral and its Coding Agent Session ID is never handed to the Dispatcher worker.
 
-Watson consumes the compact terminal result and escalations rather than reproducing the internal protocol.
+## Standard Card contract
 
-## Session Roles
+Every development Card body starts with:
 
-A card's life passes through up to three Watson session roles. Handoffs happen through durable state — the board and the monitor state file — never through conversation memory. At most one role is the card's active orchestrator at any moment.
+```yaml
+---
+schema: development-task.v1
+intent: draft | converged
+execution_route: pending | direct | plan-driven
+ui_acceptance: pending | required | not-required
+manual_acceptance: []
+coding_agent: pi | cursor | codex | opencode
+---
+```
 
-| Role | Spawned by | Owns |
-|---|---|---|
-| Origin session (interactive) | The user | Card creation with acceptance criteria; intent convergence; setting the assignee at convergence. During execution: read-only reconciliation only. When the card declares `manual_acceptance` items: close-out after user manual acceptance (commit → push → CI green → complete → monitor teardown). |
-| Dispatcher worker (headless) | Gateway dispatcher claiming a `ready` card that carries an assignee (`hermes -p <assignee> chat -q`, `HERMES_KANBAN_TASK` injected) | Becomes active orchestrator: routes simple/structured, delegates to the coding agent, arms the card's single monitor. |
-| Monitor-woken session (headless) | The card's 10-minute monitor Cron on an actionable tick | Verifies terminal state independently, updates the user, then continues the authorized lifecycle: rearm + fresh `execute-plan`, UI acceptance, or non-UI closure. Never defers ordinary continuation back to the origin session. |
+Follow it with all sections below:
 
-Recognition: monitor-woken runs arrive as "Cronjob Response: t_<id> development-monitor" with `cron_`-prefixed session ids.
+```markdown
+# Goal
 
-- **Assignee is the execution switch.** The dispatcher claims only `ready` cards with a non-empty assignee; `ready` alone just queues. Keep an intent-unconverged card unassigned; setting the assignee (`default`) at convergence is the explicit authorization to start.
-- The creating session never launches that card's Relay; execution is initiated by the dispatcher worker and continued by monitor-woken sessions.
-- While a Relay runs, the origin session observes read-only — no second Relay, no hand-edited `monitor-state.json` (a hand-written illegal enum once caused permanent BAD_STATE silence). It re-engages only at product decisions, blockers, or manual-acceptance close-out.
+# Observable acceptance
 
-## Delegation Policy
+# Included scope
 
-- Default to **Pi**. Use OpenCode, Cursor, or Codex only when the user explicitly selects it for the current task.
-- **Pi** is the primary transport via the `pi-delegate` adapter: same lifecycle, same one-monitor model. Choosing Pi means every stage of the card (discussion, planning, execution, rework) stays on Pi unless the user says otherwise.
-- Preserve the current implementer for same-scope rework when its outer session is resumable.
-- Load only the selected transport adapter; it owns mechanics, not workflow decisions.
-- Do not ask which agent to use when the user has not specified one.
+# Non-goals
 
-## Card and Board Rules
+# Settled decisions
 
-Create the card before delegation. One card represents one user-recognizable, independently closable task; reconnaissance, planning, execution, internal reviews, Relay attempts, retries, artifact writes, and same-scope fixes stay inside it. Create another card only for a new independent feature, bug, deliverable, or scope expansion.
+# Open decisions
 
-Route `~/Secret-Projects/<project>` to a dedicated board matching the project directory in kebab-case, with the project root as default workdir. Hermes self-work and projects outside `~/Secret-Projects` use `default`. The Initiative layer is retired and read-only.
+# Repository grounding
 
-Work happens directly in the project repository on its main branch — the board's default workdir anchors the worker and the coding agent there. Never use scratch or git-worktree workspaces for project cards; landing is a local commit plus the authorized push, not a branch merge.
+# Authority boundaries
+```
 
-A dispatcher-owned card is launched by its claimed Watson worker. Put any external tool/model choice in the card body. Kanban `model`/`provider` fields configure the **Hermes worker**, not the coding agent (Pi, OpenCode, Cursor, or Codex). The creating session must not also launch the external Relay; execution initiation belongs to the dispatcher worker and terminal takeover to monitor-woken sessions (see Session Roles). Use `initial_status: blocked` only for a real immediate human-operations gate.
+Rules:
 
-Read `hermes-kanban-workflows` for board provisioning, dependencies, dispatch mechanics, and reconciliation.
+- `intent: draft` requires `execution_route: pending`; UI may remain `pending` unless conclusively classified.
+- `intent: converged` requires `execution_route: direct | plan-driven`, `ui_acceptance: required | not-required`, non-empty Goal and Observable acceptance, and `Open decisions: None`.
+- `execution_route` is the only routing field. Do not add a parallel complexity marker.
+- `coding_agent` defaults to `pi`; alternatives require explicit task-scoped user selection.
+- Native Card fields are `assignee: default`, `skills: [development-orchestrator]`, and the project board's trusted repository workdir convention. Card `model` and `provider` configure the Hermes worker, not the external Coding Agent.
+- Record product decisions, observable contracts, constraints, and concise load-bearing repository facts—not transcripts, chain-of-thought, raw logs, external Session IDs, or copied Coding Agent workflows.
 
-## Task Router
+Use `triage=true` with `assignee=default` for draft Cards. A draft remains non-dispatching while intent converges. Finalize it only through `kanban_finalize_intent`, which validates and atomically advances the native `triage → todo → ready` path according to parent gating. An already-converged request may be created directly as an assigned ready Card.
 
-### Simple
+## Intent convergence
 
-Use one bounded writable parent only when impact is narrow, no architecture/persistence/migration/dependency/release/security/compatibility decision exists, no user-visible choice is unresolved, and a short behavior brief plus repository inspection is sufficient.
+Discuss unsettled product intent directly with Kenan. If repository facts are needed, commission a temporary read-only Coding Agent and normalize only verified conclusions into the Card. Before finalization settle Goal, observable acceptance, scope, non-goals, decisions, route, UI classification, Coding Agent, and authority boundaries.
 
-Require repository inspection, implementation, focused and relevant integration/end-to-end checks, exact observed results, changed-file scope, and residual limitations. Preserve unrelated work and forbid commits or external effects unless separately authorized.
+A product, compatibility, persistence, security, scope, irreversible, or authority decision discovered during execution is exceptional: block with `kind="needs_input"`. Ordinary technical choices already authorized by the Card or Plan remain with the Coding Agent.
 
-Do not invoke `write-plan` or `execute-plan`. If investigation reveals broader coupling or a load-bearing decision, stop expansion, update the same card, and reclassify it as structured.
+## Dispatcher fail-closed gate
 
-### Structured
+The Dispatcher worker must call `kanban_show()` first and refuse execution unless all are true:
+
+- `schema: development-task.v1`;
+- `intent: converged`;
+- route is `direct` or `plan-driven`;
+- UI classification is resolved;
+- Goal and Observable acceptance are non-empty;
+- `Open decisions` is `None`;
+- `coding_agent` is supported;
+- Board/workdir are expected and assignee is literal `default`.
+
+Never infer a missing route, settle a product decision, or repair a draft Card in a worker. Block with the precise missing-contract reason.
+
+## Route selection
+
+### `direct`
+
+Use only for narrow work with no architecture, persistence, migration, dependency, release, security, compatibility, broad-coupling, or unresolved product decision. Start one fresh ordinary writable Coding Agent parent. Do not invoke `write-plan` or `execute-plan`. Require repository inspection, implementation, focused verification plus relevant integration/end-to-end checks, exact observed results, changed-file scope, and residual limitations.
+
+If investigation exposes broader coupling or a load-bearing decision, stop expansion and block/reclassify the same Card rather than silently switching routes.
+
+### `plan-driven`
 
 Use for major, cross-module, architectural, persistent, migratory, ambiguous, broad-impact, or multi-part work.
 
-If product intent is unsettled, create the card with draft acceptance criteria and `intent: unconverged`, and leave it unassigned; clear the marker and set the assignee only after live-repository grounding and user convergence — that assignment is the execution authorization (see Session Roles). Never plan or implement while the marker remains.
+1. Start a **fresh Planning Parent** from the standardized Card and explicitly commission `write-plan` through the selected transport adapter. Do not pass an Origin Session ID. Permit only the writes required by that external workflow; do not implement or commit. Require success/blocked status, exact final Plan path, top-level workflow gate status, artifact pointers, and unresolved decisions or limitations.
+2. Read back the exact Plan path. Unless plan-only or blocked, start a **fresh Execution Parent** and explicitly commission `execute-plan` with that path. Let the external workflow own implementation, internal delegation/review, fixes, and verification. Require exact commands and observed results, changed files, top-level gate status, renderer-ready artifact or complete non-UI handoff, and limitations.
 
-```text
-card → intent/recon → write-plan (internal review-plan)
-     → fresh execute-plan (verification + internal execution reviews)
-     → UI acceptance when applicable → landing → done
-```
+Read `references/coding-agent-commissioning.md` for the public commissioning contract. Load exactly one selected transport adapter for its invocation syntax, permissions, Session mechanics, and result contract.
 
-## Structured Lifecycle
-
-1. **Ground intent.** Start or resume one read-only coding-agent parent against the live repository. Keep routine technical choices with the agent; return only product, scope, compatibility, irreversible, or high-impact choices to the user. Finalize acceptance criteria, decisions, non-goals, and `ui_acceptance: required | not-required` in the card.
-2. **Run `write-plan`.** Resume the same planning parent and invoke the discovered `write-plan` Skill. Permit only plan/audit writes; do not implement or commit. The parent owns reviewer dispatch, revisions, evidence, and its three-round ceiling. Require the exact final plan path, internal gate outcome, artifacts, and unresolved user decisions.
-3. **Run fresh `execute-plan`.** Unless plan-only or blocked on a user decision, immediately start a fresh writable parent from the accepted plan. It owns implementation, integration, final verification, internal execution reviews, fixes, and evidence. Require a renderer-ready artifact for UI work or a complete engineering handoff otherwise.
-
-Read `references/external-agent-workflow.md` before prompting or resuming a coding agent; it contains permission modes and canonical prompt shapes.
-
-## Relay Monitoring
-
-For background work, read `references/relay-monitoring.md`. The monitor is armed by the dispatcher worker at the first Relay; actionable ticks wake a fresh monitor-woken session (see Session Roles).
-
-Each card owns exactly one `development-monitor.v2` state, one fixed wrapper, and one recurring 10-minute Cron across direct work, planning, execution, retries, recovery, and rework — regardless of transport (Cursor, OpenCode, or Pi all share the same single monitor). Every new Relay only rearms that state (`generation += 1`, new `attempt.out_dir`); `operation` is descriptive. Never create per-attempt monitors or monitors for internal review rounds. Healthy `RUNNING`, `idle`, and `closed` ticks are silent.
-
-An actionable tick starts a fresh Watson session. It must independently confirm process exit, a valid terminal result, and every declared load-bearing artifact; then update the user before any new side effect and continue the already-authorized next stage. Stop only for a user decision, authority boundary, blocker, continuity loss, or completed task.
-
-Retry policy for failed attempts: a failed Relay (crashed process, invalid or missing terminal result, incomplete handoff) is not automatically a blocker. When the failure looks transient (crash, timeout, transport error) and the same cause has not already consumed one retry on this card, the monitor-woken session rearms the state and retries the same stage once. A repeated same-cause failure — or any failure whose resolution would change scope or decisions — is a blocker: `kanban_block` with cause and evidence instead of retrying further.
-
-## Completion by UI Scope
-
-### UI task
+## UI classification and acceptance
 
 UI scope includes graphical layout, menus, dialogs, hover, drag, scroll, keyboard/focus behavior, visible state, renderer persistence, and accessibility structure.
 
-After engineering closes, move the card to `review`, read `references/behavior-acceptance.md`, and exercise the accepted UI scenarios in the real renderer. Record each as `PASS`, `FAIL`, or `BLOCKED`; engineering checks cannot replace this gate.
+- `ui_acceptance: required`: after engineering handoff, enter Kanban `review`, read `references/behavior-acceptance.md`, and exercise accepted scenarios in the real renderer. Engineering tests cannot replace this gate. `FAIL` returns to `in_progress` and resumes the exact Execution/Direct parent with an observed behavior packet; `BLOCKED` keeps the Card open.
+- `ui_acceptance: not-required`: never enter `review` or duplicate the Coding Agent's behavior verification. Perform only handoff-integrity closure, then land and complete from `in_progress`.
+- `manual_acceptance` is opt-in and only for behaviors Watson cannot reliably judge, such as VoiceOver narration, transient hover/native menus, long-scroll or drag feel, and subjective native density. Without declared items, do not park for manual acceptance.
 
-- `FAIL`: record the behavioral delta, return to `in_progress`, and resume the exact implementation parent.
-- `BLOCKED`: report the blocker and keep the task open.
-- Complete only when every authorized UI scenario passes.
+Keep `kanban.review_dispatch: false`; Kanban `review` is the board state for Watson behavior acceptance, not Coding Agent internal review.
 
-Two acceptance layers exist, and Watson's real-renderer verdict is the default and only gate: once every authorized UI scenario passes, proceed directly to landing. User manual acceptance is a second, opt-in layer that applies only when the card body declares `manual_acceptance` items — behaviors Watson cannot reliably verify in the renderer (e.g. VoiceOver narration, transient hover/menus, long-scroll and drag feel, native density). With such items declared, a full Watson PASS does not complete the card: record the verdict, park the card for the user, and the origin session owns close-out after the user confirms. Without declared `manual_acceptance` items, never park for manual acceptance.
+## Landing and authority
 
-### Non-UI task
+After acceptance or non-UI closure:
 
-Never move non-UI work to `review` or independently repeat behavior verification, including CLI, API, service, migration, security, and developer-tooling work.
-
-Perform only handoff-integrity closure: terminal result is truthful; declared artifacts and observed command results exist; internal gates closed; limitations and intended/unrelated Git changes are explicit; no unauthorized external effect occurred. Then land and complete directly from `in_progress`.
-
-## Rework and Landing
-
-For UI failure or incomplete handoff, resume the exact implementation parent with only the observed delta or missing contract. Do not diagnose or patch product code. Report continuity loss before replacing a non-resumable session.
-
-After UI acceptance or non-UI closure:
-
-1. Inspect Git status and separate intended from unrelated files without code-quality review.
+1. Inspect Git status and separate intended from unrelated files without performing code review.
 2. Confirm no unauthorized remote, version, release, publication, deployment, or external-service action occurred.
 3. Commit locally under standing authorization.
 4. Push `obsidian-card-workspace` `main` under standing authorization; it triggers CI only.
 5. Ask case-by-case before pushing `card-workspace-site` `main`, pushing tags, opening PRs, changing versions, publishing, deploying, or releasing.
-6. Complete the card with compact evidence, internal gate outcomes, UI verdict when relevant, artifact pointers, and commit identity.
+6. Complete the Card with compact engineering evidence, top-level gate status, UI verdict when relevant, artifacts, limitations, and commit identity.
 
-## Authority Boundaries
+Return to Kenan before ambiguous visible behavior, scope, compatibility, persisted-data or migration policy, security/privacy, architectural guardrails, production dependencies, external services, irreversible actions, accepted-Plan invalidation, lost required Session continuity, or remote/release actions outside standing authorization.
 
-Return to the user before changing ambiguous visible behavior, scope, compatibility, persisted data, migration policy, security/privacy, architectural guardrails, production dependencies, or external services; before relying on an unverified external assumption; after accepted-plan invalidation or required-session loss; before discarding user work or any irreversible action; and before remote/release actions outside standing authorization.
+## Invariants
 
-## Non-Negotiable Invariants
-
-- One correctly routed card per independent development task; none for internal operations.
-- Pi by default; OpenCode/Cursor/Codex only by explicit task-scoped request.
-- No brainstorming Skill exists in this workflow.
-- `intent: unconverged` blocks planning and implementation.
-- Internal reviews stay inside their owning coding-agent parent; Watson never invokes `delegate-work`.
-- `execute-plan` always starts in a fresh parent; same-scope rework resumes its exact execution parent when possible.
-- One fixed silent monitor per card; never one per attempt or review round.
-- One active orchestrator per card at any time; the three session roles hand off only through durable board/monitor state.
-- The card-creating session never launches that card's Relay; execution starts when the dispatcher claims an assigned ready card.
-- A monitor-woken Watson verifies, updates the user, and continues rather than deferring to the origin session.
-- Only UI tasks enter Kanban `review`; non-UI work receives no duplicate Watson behavior test.
-- Watson never writes or reviews product code.
-- No unauthorized commit, remote, version, release, publication, deployment, or irreversible action.
-- Keep `kanban.review_dispatch: false`; review is Watson's UI gate.
+- One Card per independent development task; no Cards for Planning, Execution, reviews, Relay attempts, or same-scope fixes.
+- Pi by default; other transports only by explicit task-scoped request.
+- Coding Agent engineering workflows are external black boxes.
+- Fresh Planning Parent from the Card; fresh Execution Parent from the accepted Plan.
+- Same-scope rework resumes the exact implementation parent when possible.
+- Only UI tasks enter Kanban `review`.
+- Watson never writes, repairs, refactors, or code-reviews product code.
+- No unauthorized commit, push, PR, release, deployment, publication, version change, or irreversible action.
 
 ## References
 
 | Situation | Load |
 |---|---|
-| Prompting/resuming a coding agent | `references/external-agent-workflow.md` |
-| Background Relay monitoring | `references/relay-monitoring.md` |
+| Coding Agent commissioning boundary | `references/coding-agent-commissioning.md` |
 | Real-renderer UI acceptance | `references/behavior-acceptance.md` |
-| Board routing/mechanics | `hermes-kanban-workflows` |
+| Any Kanban/Relay operation | `hermes-kanban-workflows` |
+| Coding Agent dispatch | exactly one selected `*-delegate` adapter |

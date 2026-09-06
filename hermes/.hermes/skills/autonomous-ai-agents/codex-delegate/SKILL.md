@@ -17,7 +17,7 @@ Provide reliable Codex CLI transport for `development-orchestrator`: binary/auth
 
 Load only when `development-orchestrator` has selected Codex as the external parent agent.
 
-Do not use this Skill to decide requirements, skip the pre-plan discussion, perform code review, define behavioral acceptance, or replace target-discovered Agent Skills.
+Do not use this Skill to decide requirements, decide whether Origin grounding is needed, perform code review, define behavioral acceptance, or replace target-discovered Agent Skills.
 
 ## Preflight
 
@@ -63,17 +63,17 @@ The brief is passed through stdin, not argv. The relay never commits.
 
 ## Development-Orchestrator Stages
 
-### Ordinary pre-plan discussion
+### Optional Origin grounding
 
-Start fresh with `--read-only`. Preserve the returned `threadId`. Every follow-up uses `--session <id> --read-only` and contains only the new discussion turn. Do not invoke an entry Skill unless `development-orchestrator` explicitly reaches that phase.
+For product discussion only, start fresh with `--read-only`; follow-ups may resume the exact `threadId`. This thread is ephemeral and must never be passed to a Dispatcher worker or reused for Planning/Execution.
 
 ### Explicit write-plan
 
-Resume the established discussion thread with `--session <id> --sandbox workspace-write`. The prompt explicitly invokes `$write-plan`. The target Skill, not this adapter, restricts the allowed planning write.
+Start a fresh Planning Parent with `--sandbox workspace-write` and no Origin `--session`. Begin the brief with `$write-plan`, include the complete converged Card contract, and require the exact final Plan path plus top-level gate/artifact outcome. The target Skill owns its internal workflow and allowed planning writes.
 
 ### Explicit execute-plan
 
-Start a fresh run with `--sandbox workspace-write` and an explicit `$execute-plan` prompt containing the exact plan path. Preserve the new execution `threadId` separately from the discussion/planning thread.
+Start a separate fresh Execution Parent with `--sandbox workspace-write` and no Planning `--session`. Begin the brief with `$execute-plan` and include the exact accepted Plan path. Preserve the returned execution `threadId` for same-scope rework.
 
 ### Behavioral rework
 

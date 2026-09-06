@@ -1,140 +1,103 @@
 ---
 name: hermes-kanban-workflows
 description: "Use when building or verifying Hermes Kanban workflows."
-version: 1.3.7
-tags: [kanban, multi-agent, dispatcher, workflow, verification]
+version: 1.4.0
+tags: [kanban, multi-agent, dispatcher, relay, workflow, verification]
 ---
 
 # Hermes Kanban Workflows
 
-Own board routing, dispatch mechanics, dependencies, handoffs, and reconciliation. The development lifecycle inside a card belongs to `development-orchestrator`; coding-agent review protocols do not belong here.
+Implement durable board, Card, Dispatcher, dependency, Relay-monitor, reconciliation, and handoff mechanics. Development policy is owned by the calling `development-orchestrator`; this Skill implements the requested Kanban/Relay transition and must not redefine the route or acceptance policy.
 
-## When to Use
+## When to use
 
-- Build, execute, or review a Kanban-controlled workflow.
-- Create or route project boards and cards.
-- Verify configuration, dispatch, concurrency, heartbeat, handoff, or reconciliation.
+Load before creating, finalizing, routing, transitioning, reconciling, or completing a development Card, and before creating or operating its Relay monitor. Also load for board provisioning, Dispatcher behavior, dependencies, task-scoped tools, handoff integrity, and Kanban verification.
 
-## Board Topology and Card Granularity
+## Board and Card mechanics
 
-Every `~/Secret-Projects/<project>` repository uses a long-lived dedicated board whose slug is the directory basename in kebab-case and whose default workdir is the project root. Hermes self-work and projects outside that tree use `default`. Create a missing project board before its first card. Cards execute directly in the project repository on its main branch — never in scratch or git-worktree workspaces.
+- Each `~/Secret-Projects/<project>` repository uses a dedicated board whose slug is the kebab-case directory basename and whose default workdir is the project root. Hermes self-work and projects outside that tree use `default`.
+- Cards work directly in the trusted repository directory on main under Kenan's convention; do not use scratch/worktree unless the caller explicitly chooses another supported workspace contract.
+- One Card represents one independently closable task. Internal Planning, Execution, review, Relay attempts, retries, artifacts, and same-scope fixes are not separate Cards.
+- Use native parent links. Parent-blocked children remain `todo` and promote automatically after all parents complete.
+- Use exact board slugs and explicit board arguments when no task-scoped binding exists. Read back every created or mutated target before claiming success.
 
-One card represents one user-recognizable, independently closable task or deliverable. Keep reconnaissance, discussion, `write-plan`, `execute-plan`, internal work packages/reviews, Relay attempts, monitoring, retries, artifact writes, and same-scope defects inside it. Create another card only for a new independent feature, bug, deliverable, or scope expansion.
+For development Cards, the caller supplies a `development-task.v1` body and policy fields. Draft creation uses `triage=true` while retaining `assignee=default`; this prevents dispatch without using assignment as a policy switch. Finalize only through `kanban_finalize_intent`, which validates the complete replacement body and calls the native triage specification path. Do not repair missing product policy in this mechanics layer.
 
-The Initiative layer is retired and read-only. Kanban owns task progress, the repository owns product context, and durable artifacts own execution evidence.
+## Dispatcher semantics
 
-Create the card before delegation. For unsettled structured work, record the initial goal, draft acceptance criteria, dependencies, and `intent: unconverged`; clear it only after live-repository grounding and user convergence. That marker blocks planning and implementation.
+- Dispatcher claims require `status=ready` and a non-empty assignee. The development contract uses literal `assignee=default`.
+- Card `model`/`provider` configure the spawned Hermes worker, not the external Coding Agent.
+- The worker receives `HERMES_KANBAN_DB`, `HERMES_KANBAN_BOARD`, `HERMES_KANBAN_TASK`, and the Card's workdir/skills.
+- Dispatcher workers must begin with `kanban_show()` and terminate through `kanban_complete`, `kanban_block`, or the review transition prescribed by the caller.
+- Interactive orchestrators need the `kanban` toolset; task-scoped workers receive focused lifecycle tools automatically. Orchestrator-only tools remain hidden from delegated children.
+- `kanban.max_in_progress_per_profile` is per board; host-wide limits are separate.
+- Emit heartbeats during long operations so stale reclaim does not silently recycle active work.
 
-Use native parent links for cross-card dependencies. Parent-blocked children remain `todo` and promote automatically after all parents complete.
+## Status transitions
 
-## Worker Ownership
+Use native lifecycle tools, not raw SQL:
 
-A ready card assigned to a Hermes profile is dispatcher-owned; the claimed worker orchestrates it and launches any external coding agent through the matching adapter.
+- draft specification: `triage → todo`, then `recompute_ready()` promotes to `ready` if parent gates are closed;
+- Dispatcher claim: `ready → running`;
+- caller-authorized UI acceptance: `running → review`;
+- same-card UI rework: `review → running` through the supported review/rework surface;
+- non-UI closure: `running → done`;
+- blocker: use the typed `dependency | needs_input | capability | transient` kind that matches reality.
 
-Session topology: the interactive origin session creates the card and converges intent; the dispatcher worker claims it, orchestrates, and arms the monitor; a monitor-woken session takes over terminal states. The dispatcher claims only `ready` cards that carry an assignee — assignee is the execution switch, set at intent convergence; an unassigned ready card merely queues. Full model: `development-orchestrator` → Session Roles.
+Keep `kanban.review_dispatch: false` for Kenan's workflow. This is a configuration fact; acceptance policy belongs to `development-orchestrator`.
 
-- Card `model`/`provider` configure the spawned **Hermes worker**, not Cursor, Codex, or OpenCode. Put the external tool/model in the card body.
-- Normal creation follows the dispatch path and appears `ready` until claimed. The creator must not also launch a Relay.
-- Use `initial_status: blocked` only for a real immediate human-operations gate.
+## Relay monitor mechanics
 
-## Initiation Lanes and Message Identity
+Each development Card owns exactly one:
 
-Execution has three session lanes; simple/structured routing is orthogonal to them:
+- `development-monitor.v2` state;
+- fixed generated wrapper;
+- recurring Cron named `t_<card-id> development-monitor`;
+- schedule exactly `every 10m`.
 
-1. **Origin interactive session** — creates the card, converges intent, does read-only reconciliation, owns close-out after user manual acceptance; never launches the Relay itself.
-2. **Dispatcher worker (headless)** — the gateway dispatcher spawns `hermes -p <assignee> --cli chat -q` (`HERMES_KANBAN_TASK` injected) for a `ready` card; it becomes that card's active orchestrator and arms the single monitor. Its stdout goes to per-task logs under `<board-root>/logs/`, never to chat — the user sees only machine-formatted lifecycle notifications and card comments.
-3. **Monitor-woken session (headless, Cron-spawned)** — fresh Watson spawned by an actionable tick; its reports arrive enveloped as `Cronjob Response: <job> (job_id: …)`, a deterministic delivery-layer wrapper, not model-added text.
+A new top-level Relay only increments `generation` and binds a new `attempt.out_dir`. Canonical state values are lowercase `idle | relay_running | closed`. Never hand-edit monitor state, create per-attempt monitors, or use uppercase `RUNNING` (invalid state can become permanently silent).
 
-Telling the lanes apart from the chat side: bare prose continuing the user's thread = interactive; `Cronjob Response:` envelope = monitor lane (session ids prefixed `cron_`); machine-formatted card events = worker notifications. A quote-reply to an enveloped cron message lands in the interactive session, not the cron session. An unwrapped conversational message from a worker is an anomaly — workers have no chat binding under the standard protocol.
-
-## Lifecycle Inside One Card
-
-Task complexity and UI scope are independent: simple work takes one direct delegated parent; structured work runs intent gate → `write-plan` (internal `review-plan`) → fresh `execute-plan` (internal execution reviews). Router criteria, the full lifecycle, and the session-role model live in `development-orchestrator`.
-
-Watson does not create cards, Relays, or monitors for internal review stages. Record only meaningful transitions and compact outcomes.
-
-## Review Column
-
-Kanban `review` is exclusively Watson's real-UI behavior-acceptance gate; keep `kanban.review_dispatch: false`.
-
-- Any accepted graphical UI behavior enters `review` after engineering closes.
-- Non-UI work—including CLI, API, service, migration, security, and developer tooling—never enters `review` and receives no duplicate Watson behavior test; complete it after coding-agent verification and handoff-integrity closure.
-- Mixed tasks use `review` only for UI behavior and its critical integration path.
-- On UI failure, record the observed delta, return to `in_progress`, and resume the exact implementation parent.
-
-```text
-simple/structured non-UI: todo/ready → in_progress → done
-any UI:                 todo/ready → in_progress → review → done
-UI rework:              review → in_progress → review
-```
-
-Update cards only for intent convergence, plan/execution closure, UI-review entry/verdict, rework, blocker, landing, and completion—not reviewer rounds, process IDs, wrapper/Cron IDs, or routine polling.
-
-## Relay and Handoff
-
-Monitoring is orthogonal to board state. Each card owns one fixed `development-monitor.v2` state, wrapper, and recurring 10-minute Cron across all top-level runs; the dispatcher worker arms it and actionable ticks wake a monitor-woken Watson (see Worker Ownership). When creating that Cron, the schedule must be `every 10m` — a bare `10m` is a one-shot ISO-style job that dies after its first fire. New attempts only increment generation and bind a new output directory; healthy running ticks stay silent. A corrupted state file (e.g. a concurrent session hand-writing an illegal enum into `monitor-state.json`) classifies `BAD_STATE` and goes permanently zero-agent-silent — an unexplained long-silent monitor is a corruption suspect, not a quiet success; restoring a valid enum revives classification.
-
-A monitor-woken Watson verifies current process state, terminal result, and every declared load-bearing artifact; updates the user before new side effects; then continues the authorized lifecycle. A missing plan, execution/review artifact, or deliverable is an incomplete handoff even when the process reports success — an integrity check, not a second non-UI behavior test.
-
-Detailed mechanics live in `development-orchestrator/references/relay-monitoring.md` and `references/handoff-integrity.md`.
-
-## Operating Model
-
-Re-verify after Hermes updates because Kanban evolves quickly.
-
-- Boards are isolated SQLite databases; dependencies never cross boards.
-- One board-owner gateway dispatcher may sweep all registered boards and spawn any assignee profile.
-- Dispatcher workers receive focused `kanban_*` tools through `HERMES_KANBAN_TASK`; interactive orchestrators need the `kanban` toolset.
-- Native features include idempotency, dependencies, blocking kinds, per-task pins/limits, comments, events, run metadata, and attachments.
-- `kanban.max_in_progress_per_profile` is per board; use a host-wide limit or policy for cross-board control.
-- Long blocking calls need bounded waits or heartbeats so activity remains visible.
-
-## Board Provisioning
-
-For a Secret-Projects repository:
-
-1. Derive the kebab-case slug from the directory basename.
-2. List boards and reuse only an exact slug.
-3. If absent, create it with a readable name and explicit absolute workdir.
-4. Read it back and verify slug, name, and workdir.
-5. Create the card on that explicit board without changing the user's active board unnecessarily.
-
-Board slugs are immutable. Renames require an explicit mapping decision; archived/deleted repositories do not authorize board deletion.
+Load `references/relay-monitoring.md` before creating, rearming, waking, closing, or tearing down a monitor.
 
 ## Reconciliation
 
-Do not trust the column alone. Check, cheapest first: live Git status/history; terminal Relay result and final message; declared plan/execution/review/UI artifacts; monitor/teardown state; then session history if still ambiguous.
+Do not trust a column or self-report alone. Check cheapest-first:
 
-A card the user calls running but showing zero kanban runs is on the Relay line, not stalled: Kanban columns don't reflect Relay progress. Inspect cheapest-first, mutating nothing — `cronjob list` (the card's single `t_<card-id> development-monitor` Cron: enabled, last/next fire), `~/Secret-Projects/development-artifacts/<project>/tasks/<card-id>/monitor-state.json` (`monitor.state`, current attempt session/pid/out_dir, `generation`, any acknowledged `pending_event` = takeover already fired), `attempts/<gen>-<op>/` file sizes+mtimes and `ps -p <pid>` for live activity, the card comment thread (`kanban_show`) for takeover summaries, `acceptance/<slug>/<yyyymmdd>/verdict.md` + `final.txt` for behavior-acceptance verdicts, and repo `git status` for the uncommitted deliverable. Report stage, evidence timestamps, gates, verdicts, and what remains (user manual-acceptance items, commit/push, card closure, Cron teardown); never edit monitor state, Cron, wrapper, or board during a progress read.
+1. exact board/Card and comments/events;
+2. monitor Cron, state, current generation, process identity, and output directory;
+3. live process state and adapter `result.json`;
+4. declared load-bearing artifacts and digests;
+5. Git status/history;
+6. acceptance evidence when the caller requires it;
+7. session history only if ambiguity remains.
 
-Fuzzy board names resolve structurally, never by literal string match: a repo rename can leave a stale EMPTY board beside the live one (observed: empty `card-workspace` beside live `obsidian-card-workspace`). Read `~/.hermes/kanban/current`, list boards, prefer the non-empty one whose dependency graph matches the project, and answer "what's next" from `task_links` order plus per-card comment state (e.g. a `ready` card parked on user manual acceptance is the real next step, not the first `todo` card).
+Never mutate monitor state, Cron, wrapper, board, or Git during a progress-only read. Comment compact verified evidence on the Card when reconciliation changes lifecycle understanding.
 
-Comment the reconciled evidence. Move UI-ready work to `review`; complete non-UI work only after engineering and handoff closure; complete UI work only after a real-renderer verdict.
+## Handoff integrity
 
-Origin-session closure after user manual acceptance — only for cards declaring `manual_acceptance` items, the origin role's final duty (monitor already `idle`, no woken takeover): the origin Watson owns the whole close-out — verify worktree matches the card's declared scope (no drift; build artifacts gitignored) → commit recording the manual verdict → push under standing authorization → confirm CI green before reporting (new `gh run list` entry may lag the push; sleep and re-check) → comment + `complete` the card → `close_monitor` if state still reads `idle` → remove the card's single Cron and wrapper, leaving `monitor-state.json`/`attempts/` as archive. A listed Cron showing `state: completed, enabled: false` is NOT torn down — it still occupies the one-Cron slot and must be explicitly removed.
+A completed-looking Relay is incomplete if the process is live, the terminal result is malformed/missing, or declared artifacts are absent or hash-mismatched. Validate terminal truth and producer-owned artifacts without duplicating engineering behavior tests. See `references/handoff-integrity.md`.
 
-## CLI and API Pitfalls
+## Tool and API pitfalls
 
-1. Prefer `kanban_*` tools in dispatcher workers; never write board SQLite directly.
-2. CLI `--board` precedes the subcommand; `comment`/`create` take positional body/title. Use the exact listed slug.
-3. `edit` does not change status; use `request-review` or `complete`.
-4. Enable orchestration with `hermes config set toolsets '["hermes-cli", "kanban"]'`, then read back the resolved value.
-5. CLI/scripts must run under the board-owner profile's `HERMES_HOME`.
-6. Repeated same-cause block/unblock may trigger triage and auto-decomposition; disable `kanban.auto_decompose` when decomposition is forbidden.
-7. `workflow_template_id` and `current_step_key` are metadata, not dispatcher routing.
-8. When native top-level `artifacts` are used, keep result-owned artifacts under a metadata envelope to avoid path collisions.
-9. The `kanban_*` lookup tools resolve a bare `task_id` against the session's active board context only. In an interactive session with no claimed `HERMES_KANBAN_TASK`, a card living in the `default` board needs `board="default"` (or the exact slug) passed explicitly, or `kanban_show` returns not-found.
+1. Prefer `kanban_*` tools; never patch Kanban SQLite directly.
+2. Board resolution precedence is task-scoped DB/board binding, explicit board, active-board symlink, then profile default. Use profile-safe Hermes paths.
+3. A bare `task_id` in an unclaimed interactive session needs `board="default"` or the exact slug when the target is not the active board.
+4. `edit` does not replace lifecycle transitions; use specification, review, completion, block, or unblock surfaces.
+5. Repeated same-cause block/unblock can trigger triage. Use a precise typed blocker and do not loop.
+6. `workflow_template_id` and `current_step_key` are metadata, not Dispatcher routing.
+7. Native top-level `artifacts` are attachment paths; keep structured result objects under a nested metadata key to avoid collisions.
+8. Teardown uses the supported Cron API/tool surface. Never remove the source Cron inside its own active fire.
 
 ## Verification
 
-Before reporting a transition, confirm:
+Before reporting success, read back and confirm:
 
-- exact board/workdir and one-card granularity;
-- no unresolved `intent: unconverged` before planning/implementation;
-- internal reviews stayed inside their coding-agent parent;
-- only UI work entered `review`, with a real-renderer verdict before completion;
-- non-UI closure used coding-agent evidence plus handoff integrity, not duplicate behavior testing;
-- metadata/attachments read back correctly; and
-- no unrelated board was mutated.
+- exact board/workdir/task and parent gating;
+- exact body/assignee/status/event after intent finalization;
+- one monitor state, one wrapper, one Cron;
+- Cron name `t_<card-id> development-monitor` and schedule `every 10m`;
+- lowercase monitor state and current-generation output path;
+- truthful terminal result and declared artifacts;
+- requested status transition and no unrelated board mutation.
 
-Current source-level behavior evidence lives in `references/kanban-mechanics.md`.
+Detailed evidence and drills live in `references/kanban-mechanics.md`, `references/handoff-integrity.md`, and `references/pilot-drills.md`.

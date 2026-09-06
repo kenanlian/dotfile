@@ -6,9 +6,13 @@ Use a named temporary Board with an absolute disposable Git workdir. Keep the de
 
 Create a no-side-effect worker card that must call `kanban_show`, emit an explicit `kanban_heartbeat`, and finish with `kanban_complete`. Read back task events and run metadata; a final summary alone is not proof.
 
+## Intent finalization
+
+Create an assigned `triage=true` development Card with a draft `development-task.v1` body and prove it is not dispatchable. Exercise `kanban_finalize_intent`: reject draft/pending/missing fields, then accept a complete converged body and read back the exact body, `assignee=default`, `specified` event, and final `ready` or parent-gated `todo` state. Reject mutation after the Card leaves `triage`.
+
 ## Task-pinned fail-closed Skill
 
-Pin the real runner Skill to a card that intentionally omits its structured contract. Expected result: `blocked` with the runner's typed reason before any external process starts. This proves both Skill routing and fail-closed validation without inventing a contract that could accidentally launch a Relay.
+Pin `development-orchestrator` to a Card that intentionally omits part of `development-task.v1`. Expected result: a typed block before any external process starts. Repeat with `execution_route: direct` and `plan-driven` fixtures to prove the worker selects exactly the recorded route from `kanban_show()` and never receives an Origin Coding Agent Session ID.
 
 ## Per-board concurrency
 

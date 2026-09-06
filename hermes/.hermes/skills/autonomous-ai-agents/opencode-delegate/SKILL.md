@@ -64,9 +64,9 @@ The brief travels through stdin, never argv. The Relay runs `opencode run --form
 
 ## Stage Mapping
 
-- **Discussion:** start `--read-only`, preserve `sessionId`, and resume every turn with `--session <id> --read-only`. Do not invoke an entry Skill yet.
-- **`write-plan`:** resume that exact session with `--write` and invoke the discovered `write-plan` Skill; the target Skill restricts intended writes.
-- **`execute-plan`:** start a fresh `--write` session with the accepted plan path and invoke the discovered `execute-plan` Skill. Preserve its separate execution `sessionId`.
+- **Optional Origin grounding:** for product discussion only, start `--read-only`; follow-ups may resume its exact `sessionId`. This Session is ephemeral and never passes to a Dispatcher worker or Planning/Execution.
+- **`write-plan`:** start a fresh Planning Parent with `--write` and no Origin `--session`; begin with `Use the discovered write-plan Skill.`, include the complete converged Card contract, and require the exact Plan plus top-level gate/artifact outcome.
+- **`execute-plan`:** start a separate fresh Execution Parent with `--write` and no Planning `--session`; begin with `Use the discovered execute-plan Skill.` and include the exact accepted Plan path. Preserve its execution `sessionId`.
 - **Rework:** resume the exact execution session with `--session <execution-id> --write` and the observed failure/missing-contract packet.
 
 ## Result Contract
