@@ -153,7 +153,7 @@ kanban_show → read handoff + prior rounds (count changes_requested runs)
    BLOCK  → kanban_block (typed needs_input/capability; genuine human decision only)
 ```
 
-- The Review Worker does not use the write-mode external guard. For round `N`, each relay gets `development-artifacts/<board>/tasks/<card-id>/reviews/round-N/<review-skill>/` with its own `result.json`; the Worker waits for process exit, validates `delegate-relay.result.v1`, and records those paths in the native review run.
+- The Review Worker does not use the write-mode external guard. For round `N`, each relay gets `development-artifacts/<board>/tasks/<card-id>/reviews/round-N/run-<kanban-run-id>/<review-skill>/` with its own `result.json`; the Worker waits for process exit, validates `delegate-relay.result.v1`, and records those paths in the native review run.
 - Normalize Pi verdict vocabularies before routing: `review-plan APPROVE`, `review-patch correct`, and `review-plan-conformance CONFORMS` are pass candidates. Any P0/P1 or finding that forces a load-bearing change is blocking; P2-only findings may pass only when the Review Worker records why they are bounded caveats. `INCOMPLETE` blocks only when the missing evidence needs human/external input; otherwise request changes for the missing proof.
 - `execute-plan` review aggregates BOTH relays (patch first, then conformance) over the same committed diff range and includes implementation plus UI-acceptance evidence in both briefs; any blocking finding in either → REVISE with merged findings in two labeled sections.
 - Review round = prior `changes_requested` runs + 1. Do not start round 4: comment the state and `kanban_block(needs_input)` for Kenan's authorization and a materially revised candidate.
@@ -192,6 +192,14 @@ Decisions after dispatch are append-only structured comments recorded by the Ori
 ## Scheduled jobs
 
 None. Active-card visibility comes from native Kanban notifications and Worker reporting. No per-Card Cron, monitor, or wrapper exists.
+
+## MVP enforcement boundaries
+
+Mechanically enforced: native Card/run ownership and expected-run terminal transitions; write-mode Relay duplicate/recovery state; top-level Pi tool mode; process-exit/result schema/status; exact resumed Pi Session ID; Card-trailer landing evidence.
+
+Instruction-enforced and then verified fail-closed: delegated children of a read-only Pi reviewer must not write; writable Pi must not commit/push; stage-specific outputs live in `finalMessage` rather than typed result fields. Workers inspect Git and required outputs and block on any violation or ambiguity.
+
+Read-only review Relays intentionally do not use the write-mode guard. A reclaimed review run can therefore leave an orphan read-only Pi process. The replacement run uses its own run-ID output directory, never overwrites prior evidence, and owns the only valid Kanban verdict through expected-run checking; duplicate read-only compute is tolerated in this MVP, but duplicate writes or Card transitions are not.
 
 ## Invariants
 

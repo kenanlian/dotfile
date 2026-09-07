@@ -92,7 +92,7 @@ Each development Card owns at most one canonical guard state for its write-mode 
 
 schema `development-external-execution.v1`, written only through `development_external_guard.py`. The guard is fail-closed: it reserves before process creation, never retries automatically, records the exact terminal session ID, verifies the current native run before side effects, and detects the Card-trailer landing commit. Allowed outcomes are `spawned | attach | terminal | uncertain` (`inspect` also returns `none` when no attempt exists). `uncertain` blocks the Card.
 
-Never hand-edit the state file, bypass the guard CLI for a write-mode Relay, or infer process safety from prose, PID absence, or elapsed time. Load `references/execution-recovery.md` before initializing, starting, inspecting, resuming, or landing a Card's external execution. A Review Worker instead validates each fresh read-only adapter process and `delegate-relay.result.v1` directly, records its result paths in the native review run, and relies on the native expected-run guard for its verdict.
+Never hand-edit the state file, bypass the guard CLI for a write-mode Relay, or infer process safety from prose, PID absence, or elapsed time. Load `references/execution-recovery.md` before initializing, starting, inspecting, resuming, or landing a Card's external execution. A Review Worker instead validates each fresh read-only adapter process and `delegate-relay.result.v1` directly, records its result paths under a run-ID-specific directory, and relies on the native expected-run guard for its verdict. A reclaimed review run may leave duplicate read-only compute, but cannot overwrite another run's evidence or submit a stale verdict.
 
 ## Scheduled jobs
 
