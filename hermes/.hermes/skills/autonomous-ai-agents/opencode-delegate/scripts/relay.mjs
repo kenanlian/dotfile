@@ -503,7 +503,8 @@ function main() {
   const writeResult = makeResultWriter(opts, probe.version, run);
   if (!probe.version && !probe.error) {
     const result = writeResult({
-      status: 'opencode_unavailable',
+      status: 'unavailable',
+      sourceStatus: 'opencode_unavailable',
       exitCode: 127,
       signal: null,
       sessionId: null,

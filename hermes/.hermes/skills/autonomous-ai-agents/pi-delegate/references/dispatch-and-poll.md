@@ -63,7 +63,8 @@ Artifacts live outside the repo by default so they do not appear in `touchedFile
 `result.json` fields:
 
 - `schema`, `tool` (`"pi"`), `status` (`completed` | `failed` | `timeout` | `aborted` |
-  `pi_unavailable`), `exitCode`, `signal`.
+  `unavailable`; a missing binary reports `unavailable` with `sourceStatus` keeping the
+  tool-specific `pi_unavailable`), `exitCode`, `signal`.
 - `piVersion`, `sessionId` (from the stream's `session` event), `cwd`, `mode`
   (`read-only` | `write`), `requestedModel`, `resolvedModel` (last assistant
   `provider/model` from the stream — only what is honestly observable; `null` when
@@ -88,11 +89,11 @@ it in a shell and poll for `result.json`. The run is done only when the process 
 exited and the file carries a `status`.
 
 A pre-run usage error exits 2 and writes no result. A missing `pi` binary exits 127
-and writes `status: "pi_unavailable"`.
+and writes `status: "unavailable"`.
 
 ## When a run misbehaves
 
-- **`status: "pi_unavailable"` (exit 127):** install Pi, configure auth, re-dispatch.
+- **`status: "unavailable"` (exit 127):** install Pi, configure auth, re-dispatch.
 - **`status: "failed"` with `pi exited with code N`:** read `stderrTail`, `stderrPath`,
   and the tail of `events.jsonl`. An unknown `--model` id fails here.
 - **`status: "failed"` with `agent_settled was never observed`:** Pi exited 0 but the

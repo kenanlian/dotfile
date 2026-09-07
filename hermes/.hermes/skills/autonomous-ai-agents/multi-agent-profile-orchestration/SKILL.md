@@ -28,7 +28,7 @@ Orchestrator + executor split:
 - **Active continuous parent + bounded reasoning-heavy check:** use a subagent; only its final summary enters the parent context.
 - **Mechanical check:** let the parent call tools directly and persist verbose evidence to disk.
 - **Long-lived work that must survive parent/session loss:** use Cron, a durable background process, or an explicit executor profile.
-- **Project development phase:** monitoring a Cursor/Codex/OpenCode Relay and performing behavior acceptance are separate phases. A polling mechanism may end when the Relay reaches a terminal state; the continuously running acceptance orchestrator can then delegate subagents without requiring a second profile.
+- **Project development:** the one Dispatcher-spawned Execution Worker both observes its own Coding Agent Relay (bounded in-session slices) and performs behavior acceptance; no second profile or polling mechanism is needed for the default flow.
 
 This distinction prevents an unnecessary chain of orchestrator → executor → messaging mention → orchestrator when a single fresh/continuous orchestrator plus subagents is sufficient.
 
@@ -57,14 +57,14 @@ Recommend `mentions` mode for orchestrator/executor: the orchestrator is only in
 
 The former default—executor intake + shared Relay Watchdog + no-agent digest + bot mention back to the orchestrator—is **retired as a project-development default**. It proved that send success, a visible mention, and Agent wake are separate links, while also adding cross-profile state, routing, and cache-expensive wakeups.
 
-For 柯楠's development workflow, keep the phases separate:
+For 柯楠's development workflow (minimal MVP), keep the phases in one place:
 
-1. **Coding phase:** the orchestrator delegates Cursor/Codex/OpenCode and uses a task-scoped, script-gated Cron for durable progress observation. Healthy checks must not invoke an Agent.
-2. **Transition:** when the Relay becomes actionable or terminal, start a fresh orchestrator from compact durable task state; the coding monitor's responsibility ends.
-3. **Behavior acceptance:** one continuous orchestrator owns scenario design, final judgment, rework, and user communication. It may directly run mechanical checks and delegate bounded heavy-context scenarios to subagents.
-4. **Rework:** only when a Coding Agent is active again should a new development-monitoring Cron exist.
+1. **Coding phase:** one Dispatcher-spawned Execution Worker owns the Card, starts the Coding Agent Relay through the external execution guard, and observes it itself in bounded slices. No per-Card Cron, monitor, or wrapper exists.
+2. **Status:** one global read-only status Digest Cron reports all active Cards (`no_agent=true`); it never wakes an agent.
+3. **Behavior acceptance:** the same Execution Worker exercises the real renderer and owns the verdict; it may delegate bounded heavy-context scenarios to subagents.
+4. **Rework:** the same Worker resumes the exact recorded Coding Agent session after a terminal attempt; no new monitoring machinery appears.
 
-Use an executor profile in this workflow only when explicitly requested or when a validation truly requires independent durable execution beyond the acceptance orchestrator's lifetime.
+Use an executor profile in this workflow only when explicitly requested or when a validation truly requires independent durable execution beyond the Worker's lifetime.
 
 ## Pitfalls
 

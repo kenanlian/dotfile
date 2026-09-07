@@ -1,6 +1,6 @@
 # Kanban Handoff Integrity
 
-Use this reference when a stage completion carries structured result metadata, native file attachments, or Relay recovery evidence.
+Use this reference when an engineering step completes with structured result metadata, native file attachments, or external-guard Relay evidence.
 
 ## Completion payload shape
 
@@ -17,40 +17,34 @@ kanban_complete(
 )
 ```
 
-Why: the Kanban completion layer records native attachment paths under the run metadata's top-level `artifacts` key. Passing a bare `development-stage-result.v1` as metadata creates a key collision and can turn structured artifact records into path strings. After completion, call `kanban_show`/`runs`, extract `metadata.stage_result`, and validate it again. Validate the native attachment list independently.
+Why: the Kanban completion layer records native attachment paths under the run metadata's top-level `artifacts` key. Passing a bare structured result as metadata creates a key collision and can turn structured records into path strings. After completion, call `kanban_show`/`runs`, extract the nested metadata key, and validate it again. Validate the native attachment list independently.
 
-## Immutable artifact ordering
+## Terminal Relay truth
 
-For Relay-backed stages:
+A completed-looking Relay is incomplete if the process is live or the terminal result is malformed or missing. The terminal contract is the adapter's `delegate-relay.result.v1`:
 
-1. Persist the canonical run record atomically as soon as PID/session identity is known; never add non-schema convenience fields.
-2. During observation, use PID identity plus result presence only as liveness evidence. A result-looking file while the process remains alive is not yet a stable terminal handoff.
-3. Wait for child-process exit and a valid terminal result contract.
-4. Ensure build identity and other producer-owned evidence are closed and no later collector will rewrite them.
-5. Compute SHA-256 from the exact final paths.
-6. Build the stage result from those hashes, read every path back, and validate before `kanban_complete`.
-7. Downstream repeats path existence + digest verification before UI behavior acceptance or non-UI handoff closure.
+- expected schema and status; `exitCode=0` for success;
+- process exit truth — a result-looking file while the process remains alive is not yet a stable terminal handoff;
+- the pi relay reports `sessionId`; record it through the guard's `record-terminal` so exact-session rework is possible;
+- relays emit a normalized `unavailable` status with `sourceStatus` when the Coding Agent binary is missing;
+- relays never commit; the Worker performs the Card-trailer landing rule.
 
-A mismatch is `FAIL`/block, not residual risk. Independently rehashing the product executable does not repair a mismatched parent handoff for `result.json` or build identity; create a new generation with immutable artifacts.
+A streamed fragment, progress display, or self-report without the adapter's terminal result contract is not completion.
 
-## Live reclaim proof
+## Load-bearing paths only
 
-To prove worker-restart continuity rather than terminal-result recovery, capture immediately before reclaim:
+Validate only the paths the guard itself depends on:
 
-- worker run ID;
-- valid canonical run record;
-- exact session and child PID/process identity;
-- `pid_alive=true`;
-- `result_exists=false`;
-- timestamp/process listing.
+- the canonical `external-execution.json` state path;
+- the current attempt's `out_dir` and `result_path`;
+- the accepted planning artifact when the operation is `planning`.
 
-After reclaim, prove the child remains alive and the result is still absent. The replacement worker must load the unchanged run record, attach to the same PID/session/generation, emit heartbeats, and launch no second Relay. Preserve ordering evidence showing reclaim occurred before the terminal result timestamp.
+Do not build generic artifact manifests or hash-validate every declared file in the MVP. Final deliverables ride native Kanban attachments (`artifacts=[]` on `kanban_complete`), which the completion layer copies to durable per-task storage and uploads with the terminal notification.
 
 ## Acceptance checklist
 
-- [ ] Parent `metadata.stage_result` validates after persistence.
-- [ ] Native top-level attachment paths are readable and do not pollute structured artifacts.
-- [ ] Every structured artifact path exists and matches its declared digest.
-- [ ] Hashes were computed after terminal process exit and remained unchanged through downstream read-back.
-- [ ] Any digest mismatch blocks transition, regardless of product behavior.
-- [ ] Reclaim drill proves a live child, not merely recovery from an already-finished result.
+- [ ] Process exited and `delegate-relay.result.v1` validates (schema, status, exitCode).
+- [ ] Terminal session ID recorded via `record-terminal` when present.
+- [ ] Load-bearing paths exist and are readable.
+- [ ] Deliverables attached through native `kanban_complete` artifacts, not custom manifests.
+- [ ] Any malformed/missing terminal evidence blocks the Card instead of proceeding.

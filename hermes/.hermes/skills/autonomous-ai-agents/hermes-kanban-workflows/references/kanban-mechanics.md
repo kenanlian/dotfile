@@ -48,11 +48,10 @@ Verified 2026-09-01 against live source, CLI, and official docs. Re-verify after
 - Comment injection: comments added after run start are steered into the running worker (watermarked, skips own-author), so a human can PASS/FAIL a running acceptance worker via task comment.
 - Creator wake: `kanban.auto_subscribe_on_create: true` subscribes the creating gateway session to completion+block events.
 
-## Review Lane & Triage
+## Native review config (unused by this workflow)
 
-- `kanban.review_dispatch: true` (default) auto-claims `review`-column tasks and spawns the assignee with bundled `sdlc-review` skill.
-- `kanban.auto_decompose: true` (default) + `auto_decompose_per_tick: 3`: triage cards get aux-LLM decomposition every tick.
-- `request-review` / `request-changes` / `reopen-review` CLI + `kanban_request_review`/`kanban_request_changes` tools form the native same-card review loop — distinct from any in-card external review protocol.
+- `kanban.review_dispatch: true` (default) auto-claims `review`-column tasks and spawns the assignee with bundled `sdlc-review` skill. This workflow keeps `kanban.review_dispatch: false`, never enters `review`, and does not use `request-review`/`request-changes`; those CLI/tools form a native same-card review loop that exists independently of this workflow.
+- `kanban.auto_decompose: true` (default) + `auto_decompose_per_tick: 3`: triage cards get aux-LLM decomposition every tick. This workflow relies on explicit converged Cards, not auto-decompose.
 
 ## Dead-but-Present Metadata
 
@@ -61,10 +60,6 @@ Verified 2026-09-01 against live source, CLI, and official docs. Re-verify after
 ## Cron Delivery Envelope (verified 2026-09-05, `cron/scheduler.py::_deliver_result`)
 
 - Envelope is hardcoded Python at delivery time: `Cronjob Response: {task_name}\n(job_id: {id})\n---\n\n{content}\n\nTo stop or manage this job…` — the model produces only `{content}`; identity labeling never depends on model compliance.
-- `cron.wrap_response` (default true) toggles the whole envelope on/off; no custom template exists. Deterministic labels must ride the job NAME, which is interpolated verbatim (e.g. `[monitor] t_xxx development-monitor`).
+- `cron.wrap_response` (default true) toggles the whole envelope on/off; no custom template exists. Deterministic labels must ride the job NAME, which is interpolated verbatim (e.g. `[status] development-status-digest`).
 - Envelope text is load-bearing: the yuanbao adapter branches on `content.startswith("Cronjob Response: ")`.
-- Chat-side lane identity (observed 2026-09-05, t_46522855): monitor reports arrive enveloped (session ids prefixed `cron_`); dispatcher-worker prose never reaches chat (stdout → `<board-root>/logs/`); a quote-reply to an enveloped cron message is delivered to the interactive session, not the cron session — never treat it as resuming the cron worker.
-
-## Old-Asset Baseline (this machine)
-
-- Dev-monitoring suite: `~/.hermes/tests/test_development_monitor_state.py` + `test_development_resume.py` — slim `development-monitor.v2` (one monotonic `generation`, silent healthy RUNNING, historical `--resume --check` only).
+- Chat-side lane identity (observed 2026-09-05, t_46522855): reports from scheduled jobs arrive enveloped (session ids prefixed `cron_`); dispatcher-worker prose never reaches chat (stdout → `<board-root>/logs/`); a quote-reply to an enveloped cron message is delivered to the interactive session, not the cron session — never treat it as resuming the cron worker.

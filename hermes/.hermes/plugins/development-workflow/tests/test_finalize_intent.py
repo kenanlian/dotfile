@@ -1,7 +1,10 @@
 """Focused tests for the development-workflow plugin's kanban_finalize_intent.
 
-Runs against the real Hermes Kanban DB API (``hermes_cli.kanban_db``) with an
-isolated temporary ``HERMES_HOME`` per test — the live board is never touched.
+Runs against the real Hermes Kanban DB API (``hermes_cli.kanban_db`` plus
+``hermes_cli.kanban_db_connect.connect``) with an isolated temporary
+``HERMES_HOME`` per test — the live board is never touched. The suite must
+stay free of ``HermesPluginCompatWarning``: no code path may touch the
+deprecated ``kanban_db.connect`` facade.
 
 Run with the installed Hermes interpreter:
 
@@ -20,6 +23,7 @@ import os
 import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
@@ -57,6 +61,8 @@ except ImportError:
     import hermes_cli.kanban_db  # noqa: F401
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_connect import connect
+from hermes_cli.plugin_compat import HermesPluginCompatWarning
 
 # ---------------------------------------------------------------------------
 # Load the plugin package exactly like PluginManager._load_directory_module
@@ -144,50 +150,45 @@ def converged_body(
     coding_agent: str = "pi",
     goal: str = "Ship the guard.",
     acceptance: str = "- `hermes plugins doctor development-workflow` passes.",
+    included_scope: str = "- the plugin",
+    non_goals: str = "- Hermes Core changes",
+    settled_decisions: str = "- reuse specify_triage_task()",
     open_decisions: str = "None",
+    repository_grounding: str = (
+        "- dotfile repo: hermes/.hermes/plugins/development-workflow"
+    ),
+    authority_boundaries: str = "- no commits, no pushes",
+    manual_acceptance: str | None = "[]",
 ) -> str:
-    return (
-        "---\n"
-        "schema: development-task.v1\n"
-        f"intent: {intent}\n"
-        f"execution_route: {execution_route}\n"
-        f"ui_acceptance: {ui_acceptance}\n"
-        "manual_acceptance: []\n"
-        f"coding_agent: {coding_agent}\n"
-        "---\n"
-        "\n"
-        "# Goal\n"
-        "\n"
-        f"{goal}\n"
-        "\n"
-        "# Observable acceptance\n"
-        "\n"
-        f"{acceptance}\n"
-        "\n"
-        "# Included scope\n"
-        "\n"
-        "- the plugin\n"
-        "\n"
-        "# Non-goals\n"
-        "\n"
-        "- Hermes Core changes\n"
-        "\n"
-        "# Settled decisions\n"
-        "\n"
-        "- reuse specify_triage_task()\n"
-        "\n"
-        "# Open decisions\n"
-        "\n"
-        f"{open_decisions}\n"
-        "\n"
-        "# Repository grounding\n"
-        "\n"
-        "- dotfile repo: hermes/.hermes/plugins/development-workflow\n"
-        "\n"
-        "# Authority boundaries\n"
-        "\n"
-        "- no commits, no pushes\n"
+    """Render a converged development-task.v1 body with overridable parts.
+
+    ``manual_acceptance`` is inserted verbatim into the frontmatter (YAML
+    flow style works, e.g. ``'["click through the flow"]'``); ``None``
+    omits the key entirely.
+    """
+    frontmatter = [
+        "---",
+        "schema: development-task.v1",
+        f"intent: {intent}",
+        f"execution_route: {execution_route}",
+        f"ui_acceptance: {ui_acceptance}",
+    ]
+    if manual_acceptance is not None:
+        frontmatter.append(f"manual_acceptance: {manual_acceptance}")
+    frontmatter.append(f"coding_agent: {coding_agent}")
+    sections = (
+        ("Goal", goal),
+        ("Observable acceptance", acceptance),
+        ("Included scope", included_scope),
+        ("Non-goals", non_goals),
+        ("Settled decisions", settled_decisions),
+        ("Open decisions", open_decisions),
+        ("Repository grounding", repository_grounding),
+        ("Authority boundaries", authority_boundaries),
     )
+    body = "\n".join(frontmatter) + "\n---\n\n"
+    body += "\n\n".join(f"# {name}\n\n{content}" for name, content in sections)
+    return body + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +233,7 @@ class IsolatedKanbanHome(unittest.TestCase):
     # -- helpers -------------------------------------------------------------
 
     def create_triage_card(self, *, title="Dev task", body=None, assignee="default"):
-        with kb.connect() as conn:
+        with connect() as conn:
             return kb.create_task(
                 conn,
                 title=title,
@@ -265,7 +266,7 @@ class TestGuards(IsolatedKanbanHome):
         # Schema-level gate agrees.
         self.assertFalse(tools.check_finalize_intent_available())
         # Nothing was mutated.
-        with kb.connect() as conn:
+        with connect() as conn:
             self.assertEqual(kb.get_task(conn, tid).status, "triage")
 
     def test_dispatcher_task_worker_refused(self) -> None:
@@ -276,7 +277,7 @@ class TestGuards(IsolatedKanbanHome):
         self.assertEqual(result.get("stage"), "guard")
         self.assertIn("Origin", result.get("error", ""))
         self.assertFalse(tools.check_finalize_intent_available())
-        with kb.connect() as conn:
+        with connect() as conn:
             self.assertEqual(kb.get_task(conn, tid).status, "triage")
 
     def test_plain_orchestrator_context_available(self) -> None:
@@ -313,7 +314,7 @@ class TestInputsAndPreconditions(IsolatedKanbanHome):
         self.assertIn("not found", result.get("error", ""))
 
     def test_non_triage_card_rejected(self) -> None:
-        with kb.connect() as conn:
+        with connect() as conn:
             ready_id = kb.create_task(
                 conn, title="Plain task", assignee="default"
             )
@@ -329,7 +330,7 @@ class TestInputsAndPreconditions(IsolatedKanbanHome):
         self.assertFalse(result.get("ok"))
         self.assertEqual(result.get("stage"), "precondition")
         self.assertIn("other-profile", result.get("error", ""))
-        with kb.connect() as conn:
+        with connect() as conn:
             self.assertEqual(kb.get_task(conn, tid).status, "triage")
 
     def test_invalid_board_slug_rejected(self) -> None:
@@ -351,7 +352,7 @@ class TestContractValidation(IsolatedKanbanHome):
         self.assertFalse(result.get("ok"))
         self.assertEqual(result.get("stage"), "contract")
         self.assertIn(needle, json.dumps(result))
-        with kb.connect() as conn:
+        with connect() as conn:
             self.assertEqual(kb.get_task(conn, tid).status, "triage")
 
     def test_draft_intent_rejected(self) -> None:
@@ -414,6 +415,87 @@ class TestContractValidation(IsolatedKanbanHome):
                 )
                 self.assertTrue(result.get("ok"), result)
 
+    # -- manual_acceptance frontmatter rules --------------------------------
+
+    def test_manual_acceptance_non_list_rejected(self) -> None:
+        self.finalize_expect_violation(
+            converged_body(manual_acceptance='"click through the flow"'),
+            needle="manual_acceptance",
+        )
+
+    def test_manual_acceptance_empty_string_item_rejected(self) -> None:
+        self.finalize_expect_violation(
+            converged_body(manual_acceptance='[""]'), needle="manual_acceptance"
+        )
+
+    def test_manual_acceptance_non_string_item_rejected(self) -> None:
+        self.finalize_expect_violation(
+            converged_body(manual_acceptance="[3, true]"),
+            needle="manual_acceptance",
+        )
+
+    def test_manual_acceptance_with_ui_not_required_rejected(self) -> None:
+        self.finalize_expect_violation(
+            converged_body(
+                ui_acceptance="not-required",
+                manual_acceptance='["click through the flow"]',
+            ),
+            needle="manual_acceptance",
+        )
+
+    def test_manual_acceptance_with_ui_required_accepted(self) -> None:
+        tid = self.create_triage_card()
+        result = self.call(
+            task_id=tid,
+            body=converged_body(
+                ui_acceptance="required",
+                manual_acceptance='["click through the flow"]',
+            ),
+        )
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(result.get("status"), "ready")
+
+    def test_absent_manual_acceptance_rejected(self) -> None:
+        self.finalize_expect_violation(
+            converged_body(manual_acceptance=None), needle="manual_acceptance"
+        )
+
+    def test_empty_manual_acceptance_with_ui_required_accepted(self) -> None:
+        tid = self.create_triage_card()
+        result = self.call(
+            task_id=tid,
+            body=converged_body(ui_acceptance="required", manual_acceptance="[]"),
+        )
+        self.assertTrue(result.get("ok"), result)
+
+    # -- substantive section rules ------------------------------------------
+
+    def test_included_scope_empty_rejected(self) -> None:
+        self.finalize_expect_violation(
+            converged_body(included_scope=""), needle="Included scope"
+        )
+
+    def test_included_scope_literal_none_rejected(self) -> None:
+        self.finalize_expect_violation(
+            converged_body(included_scope="None"), needle="Included scope"
+        )
+
+    def test_authority_boundaries_empty_rejected(self) -> None:
+        self.finalize_expect_violation(
+            converged_body(authority_boundaries=""), needle="Authority boundaries"
+        )
+
+    def test_authority_boundaries_literal_none_rejected(self) -> None:
+        self.finalize_expect_violation(
+            converged_body(authority_boundaries="None"),
+            needle="Authority boundaries",
+        )
+
+    def test_non_goals_literal_none_accepted(self) -> None:
+        tid = self.create_triage_card()
+        result = self.call(task_id=tid, body=converged_body(non_goals="None"))
+        self.assertTrue(result.get("ok"), result)
+
 
 # ---------------------------------------------------------------------------
 # Successful finalization + read-back verification
@@ -438,7 +520,7 @@ class TestFinalization(IsolatedKanbanHome):
             },
         )
         # Independent read-back through the DB API.
-        with kb.connect() as conn:
+        with connect() as conn:
             task = kb.get_task(conn, tid)
             self.assertEqual(task.status, "ready")
             self.assertEqual(task.title, "Dev task (converged)")
@@ -452,11 +534,11 @@ class TestFinalization(IsolatedKanbanHome):
         tid = self.create_triage_card(assignee=None)
         result = self.call(task_id=tid, body=converged_body())
         self.assertTrue(result.get("ok"), result)
-        with kb.connect() as conn:
+        with connect() as conn:
             self.assertEqual(kb.get_task(conn, tid).assignee, "default")
 
     def test_parent_gated_card_lands_todo_then_promotes(self) -> None:
-        with kb.connect() as conn:
+        with connect() as conn:
             parent_id = kb.create_task(
                 conn, title="Parent", assignee="default"
             )
@@ -477,7 +559,7 @@ class TestFinalization(IsolatedKanbanHome):
         self.assertTrue(result.get("parent_gated"))
         self.assertEqual(result.get("open_parents"), [parent_id])
 
-        with kb.connect() as conn:
+        with connect() as conn:
             self.assertEqual(kb.get_task(conn, child_id).status, "todo")
             # Parent completion promotes the child through the native path.
             self.assertTrue(kb.complete_task(conn, parent_id, result="done"))
@@ -485,7 +567,7 @@ class TestFinalization(IsolatedKanbanHome):
             self.assertEqual(kb.get_task(conn, child_id).status, "ready")
 
     def test_done_parent_card_lands_ready_immediately(self) -> None:
-        with kb.connect() as conn:
+        with connect() as conn:
             parent_id = kb.create_task(conn, title="Parent", assignee="default")
             kb.complete_task(conn, parent_id, result="done")
             child_id = kb.create_task(
@@ -500,6 +582,34 @@ class TestFinalization(IsolatedKanbanHome):
         result = self.call(task_id=child_id, body=converged_body())
         self.assertTrue(result.get("ok"), result)
         self.assertEqual(result.get("status"), "ready")
+
+
+# ---------------------------------------------------------------------------
+# Deprecated-path hygiene: the handler must complete with
+# HermesPluginCompatWarning promoted to an error (no code path may touch
+# the ``kanban_db.connect`` facade).
+# ---------------------------------------------------------------------------
+
+class TestCompatWarningHygiene(IsolatedKanbanHome):
+    def test_registration_and_handler_are_compat_warning_clean(self) -> None:
+        tid = self.create_triage_card()
+        recorded = {}
+
+        class RecordingCtx:
+            def register_tool(self, **kwargs):
+                recorded.update(kwargs)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", HermesPluginCompatWarning)
+            _plugin.register(RecordingCtx())
+            raw = recorded["handler"](
+                {"task_id": tid, "body": converged_body()}
+            )
+        result = json.loads(raw)
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(result.get("status"), "ready")
+        with connect() as conn:
+            self.assertEqual(kb.get_task(conn, tid).status, "ready")
 
 
 # ---------------------------------------------------------------------------

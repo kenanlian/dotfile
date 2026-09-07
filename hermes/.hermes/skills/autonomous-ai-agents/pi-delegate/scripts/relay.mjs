@@ -59,7 +59,8 @@
  * artifacts and working tree are preserved (nothing is cleaned).
  *
  * Exit codes: pre-run usage error exits 2 and writes no result; a missing `pi`
- * binary exits 127 with status pi_unavailable; otherwise exit mirrors the
+ * binary exits 127 with status unavailable (`sourceStatus` keeps the
+ * tool-specific value); otherwise exit mirrors the
  * mapped terminal status (0 completed, non-zero otherwise).
  */
 
@@ -626,7 +627,8 @@ async function main() {
   const writeResult = makeResultWriter(opts, probe.version, run);
   if (!probe.version && !probe.error) {
     const result = writeResult({
-      status: "pi_unavailable",
+      status: "unavailable",
+      sourceStatus: "pi_unavailable",
       exitCode: 127,
       signal: null,
       sessionId: opts.session,

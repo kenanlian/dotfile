@@ -75,8 +75,8 @@ The "verify death" trap fired end-to-end. Chain:
    it set up an mtime/diff-hash watch), switched to read-only, re-verified the
    implementer's tree after it went quiet, settled 21:45 rc=0 with a disclosure report.
 6. Loop grep found settled → exit 0. No `result.json`/`final.txt` on disk (raw loop
-   has no relay wrapper and no harvest step) → development-monitor.v2 stuck RUNNING,
-   cron no-op every 10 min until manual takeover.
+   has no relay wrapper and no harvest step) → outer workflow status stuck until
+   manual takeover.
 
 Forensic discriminators (what settled each hypothesis):
 
@@ -97,7 +97,8 @@ Recovery recipe:
 1. Confirm all writers dead: `lsof <events>` empty, `pgrep -f <session-id>` empty.
 2. Harvest the final report from the LAST settled segment (last assistant `text` in
    `message_end`); rebuild `final.txt`; synthesize `result.json`
-   (delegate-relay.result.v1, status from settled) → monitor reaches terminal.
+   (delegate-relay.result.v1, status from settled) so the outer workflow sees a
+   terminal result.
 3. Treat a dual-writer completion as UNVERIFIED until one stream reviewed the final
    tree — here the reviewer stream's independent gates (lint 0 / tsc / svelte-check 0 /
    build / 1736 tests, baseline 1704) are the acceptance evidence; working tree left
@@ -108,11 +109,6 @@ after any loop exit, final.txt/result.json are still owed by the supervisor.
 
 ## Related
 
-- Monitor wiring (development-monitor.v2 state + wrapper + Cron) is owned by the
-  Hermes dev Relay workflow, not this skill; only the per-attempt loop lives here.
-- Relay-init gotcha (2026-09-05, for whoever owns that workflow): the current
-  `new_monitor_state(card_id, project, repo, origin, goal, operation=None)` in
-  `~/.hermes/scripts/development_relay_gate.py` rejects the `product=`/`mode=`/
-  `evidence_dir=` kwargs that older `init_monitor.py` examples pass — TypeError.
-  Verify `inspect.signature` before reusing an old example; acceptance criteria
-  belong in the card body, `goal` alone is the product intent.
+- Outer workflow wiring (duplicate-spawn prevention, session recording, landing) is
+  owned by the Hermes development workflow's external execution guard, not this
+  skill; only the per-attempt loop lives here.

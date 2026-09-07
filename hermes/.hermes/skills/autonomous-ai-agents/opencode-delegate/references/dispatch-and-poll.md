@@ -73,7 +73,8 @@ Artifacts default outside the repository:
 
 Important result fields:
 
-- `status`: `completed` | `failed` | `timeout` | `aborted` | `opencode_unavailable`.
+- `status`: `completed` | `failed` | `timeout` | `aborted` | `unavailable` (missing binary;
+  `sourceStatus` keeps the tool-specific `opencode_unavailable`).
 - `exitCode`, `signal`, `opencodeVersion`, timestamps, and artifact paths.
 - `sessionId`: exact session for `--session` resume.
 - `requestedModel`, `requestedVariant`, `requestedAgent` and exported `resolvedModel`, `resolvedVariant`, `resolvedAgent`.
@@ -88,11 +89,11 @@ Important result fields:
 
 The Relay blocks. Run it as a background process for long tasks. Completion requires both child-process exit and a terminal `result.json` status. A text event alone is not completion.
 
-A usage error exits `2` before artifact creation. A missing binary exits `127` and writes `status: opencode_unavailable` after the brief has validated and the output directory exists.
+A usage error exits `2` before artifact creation. A missing binary exits `127` and writes `status: unavailable` after the brief has validated and the output directory exists.
 
 ## Failure handling
 
-- `opencode_unavailable`: install OpenCode and verify PATH.
+- `unavailable`: install OpenCode and verify PATH.
 - `failed`: inspect `error`, `stderrTail`, and `events.jsonl`; common causes are provider/auth errors, invalid model or variant, a missing session, or a permission denial.
 - `timeout`: the Relay sent SIGTERM and then SIGKILL after a grace period. Preserve and inspect the working tree.
 - `aborted`: the Relay received SIGTERM, SIGINT, or SIGHUP and forwarded termination to OpenCode. Preserve artifacts and inspect before resuming.

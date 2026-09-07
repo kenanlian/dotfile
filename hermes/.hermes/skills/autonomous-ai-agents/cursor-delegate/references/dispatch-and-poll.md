@@ -62,7 +62,9 @@ inside the worktree can make the artifacts appear there:
 `result.json` fields:
 
 - `schema`, `tool` (`"agent"`), `status` (`completed` | `failed` | `timeout` | `aborted` |
-  `cursor_agent_unavailable`), `exitCode`, and `signal` (`null` unless the child died on a signal).
+  `unavailable`), `exitCode`, and `signal` (`null` unless the child died on a signal). A missing
+  binary reports `unavailable` with `sourceStatus` keeping the tool-specific
+  `cursor_agent_unavailable`.
 - `workdir`, `model` (the requested name or `null`), `resolvedModel` (the model Cursor actually
   served, from its init event), `permissionMode` (the mode Cursor reported applying), `readOnly`,
   `force`, `sandbox` (the requested value or `null`, not a claim about what Cursor applied),
@@ -90,11 +92,11 @@ and poll for `result.json`. The run is done only when the process exits and the 
 `status`.
 
 A pre-run usage error exits 2 and writes no result. A missing `agent` exits 127 and writes
-`status: "cursor_agent_unavailable"`.
+`status: "unavailable"` (`sourceStatus`: `cursor_agent_unavailable`).
 
 ## When a run misbehaves
 
-- **`status: "cursor_agent_unavailable"` (exit 127):** install the Cursor CLI, authenticate with
+- **`status: "unavailable"` (exit 127):** install the Cursor CLI, authenticate with
   `agent login`, and re-dispatch.
 - **`status: "failed"`:** read `stderrTail`, `stderrPath`, and the tail of `events.jsonl`. If the
   result event carried `is_error: true` the relay reports `failed` even on a zero exit; Cursor's own
@@ -158,5 +160,6 @@ values are quoted.
 
 ## The commit boundary
 
-The relay never commits. Cursor edits the working tree; the orchestrator reviews, re-runs the gates,
-and commits. See [review-and-land.md](review-and-land.md).
+The relay never commits. Cursor edits the working tree; the Execution Worker lands intended
+files under the external guard's Git baseline and `Kanban-Task` trailer rule. See the
+`development-orchestrator` skill.

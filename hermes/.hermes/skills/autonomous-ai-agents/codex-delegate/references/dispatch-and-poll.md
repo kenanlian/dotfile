@@ -63,7 +63,7 @@ filtered environment is used for preflight and dispatch.
 `<out-dir>/result.json` is the contract. Fields:
 
 - `schema` — the result-format version (currently `delegate-relay.result.v1`)
-- `status` — `completed` | `failed` | `timeout` | `aborted` | `codex_unavailable`
+- `status` — `completed` | `failed` | `timeout` | `aborted` | `unavailable` (missing binary; `sourceStatus` keeps the tool-specific `codex_unavailable`)
 - `exitCode` — mirrors Codex's exit code; `128` plus the signal number if the child was killed; `127` if `codex` isn't on PATH; on a `timeout` the relay forces a non-zero code even when the child exited `0` after the watchdog's SIGTERM
 - `signal` — the signal that killed the child, otherwise `null`
 - `codexVersion` — the binary that actually ran
@@ -72,7 +72,7 @@ filtered environment is used for preflight and dispatch.
 - `touchedFiles` — `git status --porcelain` lines in the working root: your review starting point. `null` (not `[]`) when git can't report — `git` missing, or a non-repo run under `--skip-git-repo-check`; `[]` means git ran and the tree is clean
 - `briefPath` / `eventsPath` / `finalPath` — the exact brief relay sent, the raw JSONL event stream, and the final-message file
 - `workdir`, `sandbox`, `model`, `effort`, `resumeLast`, `session`, `cleanEnv`, `keepEnv`, `startedAt`, `finishedAt` — `sandbox` is the applied mode, or a note that Codex used its active config on an unqualified resume; `session` is the explicit session id, or `null` for fresh and `--resume-last` runs; `keepEnv` records names only, never values
-- `stderrTail` — last ~20 stderr lines; present on every run that did not complete (`failed`, `timeout`, `aborted`), absent on `completed`, `codex_unavailable`, and launch failures
+- `stderrTail` — last ~20 stderr lines; present on every run that did not complete (`failed`, `timeout`, `aborted`), absent on `completed`, `unavailable`, and launch failures
 - `error` — present on a launch failure, and on `timeout` and `aborted` runs
 
 The helper also prints a summary to stdout and exits with Codex's exit code, so a wrapping script can
@@ -89,14 +89,14 @@ The helper blocks until Codex finishes. Back it with whatever your orchestrator 
   `start /b` in cmd). A run is done when `result.json` exists with a `status`. **But** a pre-run usage
   error (bad args, empty brief) exits with code 2 *before* writing any file — so check the exit code
   too, don't only watch for the file. (A missing `codex` binary exits 127 but *does* write a
-  `result.json` with status `codex_unavailable`.)
+  `result.json` with status `unavailable`.)
 
 Trust the working tree and the process state over any progress display. A run is finished when the
 process has exited and `result.json` is written — not when a status line says so.
 
 ## When a run misbehaves
 
-- **`status: codex_unavailable` (exit 127):** `codex` isn't on PATH or isn't found. Install
+- **`status: unavailable` (exit 127):** `codex` isn't on PATH or isn't found. Install
   (`npm i -g @openai/codex`) and `codex login`, then re-dispatch.
 - **an `error` mentioning `version preflight` (`failed`, or `timeout` at exit 124):** the bounded
   `codex --version` probe exited non-zero or hung past its cap (10s, or `--timeout` when shorter), so
@@ -158,4 +158,5 @@ Two alternatives exist if you ever want them, but the helper is the recommended 
 
 The helper never commits — by design, not omission. Whether Codex's sandbox can write `.git` varies by
 version, OS, and execution path, so relying on it is a coin flip. The robust contract is: Codex edits
-the working tree, the orchestrator reviews and commits. See [review-and-land.md](review-and-land.md).
+the working tree; the Execution Worker lands intended files under the external guard's
+Git baseline and `Kanban-Task` trailer rule. See the `development-orchestrator` skill.

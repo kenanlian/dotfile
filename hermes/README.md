@@ -5,7 +5,10 @@ Stows to `~/.hermes/` (default profile) and `~/.hermes/profiles/executor/`
 symlinks per custom skill:
 
 - `SOUL.md` (both profiles), `memories/MEMORY.md` + `USER.md` (both profiles)
-- `scripts/feishu.py`, `scripts/development_relay_gate.py`
+- `scripts/feishu.py`, `scripts/development_external_guard.py`,
+  `scripts/development_status_digest.py`
+- `cron-launchers/development_status_digest_cron.py`
+- focused workflow tests under `tests/`
 - user plugin `plugins/development-workflow/` (`kanban_finalize_intent`)
 - 23 self-authored skills under `skills/<category>/<name>/`
 - `profiles/executor/skills/devops/feishu-messaging/`
@@ -15,6 +18,41 @@ symlinks per custom skill:
 ```sh
 stow --dir "$PWD" --target "$HOME" hermes
 ```
+
+## Development workflow (minimal MVP)
+
+Hermes Kanban is the sole workflow control plane: statuses, runs, claims,
+heartbeats, stale reclaim, retries, dependencies, handoff, and terminal
+notifications are all native. One Dispatcher-spawned Execution Worker owns a
+development Card from claim to completion or block.
+
+The small fail-closed external guard (`scripts/development_external_guard.py`)
+owns only Relay identity/session/result plus Git baseline/commit evidence. It
+prevents duplicate Coding Agent Relays, records exact-session recovery facts,
+and detects the already-created `Kanban-Task: <card-id>` landing commit; its
+canonical state is
+`~/Secret-Projects/development-artifacts/<board>/tasks/<card-id>/external-execution.json`
+(`development-external-execution.v1`). Ambiguous state (`uncertain`) blocks the
+Card; the guard never guesses that a new spawn is safe.
+
+One global read-only status Digest runs through the existing Cron
+`development-status-digest` (id `7f5731367ce5`, `every 30m`, `no_agent=true`).
+Hermes Cron rejects script symlinks whose resolved target leaves
+`~/.hermes/scripts`, so the job invokes the regular-file
+`development_status_digest_cron.py` launcher; its source is tracked under
+`.hermes/cron-launchers/`, and the launcher executes the stowed
+`development_status_digest.py`. Re-deploy the launcher with:
+
+```sh
+install -m 755 hermes/.hermes/cron-launchers/development_status_digest_cron.py \
+  ~/.hermes/scripts/development_status_digest_cron.py
+```
+
+The Digest prints one line per active development Card (including the external
+Relay state `none/reserved/live/terminal/uncertain`) and is silent when none
+are active. There are no per-Card Crons, monitors, or wrappers, and no Goal
+Mode, review lane, or hook-driven transitions. Workflow prose lives in the
+`development-orchestrator` and `hermes-kanban-workflows` skills.
 
 ## User plugin compatibility
 

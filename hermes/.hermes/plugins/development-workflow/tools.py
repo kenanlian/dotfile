@@ -14,9 +14,17 @@ Design contract (see the development-workflow layering plan):
   workers are refused.
 * Only ``triage`` Cards may be finalized; ``assignee`` must be empty or the
   literal ``default`` and is always set to ``default``.
+* Tightened contract: the required ``manual_acceptance`` frontmatter key
+  must be a list of non-empty strings and must be exactly empty when
+  ``ui_acceptance`` is ``not-required`` (manual acceptance presupposes UI
+  acceptance); Goal, Observable acceptance, Included scope, and Authority
+  boundaries sections must be substantive (never the literal ``None``);
+  Open decisions must be exactly ``None``.
 * Success is claimed only after a read-back that verifies the exact body,
   the assignee, the ``specified`` event, and the parent-gated ``todo`` or
   promoted ``ready`` status.
+* Finalizer only: no post-dispatch amendment editing (that stays Card
+  comments).
 """
 
 from __future__ import annotations
@@ -78,6 +86,7 @@ REQUIRED_FRONTMATTER_KEYS = (
     "intent",
     "execution_route",
     "ui_acceptance",
+    "manual_acceptance",
     "coding_agent",
 )
 
@@ -90,6 +99,15 @@ REQUIRED_SECTIONS = (
     "Settled decisions",
     "Open decisions",
     "Repository grounding",
+    "Authority boundaries",
+)
+
+#: Sections that must carry substantive content before dispatch: non-empty
+#: and not the exact literal ``None`` placeholder.
+SUBSTANTIVE_SECTIONS = (
+    "Goal",
+    "Observable acceptance",
+    "Included scope",
     "Authority boundaries",
 )
 
@@ -219,8 +237,13 @@ def validate_converged(frontmatter: Dict[str, Any], sections: Dict[str, str]) ->
 
     A converged Card must have: the exact schema id, ``intent: converged``,
     a resolved execution route (never ``pending``), a resolved UI acceptance
-    (never ``pending``), a supported coding agent, a non-empty Goal, a
-    non-empty Observable acceptance, and ``Open decisions`` exactly ``None``.
+    (never ``pending``), a supported coding agent, a required
+    ``manual_acceptance`` that is a list of non-empty strings and is empty
+    when ``ui_acceptance`` is ``not-required`` (manual acceptance
+    presupposes UI acceptance), substantive Goal / Observable acceptance /
+    Included scope / Authority boundaries sections (non-empty, never the
+    literal ``None``), and ``Open decisions`` exactly ``None``. Non-goals,
+    Settled decisions, and Repository grounding may be the literal ``None``.
     """
     violations: List[str] = []
 
@@ -282,19 +305,39 @@ def validate_converged(frontmatter: Dict[str, Any], sections: Dict[str, str]) ->
         )
 
     manual = frontmatter.get("manual_acceptance")
-    if "manual_acceptance" in frontmatter and not isinstance(manual, list):
-        violations.append(
-            "manual_acceptance, when present, must be a list (got "
-            f"{type(manual).__name__})"
-        )
+    if "manual_acceptance" in frontmatter:
+        if not isinstance(manual, list):
+            violations.append(
+                "manual_acceptance, when present, must be a list (got "
+                f"{type(manual).__name__})"
+            )
+        else:
+            if any(not isinstance(item, str) or not item.strip() for item in manual):
+                violations.append(
+                    "manual_acceptance items must be non-empty strings "
+                    f"(got {manual!r})"
+                )
+            if ui == "not-required" and manual != []:
+                violations.append(
+                    "manual_acceptance declares items but ui_acceptance is "
+                    "'not-required'; manual acceptance presupposes UI "
+                    "acceptance (classify ui_acceptance as 'required' or "
+                    "clear manual_acceptance)"
+                )
 
-    if not sections.get("Goal"):
-        violations.append("'# Goal' section is empty; a dispatchable Card needs a goal")
-    if not sections.get("Observable acceptance"):
-        violations.append(
-            "'# Observable acceptance' section is empty; a dispatchable Card "
-            "needs observable acceptance criteria"
-        )
+    for section in SUBSTANTIVE_SECTIONS:
+        content = sections.get(section)
+        if not content:
+            violations.append(
+                f"'# {section}' section is empty; a dispatchable Card needs "
+                "substantive content"
+            )
+        elif content == "None":
+            violations.append(
+                f"'# {section}' must be substantive (non-empty, not the "
+                "literal 'None'); only Non-goals, Settled decisions, and "
+                "Repository grounding may be 'None'"
+            )
     open_decisions = sections.get("Open decisions")
     if open_decisions is None:
         violations.append("'# Open decisions' section is missing")
@@ -364,15 +407,21 @@ KANBAN_FINALIZE_INTENT_SCHEMA = {
         "contract and promote it from 'triage' via the native Kanban path. "
         "The body must carry frontmatter with schema=development-task.v1, "
         "intent=converged, execution_route=direct|plan-driven, ui_acceptance="
-        "required|not-required, and coding_agent=pi|cursor|codex|opencode, "
-        "plus the eight fixed sections with a non-empty Goal, a non-empty "
-        "Observable acceptance, and Open decisions exactly 'None'. The Card "
-        "must be in 'triage' with assignee empty or 'default' (the assignee "
-        "is always set to the literal 'default'). After the single atomic "
-        "write, the exact body, assignee, the 'specified' event, and the "
-        "parent-gated todo/ready state are verified by reading the Card "
-        "back. Origin orchestrator sessions only — delegated children and "
-        "task workers are refused."
+        "required|not-required, coding_agent=pi|cursor|codex|opencode, and "
+        "a required manual_acceptance: a list of non-empty strings that "
+        "must be exactly empty unless ui_acceptance is 'required' (manual "
+        "acceptance presupposes UI acceptance). The eight fixed sections "
+        "must be present in order: Goal, Observable acceptance, Included "
+        "scope, and Authority boundaries must be substantive (non-empty and "
+        "not the literal 'None'); Non-goals, Settled decisions, and "
+        "Repository grounding may be 'None'; Open decisions must be exactly "
+        "'None'. The Card must be in 'triage' with assignee empty or "
+        "'default' (the assignee is always set to the literal 'default'). "
+        "After the single atomic write, the exact body, assignee, the "
+        "'specified' event, and the parent-gated todo/ready state are "
+        "verified by reading the Card back. Origin orchestrator sessions "
+        "only — delegated children and task workers are refused. Finalizer "
+        "only: post-dispatch amendments belong in Card comments."
     ),
     "parameters": {
         "type": "object",
@@ -484,10 +533,14 @@ def handle_finalize_intent(args: dict, **kw) -> str:
         )
 
     # -- Connect with Core's own board resolution precedence -----------------
+    # ``connect`` was decomposed into ``hermes_cli.kanban_db_connect``; the
+    # old ``kanban_db.connect`` path only resolves through the plugin-compat
+    # lazy map and emits HermesPluginCompatWarning (removed 2026-09-14).
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect
 
     try:
-        conn = kb.connect(board=board)
+        conn = kanban_db_connect.connect(board=board)
     except ValueError as exc:
         return _finalize_refusal(
             f"invalid board {board!r}: {exc}", stage="input", task_id=task_id

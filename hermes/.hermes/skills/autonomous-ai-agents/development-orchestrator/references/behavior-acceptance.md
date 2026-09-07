@@ -4,7 +4,7 @@ The main Skill requires Watson behavior acceptance only when a task's accepted s
 
 ## Continuous UI-acceptance session
 
-UI acceptance is led by one Watson session, normally the fresh session woken after the top-level implementation Relay reaches a verified terminal state.
+UI acceptance is led by the same Execution Worker that owns the Card, after the top-level implementation Relay reaches a verified terminal state (guard outcome `terminal`).
 
 1. Verify the terminal contract, artifact existence, and process exit.
 2. Confirm the intended build is installed and running in the target renderer.
@@ -107,8 +107,8 @@ Describe behavior, not a guessed code cause. The implementation parent owns diag
 ## Re-enter after UI failure
 
 1. Resume the exact implementation session with the failure packet.
-2. Start one new top-level rework Relay and monitor generation.
-3. After the terminal wake, verify the failed UI scenarios first, then the necessary UI regression.
+2. Record the prior attempt terminal, then start one new top-level rework Relay through the external guard (`start-or-inspect --operation rework`); a further rework round after a recorded-terminal rework attempt needs `--new-attempt`, and every attempt uses a fresh out dir and result path.
+3. After the rework Relay reaches its verified terminal state, verify the failed UI scenarios first, then the necessary UI regression.
 4. Report continuity loss before replacing a non-resumable session.
 
 ## Verdict

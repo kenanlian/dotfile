@@ -65,13 +65,14 @@
  *
  * Exit codes: a pre-run usage error (bad/missing args, empty brief) exits 2
  * before any run and writes no result file; a missing `agent` binary
- * exits 127 and writes status `cursor_agent_unavailable`; otherwise the exit
+ * exits 127 and writes status `unavailable` (`sourceStatus` keeps the
+ * tool-specific `cursor_agent_unavailable`); otherwise the exit
  * code mirrors agent's own (0 success, non-zero failure). If the child
  * dies on a signal, the exit code is 128 plus the signal number and
  * `result.json` records the signal. Once the brief validates, `result.json` is
  * written on every outcome — completed, failed, timeout (the --timeout
  * watchdog fired), aborted (the relay itself was killed and forwarded the kill
- * to agent), or cursor_agent_unavailable.
+ * to agent), or unavailable.
  */
 
 import {spawn, execSync, execFileSync, spawnSync } from "node:child_process";
@@ -453,7 +454,8 @@ function makeResultWriter(opts, version, run) {
 
 function reportUnavailable(writeResult, resultPath) {
   const result = writeResult({
-    status: "cursor_agent_unavailable",
+    status: "unavailable",
+    sourceStatus: "cursor_agent_unavailable",
     exitCode: 127,
     signal: null,
     sessionId: null,

@@ -67,7 +67,8 @@
  * `result.json` records the signal.
  * Once the brief validates, `result.json` is written on every outcome —
  * completed, failed, timeout (the --timeout watchdog fired), aborted (the relay
- * itself was killed and forwarded the kill to codex), or codex_unavailable. An
+ * itself was killed and forwarded the kill to codex), or unavailable (missing
+ * binary; `sourceStatus` keeps the tool-specific value). An
  * orchestrator that polls for the file must therefore also treat a non-zero exit
  * with no file as a usage error.
  */
@@ -453,7 +454,7 @@ function makeResultWriter(opts, version, run) {
 }
 
 function reportUnavailable(writeResult, resultPath) {
-  const result = writeResult({ status: "codex_unavailable", exitCode: 127, signal: null, threadId: null, finalMessage: "", touchedFiles: null });
+  const result = writeResult({ status: "unavailable", sourceStatus: "codex_unavailable", exitCode: 127, signal: null, threadId: null, finalMessage: "", touchedFiles: null });
   printSummary(result, resultPath);
   process.stderr.write("relay: `codex` not found on PATH. Install it (npm i -g @openai/codex) and run `codex login`.\n");
   process.exit(127);
