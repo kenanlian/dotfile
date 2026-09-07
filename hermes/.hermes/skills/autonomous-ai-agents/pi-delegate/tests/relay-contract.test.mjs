@@ -32,8 +32,14 @@ test('extension loading is deterministic: -ne plus explicit -e', () => {
 });
 
 test('completion requires exit 0 + agent_settled + session id', () => {
-  const predicate = /const failedStop = state\.stopReason === "error" \|\| state\.stopReason === "aborted";[\s\S]*?const succeeded =\s*\n?\s*code === 0 && !watchdogFired && !failedStop && state\.settled\s*\n?\s*&& typeof sessionId === "string" && sessionId\.length > 0;/;
+  const predicate = /const failedStop = state\.stopReason === "error" \|\| state\.stopReason === "aborted";[\s\S]*?const succeeded =\s*\n?\s*code === 0 && !watchdogFired && !failedStop && state\.settled\s*\n?\s*&& typeof state\.sessionId === "string" && state\.sessionId\.length > 0\s*\n?\s*&& sessionMatches;/;
   assert.ok(predicate.test(source), 'the completion predicate must be intact');
+});
+
+test('exact-session resume fails closed instead of creating a missing session', () => {
+  assert.match(source, /argv\.push\("--session", opts\.session\)/);
+  assert.doesNotMatch(source, /argv\.push\("--session-id", opts\.session\)/);
+  assert.match(source, /const sessionMatches = !opts\.session \|\| state\.sessionId === opts\.session;/);
 });
 
 test('read-only is the fresh-run default; --write is explicit', () => {

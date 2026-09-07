@@ -278,8 +278,12 @@ def _validate_spawn_paths(args: argparse.Namespace) -> None:
         result_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         raise _bad("out-dir-not-creatable")
-    if args.operation == "planning":
-        plan = Path(args.plan_artifact) if args.plan_artifact else Path("")
+    # ``--plan-artifact`` is a caller-selected input invariant.  Initial
+    # planning has no Plan yet, while execute-plan must supply the accepted
+    # Plan.  Validate whenever the caller provides it; stage policy decides
+    # when it is required.
+    if args.plan_artifact is not None:
+        plan = Path(args.plan_artifact)
         if not plan.is_absolute() or not plan.is_file() \
                 or plan.stat().st_size == 0:
             raise _bad("plan-artifact-invalid")

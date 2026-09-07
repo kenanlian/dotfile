@@ -21,13 +21,15 @@ Why: the Kanban completion layer records native attachment paths under the run m
 
 ## Terminal Relay truth
 
-A completed-looking Relay is incomplete if the process is live or the terminal result is malformed or missing. The terminal contract is the adapter's `delegate-relay.result.v1`:
+A completed-looking Relay is incomplete if the process is live or the terminal result is malformed or missing. This applies both to guard-owned write-mode attempts and native-review-owned read-only attempts. The terminal contract is the adapter's `delegate-relay.result.v1`:
 
 - expected schema and status; `exitCode=0` for success;
 - process exit truth — a result-looking file while the process remains alive is not yet a stable terminal handoff;
 - the pi relay reports `sessionId`; record it through the guard's `record-terminal` so exact-session rework is possible;
 - relays emit a normalized `unavailable` status with `sourceStatus` when the Coding Agent binary is missing;
 - relays never commit; the Worker performs the Card-trailer landing rule.
+
+Only `status: completed` with `exitCode: 0` may advance a stage. `failed`, `timeout`, `aborted`, and `unavailable` are terminal evidence but not successful handoffs. Missing stage-required fields also fail closed. An unexpected Pi-created commit/push is an authority-boundary violation that blocks attribution; it is not silently accepted as Worker landing.
 
 A streamed fragment, progress display, or self-report without the adapter's terminal result contract is not completion.
 

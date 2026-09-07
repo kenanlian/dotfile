@@ -1,6 +1,6 @@
 # External Execution Guard
 
-This is the minimal recovery reference for the development workflow MVP. The guard (`hermes/.hermes/scripts/development_external_guard.py`) is deliberately small and fail-closed: it prevents duplicate Coding Agent Relays, records session/recovery facts, and detects the already-created landing commit. It does not recover crashes automatically and implements no workflow phase machine. Hermes Kanban owns everything else (Card status, runs, claims, heartbeats, stale reclaim, retries, dependencies, handoff, notifications).
+This is the minimal recovery reference for write-mode planning/implementation/rework Relays in the development workflow MVP. The guard (`hermes/.hermes/scripts/development_external_guard.py`) is deliberately small and fail-closed: it prevents duplicate write-mode Coding Agent Relays, records their session/recovery facts, and detects an already-created landing commit. Fresh read-only Card-review Relays do not use this state; their process/result truth is recorded by the native review run. The guard does not recover crashes automatically and implements no workflow phase machine. Hermes Kanban owns everything else (Card status, runs, claims, review rounds, heartbeats, stale reclaim, retries, dependencies, handoff, notifications).
 
 ## CLI
 
@@ -51,7 +51,7 @@ Never hand-edit this file. Do not add Card status, run history, phase, heartbeat
 ## Commands
 
 - **`init --repo /abs/path`** — record Card/repo/Git baseline (HEAD + `git status --porcelain`) once, before the Coding Agent writes.
-- **`start-or-inspect`** — atomically reserve/start once, or report the existing state. Reserves before process creation. `--operation` is `planning`, `execution`, or `rework`; `--plan-artifact` validates the accepted planning artifact when the operation is `planning`. Validate only load-bearing paths: state path, out directory, result file, and that plan artifact.
+- **`start-or-inspect`** — atomically reserve/start once, or report the existing state. Reserves before process creation. `--operation` is `planning`, `execution`, or `rework`. `--plan-artifact`, when supplied, must be an absolute readable non-empty file. Initial `write-plan` omits it because the Plan does not exist yet; `execute-plan` supplies the accepted Plan path; direct execution omits it. Validate only load-bearing paths: state path, out directory, result file, and any supplied Plan artifact.
 - **`inspect`** — classify the existing process/result without mutation. Returns `none` when no attempt exists.
 - **`record-terminal`** — accept a terminal `delegate-relay.result.v1` and record the exact session ID.
 - **`check-run`** — verify the current `HERMES_KANBAN_TASK`/`RUN_ID` still owns the native Card; rejects a stale/reclaimed Worker.
@@ -70,7 +70,7 @@ Classification rules:
 1. Reserve before starting a Relay.
 2. Never start a second Relay while an earlier attempt may exist.
 3. Resume only an exact recorded Coding Agent Session after a known terminal attempt.
-4. Check the current native Kanban run (`check-run`) immediately before Relay start, UI mutation, and Git commit.
+4. Check the current native Kanban run (`check-run`) immediately before a write-mode Relay start, UI mutation, and Git commit.
 5. Detect an already-created commit using the Card-specific Git trailer.
 6. Any ambiguous state blocks the Card; the MVP never guesses that a new spawn is safe.
 

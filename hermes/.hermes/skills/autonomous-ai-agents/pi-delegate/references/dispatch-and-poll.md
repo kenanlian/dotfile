@@ -32,7 +32,7 @@ node "<skill-dir>/scripts/relay.mjs" --brief brief.txt --cd /path/to/repo
 | `--write` | Tool allowlist `read,grep,find,ls,bash,edit,write,delegate_agent`. |
 | `--model <id>` | Explicit `provider/model` id (e.g. `zai-coding-cn/glm-5.3`); a `:thinking` suffix is also accepted. Default: Pi's own configured default. |
 | `--thinking <level>` | `off\|minimal\|low\|medium\|high\|xhigh\|max` (default `high`). |
-| `--session <id>` | Resume one exact Pi session via `--session-id` (create-if-missing). Send only the delta brief. |
+| `--session <id>` | Resume one existing exact Pi session via Pi `--session`; fail if missing or mismatched. Send only the delta brief. |
 | `--timeout <dur>` | Optional relay watchdog (default: off; h/m/s strings). Normal orchestration omits it; a deliberately long guard (`4h`) beats a task estimate. |
 | `--out-dir <dir>` | Artifact directory (default: a fresh directory under the system temp dir). |
 | `-h`, `--help` | Print the relay's header help. |
@@ -42,9 +42,11 @@ always passes `--no-extensions` plus an explicit `-e <delegate-agent-root>` so e
 loading is deterministic: the `delegate_agent` tool exists and nothing implicit loads.
 Global Skills discovery stays enabled; the relay never copies or mirrors Skills.
 
-Per the settled user decision there is NO call_allowlist in this relay: a read-only
-parent may invoke a write-access child through `delegate_agent`. Tool-gating is the
-only access fence, and it applies to the top-level Pi process alone.
+There is no `call_allowlist` in this relay: a `--read-only` parent can still ask
+`delegate_agent` for a write-access child. Tool-gating applies only to the top-level
+Pi process. Therefore every commissioned review brief must forbid the parent and all
+delegated children from writing or invoking write-access children. Treat read-only as
+an instruction boundary, not an OS sandbox.
 
 The brief rides a temp file referenced at Pi's final argv position (`-- @prompt-file`).
 The file remains available while Pi runs and is removed after the child exits; the brief
@@ -110,14 +112,19 @@ and writes `status: "unavailable"`.
 
 ## Session continuity
 
-`--session <id>` maps to Pi's `--session-id`: it resumes the exact session when it
-exists and creates it when it does not. The lifecycle mapping is:
+`--session <id>` maps to Pi's `--session`, not `--session-id`: it resumes an
+existing Session and fails when no match exists. The relay also requires the Session
+ID observed in Pi's event stream to equal the requested full ID. The lifecycle mapping is:
 
 - discussion: fresh `--read-only`; preserve the returned `sessionId`;
 - every follow-up discussion turn: `--session <id> --read-only`;
-- write-plan: `--session <discussion-id> --write`;
+- write-plan: fresh `--write`; never reuse the discussion session;
 - execute-plan: fresh `--write`; preserve the new execution session id;
 - rework: `--session <execution-id> --write`.
+
+Card review relays are always fresh `--read-only` Sessions. They never resume a
+planning/execution Session and are validated directly by the native review run rather
+than the write-mode external guard.
 
 Never replace a resumable session with a fresh agent. If a session file was deleted,
 report continuity loss under the orchestrator's policy.
@@ -130,7 +137,7 @@ The argv is equivalent to:
 pi --mode json -p --no-extensions -e ~/.pi/agent/extensions/delegate-agent \
   --tools read,grep,find,ls,delegate_agent            # or the write set
   [--model provider/model] --thinking high \
-  [--session-id <id>] \
+  [--session <existing-id>] \
   -- @<temp-prompt-file>
 ```
 

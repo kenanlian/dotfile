@@ -42,7 +42,7 @@
  *   --model <id>         Explicit provider-prefixed model, e.g. zai-coding-cn/glm-5.3.
  *                        Optional :thinking suffix also accepted.
  *   --thinking <level>   off|minimal|low|medium|high|xhigh|max. Default: high.
- *   --session <id>       Resume one exact Pi session (--session-id, create-if-missing).
+ *   --session <id>       Resume one existing exact Pi session (--session, fail if missing).
  *   --timeout <dur>      Optional relay-side watchdog (default: off; h/m/s strings).
  *   --out-dir <dir>      Where to write run artifacts (default: fresh temp dir).
  *   -h, --help           Show this help.
@@ -245,7 +245,10 @@ function buildArgv(opts, extensionRoot, promptFile) {
   if (opts.model) argv.push("--model", opts.model);
   argv.push("--thinking", opts.thinking);
   if (opts.session) {
-    argv.push("--session-id", opts.session);
+    // Pi's --session-id creates a missing session, which would silently lose
+    // implement continuity. --session resolves an existing id and fails when
+    // no match exists. The terminal scanner also verifies the exact id.
+    argv.push("--session", opts.session);
   } else {
     // Fresh logical session ids are the caller's choice; without one Pi mints
     // its own, which the relay reports from the session event.
@@ -562,6 +565,7 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
 
     const state = scanner.state;
     const sessionId = state.sessionId || opts.session;
+    const sessionMatches = !opts.session || state.sessionId === opts.session;
     // Honest resolution: provider + modelId are separate stream fields; only
     // prefix when the resolved model id is not already provider-qualified.
     const resolvedModel = state.resolvedModel
@@ -576,7 +580,8 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
     const failedStop = state.stopReason === "error" || state.stopReason === "aborted";
     const succeeded =
       code === 0 && !watchdogFired && !failedStop && state.settled
-      && typeof sessionId === "string" && sessionId.length > 0;
+      && typeof state.sessionId === "string" && state.sessionId.length > 0
+      && sessionMatches;
     let status;
     if (succeeded) status = "completed";
     else if (watchdogFired) status = "timeout";
@@ -590,8 +595,10 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
       error = `pi reported stopReason "${state.stopReason}" on its final message`;
     } else if (!state.settled) {
       error = "pi exited 0 but agent_settled was never observed in the event stream";
-    } else if (!sessionId) {
+    } else if (!state.sessionId) {
       error = "pi exited 0 and settled but no valid session id was observed";
+    } else if (!sessionMatches) {
+      error = `pi resumed unexpected session ${state.sessionId}; expected ${opts.session}`;
     }
     const exitCode = succeeded ? 0 : mapped === 0 ? 1 : mapped;
     const result = writeResult({

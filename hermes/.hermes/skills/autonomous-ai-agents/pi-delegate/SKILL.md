@@ -4,7 +4,7 @@ description: Transport Pi runs for development-orchestrator.
 license: MIT
 compatibility: Requires the `pi` CLI (~/.local/bin/pi) 0.84.4+, Node 18+, and git.
 metadata:
-  version: 0.1.0
+  version: 0.2.0
   hermes:
     related_skills: [development-orchestrator, pi-coding-agent]
 ---
@@ -36,7 +36,7 @@ Classify the whole outer run by its requested deliverable before selecting the m
 
 Models are provider-prefixed (`provider/model`), optionally with a `:thinking` suffix (`pi --model zai-coding-cn/glm-5.3:high`). If the brief's task scoping proves wrong mid-run, stop expansion and reclassify before continuing.
 
-Confirm the intended repository and trust it before passing `--cd`. Pi has no permission wall; `--read-only` is enforced by the tool allowlist below, nothing else.
+Confirm the intended repository and trust it before passing `--cd`. Pi has no permission wall. `--read-only` removes top-level shell/edit/write tools, but `delegate_agent` remains available and can request a write child; review briefs must forbid the parent and every child from writing. This is an instruction boundary, not an OS sandbox.
 
 ## Relay
 
@@ -54,7 +54,7 @@ node <this-skill>/scripts/relay.mjs --brief <file> --cd <repo> [options]
 | `--write` | Tool allowlist `read,grep,find,ls,bash,edit,write,delegate_agent`. |
 | `--model <id>` | Explicit `provider/model[:thinking]` id. |
 | `--thinking <level>` | `off\|minimal\|low\|medium\|high\|xhigh\|max`. Default `high`. |
-| `--session <id>` | Resume one exact Pi session (`--session-id`), create-if-missing. |
+| `--session <id>` | Resume one existing exact Pi session via Pi `--session`; fail if missing or mismatched. |
 | `--timeout <dur>` | Optional relay watchdog; default off. Prefer a long guard (`4h`) over a task estimate. |
 | `--out-dir <dir>` | Artifact directory (default: fresh dir under the system temp dir). |
 | `-h`, `--help` | Relay header help. |
@@ -71,21 +71,25 @@ For product discussion only, start fresh with `--read-only`; follow-ups may resu
 
 ### Explicit write-plan
 
-Start a fresh Planning Parent with `--write` and no Origin `--session`. Begin the brief with `Use the write-plan Skill (discovered from the global Skill root).`, include the complete converged Card contract, and require the exact final Plan path plus top-level gate/artifact outcome. The target Skill owns its internal workflow and allowed planning writes.
+Start a fresh Planning Parent with `--write` and no Origin `--session`. Begin the brief with `Use the write-plan Skill (discovered from the global Skill root).`, include the complete converged Card contract, declare that the outer native Card review owns final plan review, and require the exact final Plan path/SHA plus top-level outcome. The target Skill skips its duplicate internal final-review cycle but owns planning internals and allowed planning writes.
 
 ### Explicit execute-plan
 
-Start a separate fresh Execution Parent with `--write` and no Planning `--session`. Begin the brief with `Use the execute-plan Skill (discovered from the global Skill root).` and include the exact accepted Plan path. Preserve the returned execution `sessionId` for same-scope rework.
+Start a separate fresh Execution Parent with `--write` and no Planning `--session`. Begin the brief with `Use the execute-plan Skill (discovered from the global Skill root).`, include the exact accepted Plan path/SHA, and declare that the outer native Card review owns final patch/conformance review. Preserve the returned execution `sessionId` for same-scope rework.
+
+### Card review
+
+Start every review relay fresh with `--read-only`; never pass a planning/execution `--session`. Begin with the required `review-plan`, `review-patch`, or `review-plan-conformance` Skill directive and exact Plan/commit-range inputs. Explicitly forbid the reviewer and every delegated child from writing or invoking write-access children. Give each relay a unique out dir/result path, wait for process exit, and validate the terminal result directly; the write-mode external guard is not reused by Review Workers.
 
 ### Behavioral rework
 
-Resume the exact execution session with `--session <execution-id> --write` and the observed failure packet. Never replace a resumable execution session with a fresh agent.
+Resume the exact recorded Pi `sessionId` with `--session <session-id> --write` and the observed failure packet. The relay fails when that Session is absent or the observed ID differs; never replace it silently.
 
 ## Result Contract
 
 The relay writes `result.json` (`delegate-relay.result.v1`):
 
-- `schema`, `tool: "pi"`, `status` (`completed` | `failed` | `timeout` | `aborted` | `pi_unavailable`), `exitCode`, `signal`.
+- `schema`, `tool: "pi"`, `status` (`completed` | `failed` | `timeout` | `aborted` | `unavailable`), optional tool-specific `sourceStatus` (for example `pi_unavailable`), `exitCode`, `signal`.
 - `piVersion`, `sessionId`, `cwd`, `mode` (`read-only` | `write`), `requestedModel`, `resolvedModel`, `thinking`, `resumed`.
 - `startedAt`, `finishedAt`, `finalMessage`, `touchedFiles` (git porcelain snapshot under `--cd`), `usage` (last message usage when present).
 - `briefPath`, `finalPath`, `eventsPath`, `stderrPath`, and `error`/`stderrTail` on failure.
@@ -96,7 +100,7 @@ Completion means the Pi process exited and `result.json` exists. A progress disp
 
 ## Boundary
 
-- The target Pi parent owns repository investigation, planning, implementation, tests, internal review, and preparing the product artifact.
+- The target Pi parent owns repository investigation, planning/implementation, tests, internal delegation, and preparing the product artifact. When the commissioning brief declares an outer native Card review, `write-plan`/`execute-plan` skip only their duplicate internal final-review cycles.
 - The target-discovered entry Skill (e.g. `write-plan`) owns internal subagents and domain Skills.
 - Hermes owns product discussion and real behavior acceptance under `development-orchestrator`.
 - This adapter owns only transport mechanics.

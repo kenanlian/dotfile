@@ -4,7 +4,7 @@ The main Skill requires Watson behavior acceptance only when a task's accepted s
 
 ## Continuous UI-acceptance session
 
-UI acceptance is led by the same Execution Worker that owns the Card, after the top-level implementation Relay reaches a verified terminal state (guard outcome `terminal`).
+UI acceptance is led by the Implement Worker for the current implement run, after the top-level implementation Relay reaches a verified terminal state (guard outcome `terminal`) and before landing/review handoff.
 
 1. Verify the terminal contract, artifact existence, and process exit.
 2. Confirm the intended build is installed and running in the target renderer.

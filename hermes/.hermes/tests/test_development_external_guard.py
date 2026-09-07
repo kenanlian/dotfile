@@ -717,15 +717,27 @@ class TestAttemptReplacement(GuardCase):
         self.assertEqual("uncertain", denied["outcome"])
         self.assertEqual(3, self.read_state(card)["attempt"]["number"])
 
-    def test_planning_operation_requires_plan_artifact(self):
-        card = f"t_{uuid.uuid4().hex[:12]}"
-        self.init(card)
-        self.start_or_inspect(card, operation="planning", expect=4)
+    def test_plan_artifact_is_optional_for_planning_and_validated_when_given(self):
+        planning_card = f"t_{uuid.uuid4().hex[:12]}"
+        self.init(planning_card)
+        planning = self.start_or_inspect(planning_card, operation="planning")
+        assert planning is not None
+        self.assertEqual("spawned", planning["outcome"])
+
+        invalid_card = f"t_{uuid.uuid4().hex[:12]}"
+        self.init(invalid_card)
         plan = self.root / "plan.md"
         plan.write_text("", encoding="utf-8")
-        self.start_or_inspect(card, operation="planning", plan=plan, expect=4)
+        rejected = self.start_or_inspect(
+            invalid_card, operation="execution", plan=plan, expect=4)
+        assert rejected is not None
+        self.assertEqual("plan-artifact-invalid", rejected["reason"])
+        self.assertIsNone(self.read_state(invalid_card)["attempt"])
+
+        valid_card = f"t_{uuid.uuid4().hex[:12]}"
+        self.init(valid_card)
         plan.write_text("# Plan\n", encoding="utf-8")
-        out = self.start_or_inspect(card, operation="planning", plan=plan)
+        out = self.start_or_inspect(valid_card, operation="execution", plan=plan)
         self.assertEqual("spawned", out["outcome"])
 
 
