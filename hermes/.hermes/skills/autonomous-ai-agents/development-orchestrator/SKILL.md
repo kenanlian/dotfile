@@ -140,7 +140,7 @@ kanban_show → fail-closed gate
 - Advance beyond Relay handling only when `delegate-relay.result.v1` is terminal with `status: completed`, `exitCode: 0`, the expected mode/session/CWD, and every stage-required output. `unavailable` blocks `capability`; `failed`, `timeout`, or `aborted` never proceed to UI/landing/review and must be reconciled or blocked with the matching typed cause. Missing or ambiguous required output is not success.
 - Relay liveness: bounded observation slices, Kanban heartbeats during long operations, never deliberately exit while `running`. Native stale reclaim and the retry/circuit-breaker own Worker recycling.
 - Every implement brief begins with the stage Skill directive and explicitly says `Outer native Card review owns final review; skip the Pi-internal final review gate.`
-- Rework after `kanban_request_changes` runs in a fresh Implement Worker but resumes the exact recorded Pi implement session. A further rework round after a recorded-terminal rework attempt passes `--new-attempt`; each attempt uses a fresh out dir and result path.
+- Rework after `kanban_request_changes` runs in a fresh Implement Worker but resumes the exact recorded Pi implement session. A further rework round after a recorded-terminal rework attempt starts its next guard attempt with `start-or-inspect --new-attempt` (a guard CLI flag, not a relay flag); every attempt uses a fresh out dir and result path.
 
 ## Review Worker flow
 
