@@ -60,9 +60,10 @@ The former default—executor intake + shared Relay Watchdog + no-agent digest +
 For 柯楠's development workflow (minimal MVP), keep the phases in one place:
 
 1. **Coding phase:** one Dispatcher-spawned Execution Worker owns the Card, starts the Coding Agent Relay through the external execution guard, and observes it itself in bounded slices. No per-Card Cron, monitor, or wrapper exists.
-2. **Status:** one global read-only status Digest Cron reports all active Cards (`no_agent=true`); it never wakes an agent.
-3. **Behavior acceptance:** the same Execution Worker exercises the real renderer and owns the verdict; it may delegate bounded heavy-context scenarios to subagents.
-4. **Rework:** the same Worker resumes the exact recorded Coding Agent session after a terminal attempt; no new monitoring machinery appears.
+2. **Behavior acceptance:** the same Execution Worker exercises the real renderer and owns the verdict; it may delegate bounded heavy-context scenarios to subagents.
+3. **Rework:** the same Worker resumes the exact recorded Coding Agent session after a terminal attempt; no new monitoring machinery appears.
+
+There is no status Digest: the global Cron was removed 2026-09-07. Check active Cards by direct query or native notifications.
 
 Use an executor profile in this workflow only when explicitly requested or when a validation truly requires independent durable execution beyond the Worker's lifetime.
 

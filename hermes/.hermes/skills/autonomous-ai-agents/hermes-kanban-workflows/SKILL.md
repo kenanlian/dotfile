@@ -16,7 +16,7 @@ Exactly two roles ever drive a development Card:
 - **Origin default-profile session** — the interactive session with Kenan. Owns intent convergence, accepted amendment comments, and unblocking; never owns execution.
 - **Execution Worker** — the ONE Dispatcher-spawned worker that owns the Card from claim to completion: every Relay attempt, UI acceptance, landing, and the terminal `kanban_complete`/`kanban_block`.
 
-No scheduled job ever advances, retries, blocks, unblocks, commits, or completes a Card. A scheduled job may only report status (see Status digest).
+No scheduled job ever advances, retries, blocks, unblocks, commits, or completes a Card. No scheduled job exists in this workflow — the global status Digest was removed 2026-09-07 and the Cron job list is empty.
 
 ## Ownership split
 
@@ -38,7 +38,7 @@ Load before creating, finalizing, routing, transitioning, reconciling, or comple
 
 ## Board and Card mechanics
 
-- Each `~/Secret-Projects/<project>` repository uses a dedicated board whose slug is the kebab-case directory basename and whose default workdir is the project root. Hermes self-work and projects outside that tree use `default`.
+- Each active development project under `~/Secret-Projects/` uses a dedicated board whose slug is the kebab-case directory basename and whose default workdir is the project root; a repository without development work needs no board. Hermes self-work and projects outside that tree use `default`.
 - Cards work directly in the trusted repository directory on main under Kenan's convention; do not use scratch/worktree unless the caller explicitly chooses another supported workspace contract.
 - One Card represents one independently closable task. Internal Planning, Execution, Relay attempts, retries, artifacts, and same-scope fixes are not separate Cards.
 - Use native parent links. Parent-blocked children remain `todo` and promote automatically after all parents complete.
@@ -60,7 +60,7 @@ Converged tasks are created directly as dispatchable Cards. `kanban_finalize_int
 - The worker receives `HERMES_KANBAN_DB`, `HERMES_KANBAN_BOARD`, `HERMES_KANBAN_TASK`, and the Card's workdir/skills.
 - Dispatcher workers must begin with `kanban_show()` and end only through `kanban_complete` or a typed `kanban_block`.
 - Interactive orchestrators need the `kanban` toolset; task-scoped workers receive focused lifecycle tools automatically. Orchestrator-only tools remain hidden from delegated children.
-- `kanban.max_in_progress_per_profile` is per board; set it to one for direct-main project work before dispatch. Host-wide limits are separate.
+- There is no per-board concurrency knob. `kanban.max_in_progress_per_profile` in the global `config.yaml` caps concurrent running tasks per profile across ALL boards (the host-wide `kanban.max_in_progress` memory guard is separate). It is set to 1 in Kenan's config, serializing Execution Workers across boards; read it back before dispatching direct-main work.
 - Emit heartbeats during long operations so stale reclaim does not silently recycle active work.
 
 ## Status transitions (native flow)
@@ -86,9 +86,9 @@ schema `development-external-execution.v1`, written only through `development_ex
 
 Never hand-edit the state file, bypass the guard CLI, or infer process safety from prose, PID absence, or elapsed time. Load `references/execution-recovery.md` before initializing, starting, inspecting, resuming, or landing a Card's external execution.
 
-## Status digest
+## Scheduled jobs
 
-Exactly ONE global status Digest Cron exists: `development-status-digest` (existing id `7f5731367ce5`), schedule `every 30m`, `no_agent=true`, profile `default`, delivery to Kenan's expected Feishu conversation. The Cron-safe regular-file launcher `~/.hermes/scripts/development_status_digest_cron.py` executes the dotfile-tracked read-only `development_status_digest.py` (Cron rejects script symlinks that resolve outside its scripts directory). It prints one line per active development Card, including the external Relay state `none/reserved/live/terminal/uncertain`, and is silent when none are active. It never mutates a Card, guard state, process, Git, or Cron, and never advances, retries, blocks, unblocks, commits, or completes work. No per-Card Cron, monitor, or wrapper exists.
+None. The global status Digest Cron (`development-status-digest`) was removed on 2026-09-07; the Cron job list is empty and no per-Card Cron, monitor, or wrapper exists. Observe active Cards through native Kanban notifications, direct board queries, or the Worker's own heartbeats.
 
 ## Reconciliation
 
@@ -128,7 +128,7 @@ Before reporting success, read back and confirm:
 - the guard state validates: expected schema, single attempt, terminal session ID, recorded commit;
 - `check-run` passes immediately before any Relay start, UI mutation, or Git commit;
 - truthful `delegate-relay.result.v1` terminal truth and load-bearing paths;
-- exactly ONE digest Cron (`development-status-digest`, id `7f5731367ce5`, `every 30m`, `no_agent=true`, default profile) and ZERO per-Card Crons, monitors, or wrappers;
+- ZERO Crons of any kind (no digest Cron, no per-Card Crons, monitors, or wrappers) — the job list must be empty;
 - requested status transition and no unrelated board mutation.
 
 Detailed mechanics live in `references/kanban-mechanics.md`, `references/execution-recovery.md`, and `references/handoff-integrity.md`.

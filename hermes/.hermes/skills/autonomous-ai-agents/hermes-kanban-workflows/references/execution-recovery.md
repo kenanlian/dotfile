@@ -88,6 +88,6 @@ Before commit:
 6. If a matching commit already exists at/after `baseline_head`, record it with `record-commit` and complete without a second commit.
 7. Otherwise create one commit with that trailer, read back its hash and trailer, then `record-commit`.
 
-## Digest mapping
+## Relay-state vocabulary
 
-The global read-only status Digest (Cron id `7f5731367ce5`) shows the external Relay state as exactly `none/reserved/live/terminal/uncertain`. Missing or malformed guard state affects that one line only and never hides the Card's native status.
+The global status Digest was removed on 2026-09-07; no Cron renders Relay state. The vocabulary `none/reserved/live/terminal/uncertain` remains the guard-state vocabulary seen in `inspect` output and guard state files. Missing or malformed guard state never hides the Card's native status.

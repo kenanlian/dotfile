@@ -12,7 +12,7 @@ Feishu 发消息/@人：~/.hermes/scripts/feishu.py send --chat 群名 --at 名�
 §
 Pi 为默认委派宿主（delegate_agent、key 已配）；app 配置本体放 ~/Secret-Projects/dotfile 软链。OpenCode 已降为备选：zhipuai-coding-plan/glm-5.3 variant high（k3 已下线），轻量档 opencode-go/deepseek-v4-pro；dotfile reviewer 允许委派 subagent、勿禁 task。
 §
-开发工作流（minimal MVP）：Hermes Kanban 唯一控制面；一个 Dispatcher 产生的 Execution Worker 持卡到完成/block：kanban_show 验卡 → 外部 guard init/inspect → Pi direct 或 write-plan → fresh execute-plan → 仅在已记录 session 时原 session rework → 需要时真实 renderer UI 验收 → check-run → `Kanban-Task: <card-id>` trailer 单次 commit/read-back → kanban_complete。外部 guard（development_external_guard.py）只防重复 Relay、记录 session/Git baseline/commit，uncertain 即 block；收敛任务直接建可派发卡，`kanban_finalize_intent` 仅限存量 triage/backlog 卡；无 Goal Mode、无 review lane、无每卡 Cron/monitor；主目录真实工作前先把项目 board 并发设为 1。全局只读 digest（Cron 7f5731367ce5）每 30 分钟一行。
+主目录真实工作前确认全局 kanban.max_in_progress_per_profile=1（config.yaml，按 profile 跨所有 board 生效，无 per-board 旋钮）。
 §
 柯楠偏好自动化先做可运行 MVP：默认信任模型指令遵循，只保留高风险防线，遇到真实问题再增强可靠性；讨论先给最小统一接口，不预演复杂失败矩阵；明确“先讨论”时不实施。
 §

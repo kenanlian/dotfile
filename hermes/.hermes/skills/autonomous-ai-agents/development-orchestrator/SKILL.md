@@ -21,7 +21,7 @@ Watson is the user-facing name of the `default` Hermes profile; durable routing 
 
 Hermes Kanban is the sole Card/run/retry/heartbeat/handoff/notification control plane. One Dispatcher-spawned Execution Worker owns a Card from claim to completion or block. The small external execution guard (`development_external_guard.py`, documented in `hermes-kanban-workflows/references/execution-recovery.md`) only prevents duplicate Coding Agent Relays, records session/recovery facts, and detects the Card-trailer landing commit. Ambiguous external state blocks the Card; the Worker never guesses that a new spawn is safe.
 
-There is no Goal Mode, no auto-decompose, no review lane, no per-Card Cron, no monitor, and no hook-driven transition. One global read-only status Digest reports active Cards.
+There is no Goal Mode, no auto-decompose, no review lane, no per-Card Cron, no monitor, no hook-driven transition, and no scheduled job of any kind — the global status Digest was removed 2026-09-07.
 
 ## Layering and ownership
 
@@ -96,11 +96,11 @@ Rules:
 - **Converged tasks** are created directly as dispatchable Cards: `assignee=default`, `skills=[development-orchestrator]`, `workspace_kind=dir` with the exact repository path, and the complete converged body. They become dispatchable `ready` Cards through normal parent gating.
 - **Existing draft/triage/backlog Cards** may still converge through `kanban_finalize_intent`, which validates the complete replacement body and advances the native `triage → todo → ready` path. This tool exits the default path; it is not part of normal dispatch. Draft Cards use `triage=true` while retaining `assignee=default`.
 - Do not enable Goal Mode; do not rely on auto-decompose.
-- Before dispatching real main-directory work, set the project board's `kanban.max_in_progress_per_profile` to one and read it back. This is a Hermes Kanban configuration matter, not a Card-body promise.
+- Before dispatching real main-directory work, verify the global `kanban.max_in_progress_per_profile` in `config.yaml` is 1 — it caps concurrent running tasks per profile across ALL boards (there is no per-board knob), so one Execution Worker runs at a time. This is a Hermes Kanban configuration matter, not a Card-body promise.
 
 ## Legacy Cards
 
-The existing legacy Cards on `obsidian-card-workspace` (`t_5b033bdb`, `t_0af96a52`) stay untouched during implementation and the Pilot; they remain parked until the MVP pilot passes. After activation, a separate explicit mutation set will be proposed for them — either archive and recreate under the new contract, or park in `triage`/`blocked`, update all fields, then promote deliberately. Never change `watson → default` while a Card remains dispatchable `ready`. No automatic legacy migration exists.
+The MVP pilot passed: four Cards completed under the new contract on `obsidian-card-workspace` (F03 Properties, Box/Property 条件整合, 列表 UI 优化, 标签管理). The two legacy Cards are deliberately parked pending a user decision (archive and recreate under `development-task.v1`, or converge their bodies and promote): `t_5b033bdb` is `blocked`/`needs_input`, `t_0af96a52` is `scheduled` (parked, not dispatchable; native `block` cannot fire from `todo`). They must never be dispatched or auto-migrated; `t_5b033bdb`'s stale `watson` assignee stays untouched while parked (changing it to `default` would make the Card dispatchable). No automatic legacy migration exists.
 
 ## Intent convergence
 
@@ -205,9 +205,9 @@ Return to Kenan before ambiguous visible behavior, scope, compatibility, persist
 
 Decisions after dispatch are append-only structured Card comments recorded by the Origin session; the Worker honors body plus amendments in sequence. Conflicting or non-user-approved amendments fail closed to `needs_input`. Repeated same-kind `needs_input` pauses may recurrence-route the Card to `triage`; the Origin folds body plus amendments into one converged body and re-finalizes.
 
-## Status digest
+## Scheduled jobs
 
-Exactly one global read-only status Digest runs through the existing Cron `development-status-digest` (id `7f5731367ce5`, `every 30m`, `no_agent=true`). It prints one line per active development Card, including the external Relay state (`none/reserved/live/terminal/uncertain`), and nothing when none are active. It never mutates anything and never wakes an agent. No per-Card Cron, monitor, or wrapper exists.
+None. The global status Digest Cron (`development-status-digest`) was removed on 2026-09-07; the Cron job list is empty. Active-Card visibility comes from native Kanban terminal notifications and the Worker's own reporting. No per-Card Cron, monitor, or wrapper exists.
 
 ## Invariants
 

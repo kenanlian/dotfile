@@ -113,4 +113,4 @@ Describe behavior, not a guessed code cause. The implementation parent owns diag
 
 ## Verdict
 
-Pass only when every authorized UI scenario is `PASS`. If any is `FAIL`, return the card to `in_progress`; if any is `BLOCKED`, report the blocker and keep the card open. Non-UI checks and residual engineering limitations remain the coding agent's recorded responsibility rather than additional Watson acceptance scenarios.
+Pass only when every authorized UI scenario is `PASS`. If any is `FAIL`, keep the Card `running` and return it to the implementation step via exact-session rework; if any is `BLOCKED`, report the blocker and keep the card open. Non-UI checks and residual engineering limitations remain the coding agent's recorded responsibility rather than additional Watson acceptance scenarios.

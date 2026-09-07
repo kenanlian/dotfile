@@ -60,6 +60,6 @@ Verified 2026-09-01 against live source, CLI, and official docs. Re-verify after
 ## Cron Delivery Envelope (verified 2026-09-05, `cron/scheduler.py::_deliver_result`)
 
 - Envelope is hardcoded Python at delivery time: `Cronjob Response: {task_name}\n(job_id: {id})\n---\n\n{content}\n\nTo stop or manage this job…` — the model produces only `{content}`; identity labeling never depends on model compliance.
-- `cron.wrap_response` (default true) toggles the whole envelope on/off; no custom template exists. Deterministic labels must ride the job NAME, which is interpolated verbatim (e.g. `[status] development-status-digest`).
+- `cron.wrap_response` (default true) toggles the whole envelope off/on; no custom template exists. Deterministic labels must ride the job NAME, which is interpolated verbatim. (Example retired 2026-09-07: the development-status-digest Cron no longer exists; no workflow Cron does.)
 - Envelope text is load-bearing: the yuanbao adapter branches on `content.startswith("Cronjob Response: ")`.
 - Chat-side lane identity (observed 2026-09-05, t_46522855): reports from scheduled jobs arrive enveloped (session ids prefixed `cron_`); dispatcher-worker prose never reaches chat (stdout → `<board-root>/logs/`); a quote-reply to an enveloped cron message is delivered to the interactive session, not the cron session — never treat it as resuming the cron worker.

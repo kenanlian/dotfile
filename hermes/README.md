@@ -5,9 +5,7 @@ Stows to `~/.hermes/` (default profile) and `~/.hermes/profiles/executor/`
 symlinks per custom skill:
 
 - `SOUL.md` (both profiles), `memories/MEMORY.md` + `USER.md` (both profiles)
-- `scripts/feishu.py`, `scripts/development_external_guard.py`,
-  `scripts/development_status_digest.py`
-- `cron-launchers/development_status_digest_cron.py`
+- `scripts/feishu.py`, `scripts/development_external_guard.py`
 - focused workflow tests under `tests/`
 - user plugin `plugins/development-workflow/` (`kanban_finalize_intent`)
 - 23 self-authored skills under `skills/<category>/<name>/`
@@ -35,24 +33,12 @@ canonical state is
 (`development-external-execution.v1`). Ambiguous state (`uncertain`) blocks the
 Card; the guard never guesses that a new spawn is safe.
 
-One global read-only status Digest runs through the existing Cron
-`development-status-digest` (id `7f5731367ce5`, `every 30m`, `no_agent=true`).
-Hermes Cron rejects script symlinks whose resolved target leaves
-`~/.hermes/scripts`, so the job invokes the regular-file
-`development_status_digest_cron.py` launcher; its source is tracked under
-`.hermes/cron-launchers/`, and the launcher executes the stowed
-`development_status_digest.py`. Re-deploy the launcher with:
-
-```sh
-install -m 755 hermes/.hermes/cron-launchers/development_status_digest_cron.py \
-  ~/.hermes/scripts/development_status_digest_cron.py
-```
-
-The Digest prints one line per active development Card (including the external
-Relay state `none/reserved/live/terminal/uncertain`) and is silent when none
-are active. There are no per-Card Crons, monitors, or wrappers, and no Goal
-Mode, review lane, or hook-driven transitions. Workflow prose lives in the
-`development-orchestrator` and `hermes-kanban-workflows` skills.
+The global read-only status Digest was removed on 2026-09-07: the Cron job
+was deleted, and `development_status_digest.py`, its regular-file launcher, and
+its test were removed from this package (git history retains them). There are
+no per-Card Crons, monitors, or wrappers, and no Goal Mode, review lane, or
+hook-driven transitions. Workflow prose lives in the `development-orchestrator`
+and `hermes-kanban-workflows` skills.
 
 ## User plugin compatibility
 

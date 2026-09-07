@@ -2,4 +2,4 @@ Feishu 群 "MISC" 的机器人 open_id 按应用隔离（feishu.py 多 profile �
 §
 feishu.py 局限（executor 实测）：send 的 payload 不含 thread_id，回复进话题需根消息 om_ id（omt_ 传 reply API 会报 invalid id）；找根消息需 im:message.group_msg 权限（当前 app 无）。兜底：send 到群 oc_ id（话题群内落为新话题，@ 仍生效），或依赖会话自身回复进 thread。
 §
-项目开发监控/验收职责已于 2026-09-01 移交回华生（任务专属 script-gated Cron 架构）。小龙不再接收 Relay 监控交接单、不部署 watchdog/digest cron、不做行为验收；仅在华生或柯楠明确单独委派时参与具体任务。
+项目开发监控/验收职责已于 2026-09-01 移交回华生；2026-09-07 起全局 digest Cron 也已移除（无任何工作流 Cron）。小龙不接收 Relay 监控交接单、不部署 watchdog/digest cron、不做行为验收；仅在华生或柯楠明确单独委派时参与具体任务。
