@@ -62,6 +62,8 @@ Converged tasks are created directly as dispatchable Cards. `kanban_finalize_int
 - Interactive orchestrators need the `kanban` toolset; task-scoped workers receive focused lifecycle tools automatically. Orchestrator-only tools remain hidden from delegated children.
 - There is no per-board concurrency knob. `kanban.max_in_progress_per_profile` in the global `config.yaml` caps concurrent running tasks per profile across ALL boards (the host-wide `kanban.max_in_progress` memory guard is separate). It is set to 1 in Kenan's config, serializing Execution Workers across boards; read it back before dispatching direct-main work.
 - Emit heartbeats during long operations so stale reclaim does not silently recycle active work.
+- Before supervising a long background Relay, verify the Worker's effective wait ceiling. `process_manage(wait)` is clamped by `TERMINAL_TIMEOUT`; for a Card with `max_runtime_seconds`, Dispatcher raises the worker-scoped ceiling to `max_runtime_seconds - 30` seconds when needed.
+- For Relays expected to run longer than a few minutes, prefer 30–50 minute `process_manage(wait)` slices when the ceiling permits, then heartbeat before the next slice. Do not wake the model every few minutes, and do not reread `result.json` or the event stream while the process is still live; consume terminal artifacts only after process exit or during crash/reclaim reconciliation.
 
 ## Status transitions (native flow)
 
@@ -70,7 +72,8 @@ Use native lifecycle tools, not raw SQL. This workflow uses only:
 - draft specification: `triage → todo`, then `recompute_ready()` promotes to `ready` if parent gates are closed;
 - Dispatcher claim: `ready → running`;
 - completion: `running → done` via `kanban_complete` after landing;
-- blocker: `running → blocked` with the typed `dependency | needs_input | capability | transient` kind that matches reality; unblock returns the Card to dispatch.
+- blocker: `running → blocked` with the typed `dependency | needs_input | capability | transient` kind that matches reality; unblock returns the Card to dispatch;
+- parking: `block` fires ONLY from `running`/`ready`; to park a `todo` Card non-dispatchably use `schedule` (`todo/ready/running/blocked → scheduled`, not claimable; `unblock` re-gates it).
 
 There is no review lane in this workflow; UI acceptance runs inside the owning Worker while the Card stays `running`. Keep `kanban.review_dispatch: false` — this is a configuration fact; acceptance policy belongs to `development-orchestrator`.
 
@@ -118,6 +121,7 @@ A completed-looking Relay is incomplete if the process is live or the terminal `
 6. `workflow_template_id` and `current_step_key` are metadata, not Dispatcher routing.
 7. Native top-level `artifacts` are attachment paths; keep structured result objects under a nested metadata key to avoid collisions.
 8. Manage Cron jobs only through the supported Cron API/tool surface. Never remove or materially edit a job from inside its own active fire.
+9. In the Kanban CLI, `--board` is a parent-level flag: place it BEFORE the subcommand (`hermes kanban --board <slug> block ...`); positioned after the subcommand it is parsed as a task argument and the call fails.
 
 ## Verification
 
@@ -128,7 +132,7 @@ Before reporting success, read back and confirm:
 - the guard state validates: expected schema, single attempt, terminal session ID, recorded commit;
 - `check-run` passes immediately before any Relay start, UI mutation, or Git commit;
 - truthful `delegate-relay.result.v1` terminal truth and load-bearing paths;
-- ZERO Crons of any kind (no digest Cron, no per-Card Crons, monitors, or wrappers) — the job list must be empty;
+- the Cron job list matches the current scheduled-jobs decision in §Scheduled jobs (empty as of 2026-09-07) with no per-Card Crons, monitors, or wrappers — check the live list, do not assert it;
 - requested status transition and no unrelated board mutation.
 
 Detailed mechanics live in `references/kanban-mechanics.md`, `references/execution-recovery.md`, and `references/handoff-integrity.md`.
