@@ -48,10 +48,11 @@ Verified 2026-09-01 against live source, CLI, and official docs. Re-verify after
 - Comment injection: comments added after run start are steered into the running worker (watermarked, skips own-author), so a human can PASS/FAIL a running acceptance worker via task comment.
 - Creator wake: `kanban.auto_subscribe_on_create: true` subscribes the creating gateway session to completion+block events.
 
-## Native review config (unused by this workflow)
+## Native review config (in use by this workflow since 2026-09-07)
 
-- `kanban.review_dispatch: true` (default) auto-claims `review`-column tasks and spawns the assignee with bundled `sdlc-review` skill. This workflow keeps `kanban.review_dispatch: false`, never enters `review`, and does not use `request-review`/`request-changes`; those CLI/tools form a native same-card review loop that exists independently of this workflow.
-- `kanban.auto_decompose: true` (default) + `auto_decompose_per_tick: 3`: triage cards get aux-LLM decomposition every tick. This workflow relies on explicit converged Cards, not auto-decompose.
+- `kanban.review_dispatch` (default true) auto-claims `review`-column tasks and spawns the assignee with bundled `sdlc-review` skill plus card-pinned skills. Kenan's config now sets it to `true` (flipped 2026-09-07 for the two-stage-card in-card review model); stage Cards use `request-review`/`request-changes` as their review loop.
+- `kanban.auto_decompose` is false in Kenan's config; draft cards sit in `triage` untouched by aux-LLM decomposition. Convergence is Kenan-driven via `kanban_finalize_intent`.
+- Dispatcher force-loads `sdlc-review` onto review-lane claims (`kanban_db_dispatch.py` review branch merges it into `claimed.skills`); card-pinned adapter skills load alongside and the calling orchestrator's commissioning map takes precedence for inspection method.
 
 ## Dead-but-Present Metadata
 
