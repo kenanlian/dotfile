@@ -1,7 +1,7 @@
 ---
 name: hermes-kanban-workflows
 description: "Use when building or verifying Hermes Kanban workflows."
-version: 3.0.0
+version: 3.0.1
 tags: [kanban, multi-agent, dispatcher, relay, external-guard, workflow, verification]
 ---
 
@@ -73,7 +73,7 @@ Use native lifecycle tools, not raw SQL. This workflow uses only:
 - draft specification: `triage → todo`, then `recompute_ready()` promotes to `ready` if parent gates are closed;
 - Dispatcher claim: `ready → running`;
 - completion: `running → done` via `kanban_complete` after landing;
-- stage handoff: implement `running → review` via `kanban_request_review(reviewer="default")`;
+- stage handoff: implement `running → review` via `kanban_request_review(...)` with `reviewer` omitted, using Kanban's native default reviewer routing (and persisted reviewer provenance on re-review);
 - review pass: review `running → done` via `kanban_complete`;
 - review revise: review `running → ready|todo` via `kanban_request_changes`, restoring the recorded implementer and parent gating without block-loop accounting;
 - blocker: `running → blocked` with the typed `dependency | needs_input | capability | transient` kind that matches reality; unblock returns the Card to dispatch;

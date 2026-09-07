@@ -1,7 +1,7 @@
 ---
 name: development-orchestrator
 description: Proxy development through Cursor, Codex, OpenCode, or Pi.
-version: 2.1.0
+version: 2.1.1
 author: 柯楠, Hermes Agent
 license: MIT
 platforms: [macos]
@@ -21,7 +21,7 @@ Watson is the user-facing name of the `default` Hermes profile; durable routing 
 
 Hermes Kanban is the sole Card/run/retry/heartbeat/handoff/notification control plane. Dispatcher-spawned Workers own runs. The small external execution guard (`development_external_guard.py`, documented in `hermes-kanban-workflows/references/execution-recovery.md`) only prevents duplicate Coding Agent Relays, records session/recovery facts, and detects the Card-trailer landing commit. Ambiguous external state blocks the Card; a Worker never guesses that a new spawn is safe.
 
-Topology: simple features run on ONE direct Card (no card review). Plan-driven features run on TWO stage Cards — `write-plan` then `execute-plan`, child depends on parent. Each stage Card owns its review IN-CARD through the native review lane: the implement Worker calls `kanban_request_review`; a fresh review Worker (default profile) delegates read-only Pi review relays; `kanban_request_changes` returns the Card to the implementer without block-loop accounting.
+Topology: simple features run on ONE direct Card (no card review). Plan-driven features run on TWO stage Cards — `write-plan` then `execute-plan`, child depends on parent. Each stage Card owns its review IN-CARD through the native review lane: the implement Worker calls `kanban_request_review` without pinning a reviewer; Kanban's native default reviewer routing launches a fresh review Worker to delegate read-only Pi review relays; `kanban_request_changes` returns the Card to the implementer without block-loop accounting.
 
 No Goal Mode, no auto-decompose, no per-Card Cron, no monitor, no scheduled job of any kind.
 
@@ -133,8 +133,8 @@ kanban_show → fail-closed gate
 → guard init/inspect → Pi implement relay (skill per stage)
 → consume terminal result (commands, observed results, changed files, artifacts, limitations)
 → direct:      handoff-integrity closure → UI acceptance (if required) → check-run → landing commit → kanban_complete
-→ write-plan:  verify exact plan path + SHA → artifacts-repo commit per its convention → kanban_request_review(reviewer=default; metadata: plan path/SHA + relay result)
-→ execute-plan: handoff-integrity closure → UI acceptance (if required) → check-run → landing commit → kanban_request_review(reviewer=default; metadata: commit + diff base/head + relay result)
+→ write-plan:  verify exact plan path + SHA → artifacts-repo commit per its convention → kanban_request_review(metadata: plan path/SHA + relay result; reviewer omitted)
+→ execute-plan: handoff-integrity closure → UI acceptance (if required) → check-run → landing commit → kanban_request_review(metadata: commit + diff base/head + relay result; reviewer omitted)
 ```
 
 - Advance beyond Relay handling only when `delegate-relay.result.v1` is terminal with `status: completed`, `exitCode: 0`, the expected mode/session/CWD, and every stage-required output. `unavailable` blocks `capability`; `failed`, `timeout`, or `aborted` never proceed to UI/landing/review and must be reconciled or blocked with the matching typed cause. Missing or ambiguous required output is not success.
@@ -206,7 +206,7 @@ Read-only review Relays intentionally do not use the write-mode guard. A reclaim
 - Per feature: one direct Card, or one Write Plan + one Execute Plan stage Card. Relay attempts, retries, review rounds, artifacts, and same-scope fixes never become separate Cards.
 - Pi by default; other transports only by explicit task-scoped request.
 - Fresh relay per round; reviews are read-only and never resume implement sessions; rework resumes the exact recorded implement session.
-- Review is the native in-card lane: reviewer = `default` profile, `sdlc-review` + adapter skill, ≤3 rounds without Kenan's authorization.
+- Review is the native in-card lane: use Kanban's default reviewer routing (omit `reviewer`; persisted reviewer provenance owns re-review routing), with `sdlc-review` + adapter skill and ≤3 rounds without Kenan's authorization.
 - UI acceptance runs on the implement Worker before review request; engineering tests never replace it.
 - The guard owns only Relay identity/session/result and Git baseline/commit evidence.
 - Watson never writes, repairs, refactors, or code-reviews product code.
