@@ -54,7 +54,7 @@ cd ~/.hermes/hermes-agent && HERMES_HOME=<profile目录> ./venv/bin/python -c \
 - **require_mention 被继承**：源 profile 若为 false，新 bot 会抢答群内所有消息；执行代理应设 `platforms.feishu.require_mention: true`（只被 @ 才说话）。
 - 验证凭证可用 `probe_bot(app_id, secret, domain)`，无需启动网关。
 
-完整命令与日志签名见姊妹 skill `multi-agent-profile-orchestration` 的 `references/gateway-post-start-cleanup.md`（两 skill 重叠，待 curator 合并）。
+完整命令与日志签名见 `references/gateway-post-start-cleanup.md`（原姊妹 skill 内容已并入本 skill）。
 
 ## 参考文件
 - `references/feishu-bot-messaging.md` — 飞书 bot 消息权限矩阵、Hermes `allow_bots` 配置、bot-to-bot 事件投递的平台限制与已知坑；含直调飞书 OpenAPI 速查（thread 话题投递：thread_id 直投与 hermes send 三段式均 99992402，reply 根消息服务端可达但客户端可见性未解、receive_id_type 合法值、@bot 假提及陷阱、无成员权限时从消息历史提取 ID）
