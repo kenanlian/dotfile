@@ -50,6 +50,8 @@ Handoffs use the Card, its comments/events, and the guard state file — never c
 
 At most one role actively orchestrates a Card at a time. No scheduled job ever advances a Card.
 
+Stage-card notifications (`review_requested`, verdicts, completions) are dispatch artifacts, not commissions. When a Card enters `review`, native routing has already spawned a fresh Review Worker (visible as a `claimed`+`spawned` pair after the handoff); the Origin never dispatches review relays or writes `reviews/` namespaces — its share is read-only fact reconciliation, and after a PASS the fold-and-finalize step of the stage-release flow.
+
 ## Pi commissioning map
 
 | Card stage | Implement relay brief | Review relay brief(s) | Review rounds |
