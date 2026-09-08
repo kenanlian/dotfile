@@ -87,6 +87,17 @@ Agents = markdown frontmatter files in `~/.pi/agent/agents/` (`name/description/
 
 Backend/model routing is config-owned and invisible to the caller: the parent LLM passes only the `agent` tier + prompt; `router.ts` resolves the route from `~/.pi/agent/delegate-agent.json` (symlink → dotfile stow target `~/Secret-Projects/dotfile/pi/.pi/agent/delegate-agent.json`, so edits are dotfile commits) and **re-reads the file on every tool call** — config edits apply to the next delegation, no Pi restart. Resolution: `DELEGATE_AGENT_CONFIG` env → default path; whole-file replacement, **no local-overlay merge** (as of 2026-09-05). `native` routes require `agent_file` (a cursor→native switch must add it or the router blocks); `cursor` routes need only `model`. Validate edits by running the extension's own `resolveNewDelegation` over all tiers, not just `JSON.parse`. Detail + recipe: [references/delegate-agent-config.md](references/delegate-agent-config.md).
 
+## Web access (pi-web-access)
+
+When Pi needs web access, install the `pi-web-access` package — not an MCP adapter + Exa server. Rationale: Pi's philosophy is "No MCP" (capabilities ship as extensions); `pi-mcp-adapter`'s proxy mode hides tool descriptions from the model and measurably degrades tool-calling, and its native-registration mode collapses into the same route pi-web-access already provides (same author; pi-web-access is the maintained path).
+
+- Install: `pi install npm:pi-web-access` (requires Pi ≥0.37.3). Adds two native tools with clean single schemas: `web_search`, `fetch_content` — matches the "single clear schema over multi-mode unions" rule.
+- `fetch_content` clones GitHub URLs to real local files instead of scraping HTML, and handles PDFs, YouTube, and local video.
+- Config file `~/.pi/web-search.json` — dotfile-symlink per convention.
+- **Headless must-set**: the default `workflow: "summary-review"` launches a browser curator UI and blocks forever under `-p`. Set `"workflow": "none"` in `~/.pi/web-search.json` before any headless use.
+- Zero-config default is anonymous Exa MCP (rate-limited free tier, basic search tools only). Adding `exaApiKey` switches to Exa's direct REST API with your account limits. Fallback chains apply only across *configured* providers — a zero-config run has only anonymous Exa live, so hitting its rate limit surfaces as a search error, not a silent failover.
+- Keyless-vs-keyed table, config keys, and Kenan-relevant provider notes (Bocha as proxy-free China-direct option; extension tools sit outside `-t` built-in gating): [references/web-access.md](references/web-access.md).
+
 ## Pitfalls (verified 2026-09-04, updated 2026-09-05)
 
 - Parent GLM can mis-pick example tool modes (chose chain instead of parallel once) — give your own tool a single clear schema instead of multi-mode unions.
@@ -96,8 +107,17 @@ Backend/model routing is config-owned and invisible to the caller: the parent LL
 - Read-only exploration delegations (`-t read,bash,glob,grep`) work well for source-code surveys; the same resume-loop pattern applies when they die mid-run (observed twice in one session).
 - Hermes background-liveness deep-dive (registry source anatomy, controlled experiment, zsh fork-vs-exec unpredictability, relay-chain immunity + its two real edges, forensic one-shots): [references/hermes-bg-process-liveness.md](references/hermes-bg-process-liveness.md).
 
+## Web access (pi-web-access package, verified 2026-09-07)
+
+Installed via `pi install npm:pi-web-access` (v0.27.0; tracked in `settings.json` `packages`; files at `~/.pi/agent/npm/node_modules/pi-web-access`). Adds native tools `web_search` + `fetch_content` (GitHub clone, PDF, YouTube). Zero-config search rides Exa MCP (no key); keys/providers go in `~/.pi/web-search.json` (stowed from `dotfile/pi/.pi/web-search.json`, currently just `{"workflow": "none"}`). Curator browser UI: `resolveWorkflow` force-returns "none" when `hasUI=false`, so headless runs can't hang on it; config also pins `"workflow": "none"` for interactive sessions. `-t` allowlists filter extension tools too — to keep web tools in a read-only delegation use `-t read,bash,web_search,fetch_content` (with plain `read,bash` they vanish and the model falls back to curl).
+
+## Pitfalls (verified 2026-09-07)
+
+- **`pi -p` with piped stdin hangs silently.** If stdin is a PIPE that never closes (Python subprocess default inheritance from a non-tty parent — e.g. the Hermes execute_code kernel), `pi -p` reads stdin waiting for EOF: 0 stdout bytes, 0 sockets, main thread parked in `kevent` via `uv__io_poll`, ~0 CPU — looks exactly like a hang. Fix: always pass `stdin=subprocess.DEVNULL` (or a closed/pty stdin) when spawning `pi -p`. Fingerprint to distinguish from a real hang: process alive + zero network sockets + main thread in kevent + 0 bytes out after 30s. (`pi -p` in a real terminal inherits /dev/null or a tty and is unaffected.)
+
 ## Smoke test
 
 ```bash
 pi -p "Respond with exactly: PI_SMOKE_OK"    # expect PI_SMOKE_OK in ~2s
+# from Python/subprocess: ALWAYS stdin=DEVNULL, else pi waits on stdin EOF forever
 ```
