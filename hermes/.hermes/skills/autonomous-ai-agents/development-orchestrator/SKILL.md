@@ -1,7 +1,7 @@
 ---
 name: development-orchestrator
 description: Proxy development through Cursor, Codex, OpenCode, or Pi.
-version: 2.2.0
+version: 2.3.0
 author: 柯楠, Hermes Agent
 license: MIT
 platforms: [macos]
@@ -54,13 +54,15 @@ Stage-card notifications (`review_requested`, verdicts, completions) are dispatc
 
 ## Pi commissioning map
 
-| Card stage | Implement relay brief | Review relay brief(s) | Review rounds |
-|---|---|---|---|
-| `direct` | `delegate-work` | none | — |
-| `write-plan` | `write-plan` | `review-plan` | ≤3 |
-| `execute-plan` | `execute-plan` | `review-patch` + `review-plan-conformance` | ≤3 |
+| Card stage | Implement relay brief | Implement model | Review relay brief(s) | Review model | Review rounds |
+|---|---|---|---|---|---|
+| `direct` | `delegate-work` | `zai-coding-cn/glm-5.3` | none | — | — |
+| `write-plan` | `write-plan` | `kimi-coding/k3` → fallback `zai-coding-cn/glm-5.3` | `review-plan` | `zai-coding-cn/glm-5.3` | ≤3 |
+| `execute-plan` | `execute-plan` | `kimi-coding/k3` → fallback `zai-coding-cn/glm-5.3` | `review-patch` + `review-plan-conformance` | `zai-coding-cn/glm-5.3` | ≤3 |
 
 - Every relay goes through exactly one selected `*-delegate` adapter (default Pi). Implement relays are write-mode; review relays are fresh, read-only, and never resume an implement session.
+- Relay models are Pi provider-prefixed ids run with `--thinking high`; `pi-delegate` owns id format and the fallback mechanics. The k3→glm-5.3 switch fires only on actual quota exhaustion or provider unavailability (one re-dispatch, exact session resumed). glm-5.3 relays — every review and direct implement — have no fallback: failure there is terminal and the Worker blocks typed; never silently substitute a model.
+- Every relay runs under `delegate-work` discipline: a direct implement brief opens with the `delegate-work` directive, while `write-plan`, `execute-plan`, and all three review Skills embed `delegate-work` internally — no extra directive is needed for those briefs.
 - Begin every brief with `Use the <skill> Skill (discovered from the global Skill root).` plus exact inputs: plan path for write/execute relays; diff base/head, reviewed head, or workspace scope plus intended behavior for review relays.
 - Card `skills` pins both `development-orchestrator` and the selected delegate adapter. Review Workers additionally get `sdlc-review` force-loaded by the dispatcher. For a `development-stage.v1` Card, use `sdlc-review` only for role separation and terminal verdict discipline; this Skill's commissioning map replaces its local inspection/test procedure with the required read-only Pi review relay(s).
 - Adapter `--read-only` constrains only the top-level Pi tool set; `delegate_agent` is still available. Every review brief must therefore forbid the reviewer **and all delegated children** from editing files or invoking write-access children. This is an instruction boundary, not an OS sandbox.
