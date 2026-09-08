@@ -63,6 +63,7 @@ At most one role actively orchestrates a Card at a time. No scheduled job ever a
 - Card `skills` pins both `development-orchestrator` and the selected delegate adapter. Review Workers additionally get `sdlc-review` force-loaded by the dispatcher. For a `development-stage.v1` Card, use `sdlc-review` only for role separation and terminal verdict discipline; this Skill's commissioning map replaces its local inspection/test procedure with the required read-only Pi review relay(s).
 - Adapter `--read-only` constrains only the top-level Pi tool set; `delegate_agent` is still available. Every review brief must therefore forbid the reviewer **and all delegated children** from editing files or invoking write-access children. This is an instruction boundary, not an OS sandbox.
 - If a brief's task scoping proves wrong mid-run, stop expansion and reclassify rather than silently switching skills.
+- Execute-plan implement relays and every same-session rework relay pass `--auto-handoff-plan <absolute accepted plan path>` so the top-level Pi parent runs Auto Handoff scoped to the relay out dir; direct, write-plan, and all review relays never pass it; delegated children never receive the extension.
 
 ## Stage Card contract (development-stage.v1)
 
@@ -140,7 +141,7 @@ kanban_show → fail-closed gate
 - Advance beyond Relay handling only when `delegate-relay.result.v1` is terminal with `status: completed`, `exitCode: 0`, the expected mode/session/CWD, and every stage-required output. `unavailable` blocks `capability`; `failed`, `timeout`, or `aborted` never proceed to UI/landing/review and must be reconciled or blocked with the matching typed cause. Missing or ambiguous required output is not success.
 - Relay liveness: bounded observation slices, Kanban heartbeats during long operations, never deliberately exit while `running`. Native stale reclaim and the retry/circuit-breaker own Worker recycling.
 - Every implement brief begins with the stage Skill directive and explicitly says `Outer native Card review owns final review; skip the Pi-internal final review gate.`
-- Rework after `kanban_request_changes` runs in a fresh Implement Worker but resumes the exact recorded Pi implement session. A further rework round after a recorded-terminal rework attempt starts its next guard attempt with `start-or-inspect --new-attempt` (a guard CLI flag, not a relay flag); every attempt uses a fresh out dir and result path.
+- Rework after `kanban_request_changes` runs in a fresh Implement Worker but resumes the exact recorded Pi implement session. A further rework round after a recorded-terminal rework attempt starts its next guard attempt with `start-or-inspect --new-attempt` (a guard CLI flag, not a relay flag); every attempt uses a fresh out dir and result path. Execute-plan rework relays re-pass `--auto-handoff-plan` with the same accepted plan path; write-plan rework does not.
 
 ## Review Worker flow
 
@@ -195,7 +196,7 @@ None. Active-card visibility comes from native Kanban notifications and Worker r
 
 ## MVP enforcement boundaries
 
-Mechanically enforced: native Card/run ownership and expected-run terminal transitions; write-mode Relay duplicate/recovery state; top-level Pi tool mode; process-exit/result schema/status; exact resumed Pi Session ID; Card-trailer landing evidence.
+Mechanically enforced: native Card/run ownership and expected-run terminal transitions; write-mode Relay duplicate/recovery state; top-level Pi tool mode; process-exit/result schema/status; exact resumed Pi Session ID; Card-trailer landing evidence; top-level Auto Handoff extension loading + scoped env injection (execute-plan relays only).
 
 Instruction-enforced and then verified fail-closed: delegated children of a read-only Pi reviewer must not write; writable Pi must not commit/push; stage-specific outputs live in `finalMessage` rather than typed result fields. Workers inspect Git and required outputs and block on any violation or ambiguity.
 

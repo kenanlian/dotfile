@@ -14,7 +14,9 @@
  *
  * Deterministic extension loading: the child runs with `--no-extensions` plus an
  * explicit `-e` pointing at the delegate-agent extension root, so `delegate_agent`
- * exists and nothing implicit loads. Global Skills discovery is NOT disabled:
+ * exists and nothing implicit loads. Under `--auto-handoff-plan`, one additional
+ * `-e` loads the auto-handoff extension and two scoped env vars configure it;
+ * delegated children are unaffected. Global Skills discovery is NOT disabled:
  * Skills come from the single global root via the user's own Pi configuration;
  * the relay never copies or mirrors Skills.
  *
@@ -45,13 +47,14 @@
  *   --session <id>       Resume one existing exact Pi session (--session, fail if missing).
  *   --timeout <dur>      Optional relay-side watchdog (default: off; h/m/s strings).
  *   --out-dir <dir>      Where to write run artifacts (default: fresh temp dir).
+ *   --auto-handoff-plan <file>  Enable top-level Auto Handoff scoped to this run.
  *   -h, --help           Show this help.
  *
  * Result: written to <out-dir>/result.json —
  *   schema delegate-relay.result.v1, tool "pi", status, exitCode, signal,
  *   piVersion, sessionId, cwd, mode, requestedModel, resolvedModel, thinking,
  *   resumed, startedAt, finishedAt, finalMessage, touchedFiles (git porcelain
- *   under --cd), usage, briefPath/finalPath/eventsPath/stderrPath, and
+ *   under --cd), usage, autoHandoff, briefPath/finalPath/eventsPath/stderrPath, and
  *   error/stderrTail on failure.
  *
  * Completion requires: process exit + exit code 0 + Pi agent_settled observed
@@ -67,9 +70,10 @@
 import { spawn, execFileSync, spawnSync } from "node:child_process";
 import {
   mkdirSync, writeFileSync, renameSync, rmSync, readFileSync, existsSync,
-  appendFileSync, mkdtempSync, unlinkSync,
+  appendFileSync, mkdtempSync, unlinkSync, statSync, accessSync,
+  constants as fsConstants,
 } from "node:fs";
-import { join, resolve, basename, dirname } from "node:path";
+import { join, resolve, basename, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { constants, tmpdir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
@@ -94,6 +98,20 @@ function delegateAgentRoot() {
   ].filter(Boolean);
   for (const candidate of candidates) {
     if (existsSync(join(candidate, "index.ts")) || existsSync(join(candidate, "index.js"))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/** The auto-handoff extension root: `-e` takes a directory, not a module file. */
+function autoHandoffRoot() {
+  const candidates = [
+    process.env.PI_AUTO_HANDOFF_ROOT || "",
+    join(process.env.HOME || "", "Secret-Projects", "pi-auto-handoff"),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, "package.json")) && existsSync(join(candidate, "src", "index.ts"))) {
       return candidate;
     }
   }
@@ -126,6 +144,7 @@ function parseArgs(argv) {
     session: null,
     timeout: null,
     outDir: null,
+    autoHandoffPlan: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -150,6 +169,7 @@ function parseArgs(argv) {
       case "--session": opts.session = next(); break;
       case "--timeout": opts.timeout = next(); break;
       case "--out-dir": opts.outDir = resolve(next()); break;
+      case "--auto-handoff-plan": opts.autoHandoffPlan = next(); break;
       default:
         fail(`unknown option: ${arg}`);
     }
@@ -165,6 +185,32 @@ function parseArgs(argv) {
   }
   if (opts.timeout !== null && parseDuration(opts.timeout) === null) {
     fail(`--timeout "${opts.timeout}" is invalid; use a positive h/m/s duration no longer than about 24 days`);
+  }
+  if (opts.autoHandoffPlan !== null) {
+    const plan = opts.autoHandoffPlan;
+    if (!plan || !isAbsolute(plan)) {
+      fail(`--auto-handoff-plan must be an absolute path to a readable non-empty file`);
+    }
+    if (!existsSync(plan)) {
+      fail(`--auto-handoff-plan not found: ${plan}`);
+    }
+    let st;
+    try {
+      st = statSync(plan);
+    } catch {
+      fail(`--auto-handoff-plan not found: ${plan}`);
+    }
+    if (!st.isFile()) {
+      fail(`--auto-handoff-plan is not a regular file: ${plan}`);
+    }
+    try {
+      accessSync(plan, fsConstants.R_OK);
+    } catch {
+      fail(`--auto-handoff-plan is not readable: ${plan}`);
+    }
+    if (!(st.size > 0)) {
+      fail(`--auto-handoff-plan is empty: ${plan}`);
+    }
   }
   return opts;
 }
@@ -236,11 +282,12 @@ function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
-function buildArgv(opts, extensionRoot, promptFile) {
+function buildArgv(opts, extensionRoot, promptFile, autoHandoff) {
   // Deterministic extension loading: -ne disables implicit discovery; the
   // explicit -e still loads under it. Skills discovery is left enabled.
   const argv = ["--mode", "json", "-p", "--no-extensions"];
   if (extensionRoot) argv.push("-e", extensionRoot);
+  if (autoHandoff?.enabled) argv.push("-e", autoHandoff.extensionRoot);
   argv.push("--tools", (opts.write ? WRITE_TOOLS : READ_ONLY_TOOLS).join(","));
   if (opts.model) argv.push("--model", opts.model);
   argv.push("--thinking", opts.thinking);
@@ -264,11 +311,25 @@ function prepareRunDir(opts, brief) {
   mkdirSync(outDir, { recursive: true });
   const run = {
     startedAt,
+    outDir,
     briefPath: join(outDir, "brief.txt"),
     finalPath: join(outDir, "final.txt"),
     eventsPath: join(outDir, "events.jsonl"),
     stderrPath: join(outDir, "stderr.txt"),
     resultPath: join(outDir, "result.json"),
+    autoHandoff: opts.autoHandoffPlan
+      ? {
+        enabled: true,
+        planFile: opts.autoHandoffPlan,
+        handoffDir: join(outDir, "auto-handoff"),
+        extensionRoot: autoHandoffRoot(),
+      }
+      : {
+        enabled: false,
+        planFile: null,
+        handoffDir: null,
+        extensionRoot: null,
+      },
   };
   rmSync(run.finalPath, { force: true });
   rmSync(run.resultPath, { force: true });
@@ -295,6 +356,7 @@ function makeResultWriter(opts, version, run) {
       finalPath: existsSync(run.finalPath) ? run.finalPath : null,
       eventsPath: run.eventsPath,
       stderrPath: run.stderrPath,
+      autoHandoff: run.autoHandoff,
       ...extra,
     };
     const temporary = `${run.resultPath}.${process.pid}.tmp`;
@@ -408,6 +470,9 @@ function printSummary(result, resultPath) {
   lines.push(`relay: ${result.status} (exit ${result.exitCode}${result.signal ? `, killed by ${result.signal}` : ""})  ·  pi ${result.piVersion ?? "?"}`);
   if (result.resumed) lines.push("mode: resumed an exact session");
   lines.push(`mode: ${result.mode} (tools ${result.mode === "write" ? "read,grep,find,ls,bash,edit,write,delegate_agent" : "read,grep,find,ls,delegate_agent"})`);
+  if (result.autoHandoff?.enabled) {
+    lines.push(`auto handoff: enabled · plan ${result.autoHandoff.planFile} · handoff ${result.autoHandoff.handoffDir}`);
+  }
   if (result.resolvedModel) {
     lines.push(`model: ${result.resolvedModel}  ·  thinking: ${result.thinking}`);
   }
@@ -451,14 +516,37 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
     process.exit(1);
   }
 
+  if (run.autoHandoff.enabled && !run.autoHandoff.extensionRoot) {
+    const result = writeResult({
+      status: "failed",
+      exitCode: 1,
+      signal: null,
+      sessionId: opts.session,
+      resolvedModel: null,
+      finalMessage: "",
+      touchedFiles: gitTouchedFiles(opts.cd),
+      error: "auto-handoff extension root not found (expected ~/Secret-Projects/pi-auto-handoff or PI_AUTO_HANDOFF_ROOT)",
+    });
+    printSummary(result, run.resultPath);
+    process.exit(1);
+  }
+
   // The brief rides a temp file attached via Pi's `@file` message syntax
   // (`pi [options] [--] [@files...] [messages...]`): argv carries only the fixed
   // flags plus a temp path, never the brief text itself. The file outlives spawn
   // (Pi reads it during startup) and is removed once the child has exited.
   const promptFile = join(dirname(run.briefPath), "prompt-attachment.tmp");
   writeFileSync(promptFile, brief, { encoding: "utf8", mode: 0o600 });
-  const argv = buildArgv(opts, extensionRoot, promptFile);
-  const child = spawn(bin, argv, { cwd: opts.cd, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  const argv = buildArgv(opts, extensionRoot, promptFile, run.autoHandoff);
+  const spawnOpts = { cwd: opts.cd, stdio: ["ignore", "pipe", "pipe"], detached: true };
+  if (run.autoHandoff.enabled) {
+    spawnOpts.env = {
+      ...process.env,
+      PI_AUTO_HANDOFF_PLAN_FILE: run.autoHandoff.planFile,
+      PI_AUTO_HANDOFF_HANDOFF_DIR: run.autoHandoff.handoffDir,
+    };
+  }
+  const child = spawn(bin, argv, spawnOpts);
   const unlinkPrompt = () => { try { unlinkSync(promptFile); } catch { /* already gone */ } };
   child.once("close", unlinkPrompt);
   child.once("error", unlinkPrompt);

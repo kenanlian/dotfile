@@ -55,7 +55,7 @@ The Implement Worker validates the terminal result, exact Plan path, and SHA; co
 
 ## Execute-plan implement relay
 
-Start a fresh Execution Parent with `--write` and the exact accepted Plan path/SHA; never reuse Planning or Origin Sessions. Rework after review/UI failure resumes this exact Execution Session.
+Start a fresh Execution Parent with `--write`, the exact accepted Plan path/SHA, and `--auto-handoff-plan <absolute accepted plan path>`; never reuse Planning or Origin Sessions. Rework after review/UI failure resumes this exact Execution Session.
 
 ```text
 Use the execute-plan Skill (discovered from the global Skill root).
@@ -76,7 +76,7 @@ deploy, publish, change versions, or perform unauthorized external effects.
 
 ## Review relays
 
-Every Review Worker starts fresh Pi Sessions with `--read-only`; it never resumes an implement Session and never uses the write-mode external guard. For Card review round `N`, use `development-artifacts/<board>/tasks/<card-id>/reviews/round-N/run-<kanban-run-id>/<review-skill>/` and its own `result.json`; validate process exit plus `delegate-relay.result.v1`. A replacement review run never reuses the prior run's directory.
+Every Review Worker starts fresh Pi Sessions with `--read-only`; it never resumes an implement Session, never uses the write-mode external guard, and never passes `--auto-handoff-plan`. For Card review round `N`, use `development-artifacts/<board>/tasks/<card-id>/reviews/round-N/run-<kanban-run-id>/<review-skill>/` and its own `result.json`; validate process exit plus `delegate-relay.result.v1`. A replacement review run never reuses the prior run's directory.
 
 `--read-only` restricts only the top-level Pi tools; `delegate_agent` remains available. Every review brief must include:
 
@@ -103,7 +103,7 @@ Normalize their native verdicts under `development-orchestrator`; do not blindly
 
 ## Rework
 
-A fresh Implement Worker resumes the exact recorded Planning/Execution Session with only the finding or UI-failure delta and stable artifact pointers. It never replaces a resumable Session. Continuity loss is a `needs_input` decision before any fresh replacement.
+A fresh Implement Worker resumes the exact recorded Planning/Execution Session with only the finding or UI-failure delta and stable artifact pointers. It never replaces a resumable Session. Continuity loss is a `needs_input` decision before any fresh replacement. Execute-plan rework resumes that exact Execution Session and re-passes `--auto-handoff-plan` with the same accepted plan path; write-plan rework does not.
 
 ## Terminal result boundary
 

@@ -14,7 +14,10 @@ pi --list-models glm   # browse provider-prefixed model ids
 
 Install/config reference: the `pi-coding-agent` Skill. The relay needs no other setup;
 it discovers the delegate-agent extension at `~/.pi/agent/extensions/delegate-agent`
-(override with `PI_DELEGATE_AGENT_ROOT`).
+(override with `PI_DELEGATE_AGENT_ROOT`). When `--auto-handoff-plan` is enabled, it
+also discovers the auto-handoff extension at `~/Secret-Projects/pi-auto-handoff`
+(override with `PI_AUTO_HANDOFF_ROOT`, a relay-internal discovery override, not a
+workflow-facing parameter).
 
 ## Dispatching
 
@@ -35,12 +38,15 @@ node "<skill-dir>/scripts/relay.mjs" --brief brief.txt --cd /path/to/repo
 | `--session <id>` | Resume one existing exact Pi session via Pi `--session`; fail if missing or mismatched. Send only the delta brief. |
 | `--timeout <dur>` | Optional relay watchdog (default: off; h/m/s strings). Normal orchestration omits it; a deliberately long guard (`4h`) beats a task estimate. |
 | `--out-dir <dir>` | Artifact directory (default: a fresh directory under the system temp dir). |
+| `--auto-handoff-plan <file>` | Enable top-level Auto Handoff: one additional `-e` plus child-process `PI_AUTO_HANDOFF_PLAN_FILE` (the exact validated plan path) and `PI_AUTO_HANDOFF_HANDOFF_DIR` (`<actual out dir>/auto-handoff`). `<file>` must be an absolute readable non-empty regular file. Absence disables atomically. |
 | `-h`, `--help` | Print the relay's header help. |
 
 A fresh run defaults to read-only. Writing requires an explicit `--write`. The relay
 always passes `--no-extensions` plus an explicit `-e <delegate-agent-root>` so extension
 loading is deterministic: the `delegate_agent` tool exists and nothing implicit loads.
-Global Skills discovery stays enabled; the relay never copies or mirrors Skills.
+When `--auto-handoff-plan` is present, one additional `-e` loads the auto-handoff
+extension; delegated children keep `--no-extensions` and never receive it. Global
+Skills discovery stays enabled; the relay never copies or mirrors Skills.
 
 There is no `call_allowlist` in this relay: a `--read-only` parent can still ask
 `delegate_agent` for a write-access child. Tool-gating applies only to the top-level
@@ -61,6 +67,10 @@ Artifacts live outside the repo by default so they do not appear in `touchedFile
 - `final.txt` — the last assistant message text; absent if none was emitted.
 - `stderr.txt` — complete stderr.
 - `result.json` — the stable `delegate-relay.result.v1` contract.
+- `auto-handoff/` — when `--auto-handoff-plan` is enabled, the plugin writes
+  `handoff-NNN-<timestamp>.md` and `.auto-handoff-events.jsonl` under
+  `<out-dir>/auto-handoff/`, outside the product repository. The relay does not
+  pre-create this directory.
 
 `result.json` fields:
 
@@ -79,6 +89,11 @@ Artifacts live outside the repo by default so they do not appear in `touchedFile
   pre-existing dirt shows up too. `null` means git could not report; `[]` means clean.
 - `stderrTail` — last 20 non-empty stderr lines on any non-completed outcome.
 - `error` — the concrete reason a run did not complete.
+- `autoHandoff` — `{ enabled, planFile, handoffDir, extensionRoot }` on every
+  terminal path. Enabled: `{ enabled: true, planFile: "<abs>",
+  handoffDir: "<abs>/auto-handoff", extensionRoot: "<root or null>" }`.
+  Disabled: `{ enabled: false, planFile: null, handoffDir: null,
+  extensionRoot: null }`.
 
 Completion (`completed`) requires ALL of: child process exit, exit code 0, Pi
 `agent_settled` observed in the event stream, and a valid session id. A zero exit
@@ -119,12 +134,15 @@ ID observed in Pi's event stream to equal the requested full ID. The lifecycle m
 - discussion: fresh `--read-only`; preserve the returned `sessionId`;
 - every follow-up discussion turn: `--session <id> --read-only`;
 - write-plan: fresh `--write`; never reuse the discussion session;
-- execute-plan: fresh `--write`; preserve the new execution session id;
-- rework: `--session <execution-id> --write`.
+- execute-plan: fresh `--write` plus `--auto-handoff-plan <absolute accepted plan path>`; preserve the new execution session id;
+- rework: `--session <execution-id> --write` plus `--auto-handoff-plan` (execute-plan rework only; write-plan rework does not re-pass the option).
 
 Card review relays are always fresh `--read-only` Sessions. They never resume a
-planning/execution Session and are validated directly by the native review run rather
-than the write-mode external guard.
+planning/execution Session, never pass `--auto-handoff-plan`, and are validated
+directly by the native review run rather than the write-mode external guard.
+
+When Auto Handoff is enabled, handoff artifacts land under `<out-dir>/auto-handoff/`
+(`handoff-NNN-*.md`, `.auto-handoff-events.jsonl`), outside the product repository.
 
 Never replace a resumable session with a fresh agent. If a session file was deleted,
 report continuity loss under the orchestrator's policy.
@@ -135,11 +153,18 @@ The argv is equivalent to:
 
 ```bash
 pi --mode json -p --no-extensions -e ~/.pi/agent/extensions/delegate-agent \
+  [-e ~/Secret-Projects/pi-auto-handoff]              # only with --auto-handoff-plan
   --tools read,grep,find,ls,delegate_agent            # or the write set
   [--model provider/model] --thinking high \
   [--session <existing-id>] \
   -- @<temp-prompt-file>
 ```
+
+When `--auto-handoff-plan` is set, the child is spawned with a fresh env copy that
+sets `PI_AUTO_HANDOFF_PLAN_FILE` (the exact validated plan path) and
+`PI_AUTO_HANDOFF_HANDOFF_DIR` (`<actual out dir>/auto-handoff`). Those two variables
+are child-process scoped only; the relay never assigns them on its own environment.
+Delegated children keep `--no-extensions` and never receive the auto-handoff `-e`.
 
 ## The commit boundary
 
