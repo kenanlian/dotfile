@@ -4,7 +4,7 @@ description: Transport Pi runs for development-orchestrator.
 license: MIT
 compatibility: Requires the `pi` CLI (~/.local/bin/pi) 0.84.4+, Node 18+, and git.
 metadata:
-  version: 0.3.0
+  version: 0.3.1
   hermes:
     related_skills: [development-orchestrator, pi-coding-agent]
 ---
@@ -29,12 +29,14 @@ pi --version
 pi --list-models <search>
 ```
 
-Classify the whole outer run by its requested deliverable before selecting the model. Unless the user explicitly requests another model:
+Classify the whole outer run by its requested deliverable before selecting the model. Unless the user explicitly requests another model, each tier has a primary and a fallback (the fallback exists because the primary's quota can be exhausted):
 
-- **Default for substantial work** (structured planning, review, architecture, persistence, migration, load-bearing decisions): `zai-coding-cn/glm-5.3` with `--thinking high`.
-- **Lightweight tier** (narrow read-only factual tasks, commit-only runs): `zai-coding-cn/glm-5.3-flash` or `opencode-go/deepseek-v4-flash` with `--thinking off` or `minimal`.
+- **Default for substantial work** (structured planning, review, architecture, persistence, migration, load-bearing decisions): primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`; both with `--thinking high`.
+- **Lightweight tier** (narrow read-only factual tasks, commit-only runs): primary `opencode-go/deepseek-v4-pro`, fallback `zai-coding-cn/glm-5.3`; both with `--thinking high`.
 
 Models are provider-prefixed (`provider/model`), optionally with a `:thinking` suffix (`pi --model zai-coding-cn/glm-5.3:high`). If the brief's task scoping proves wrong mid-run, stop expansion and reclassify before continuing.
+
+Switch to the fallback only when the primary actually fails from quota exhaustion or provider unavailability: re-dispatch once with the fallback `--model` (and same `--thinking`), resuming the exact recorded `--session` when the failed run had one. Record the switch — `result.json`'s `resolvedModel` reflects what actually ran.
 
 Confirm the intended repository and trust it before passing `--cd`. Pi has no permission wall. `--read-only` removes top-level shell/edit/write tools, but `delegate_agent` remains available and can request a write child; review briefs must forbid the parent and every child from writing. This is an instruction boundary, not an OS sandbox.
 
