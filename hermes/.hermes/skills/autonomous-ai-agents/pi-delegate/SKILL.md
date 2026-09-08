@@ -4,7 +4,7 @@ description: Transport Pi runs for development-orchestrator.
 license: MIT
 compatibility: Requires the `pi` CLI (~/.local/bin/pi) 0.84.4+, Node 18+, and git.
 metadata:
-  version: 0.4.0
+  version: 0.4.1
   hermes:
     related_skills: [development-orchestrator, pi-coding-agent]
 ---
@@ -32,8 +32,7 @@ pi --list-models <search>
 Select the model by the commissioned relay stage; the authoritative stage→model map is the Pi commissioning map in `development-orchestrator`. Unless the user explicitly requests another model:
 
 - **Stage implement relays** (`write-plan`, `execute-plan`) and their same-session rework: primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`.
-- **All review relays** (`review-plan`, `review-patch`, `review-plan-conformance`) and **direct implement relays**: `zai-coding-cn/glm-5.3`, no fallback.
-- **Origin grounding relays** (read-only factual grounding outside any Card): primary `opencode-go/deepseek-v4-pro`, fallback `zai-coding-cn/glm-5.3`.
+- **All review relays** (`review-plan`, `review-patch`, `review-plan-conformance`), **direct implement relays**, and **Origin grounding relays** (read-only factual grounding outside any Card): `zai-coding-cn/glm-5.3`, no fallback.
 
 All tiers run `--thinking high`. Models are provider-prefixed (`provider/model`), optionally with a `:thinking` suffix (`pi --model zai-coding-cn/glm-5.3:high`). If the brief's task scoping proves wrong mid-run, stop expansion and reclassify before continuing.
 
