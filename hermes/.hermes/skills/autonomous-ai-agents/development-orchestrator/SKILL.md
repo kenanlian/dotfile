@@ -1,7 +1,7 @@
 ---
 name: development-orchestrator
 description: Proxy development through Cursor, Codex, OpenCode, or Pi.
-version: 2.1.1
+version: 2.2.0
 author: 柯楠, Hermes Agent
 license: MIT
 platforms: [macos]
@@ -72,7 +72,7 @@ Every Card body starts with:
 ```yaml
 ---
 schema: development-stage.v1
-workflow: <kebab-case feature id shared by the feature's cards>
+feature_id: <kebab-case id shared by this feature's cards — feature identity, set once at write-plan creation and reused verbatim by every execute card; a rebuilt card keeps it>
 stage: direct | write-plan | execute-plan
 intent: draft | converged
 ui_acceptance: pending | required | not-required
@@ -88,7 +88,8 @@ Follow it with the same sections as before: `# Goal`, `# Observable acceptance`,
 Rules:
 
 - `intent: draft` cards sit in `triage`. `intent: converged` requires non-empty Goal and Observable acceptance, resolved UI classification, `Open decisions: None`, and stage-consistent skill fields (`direct`→`delegate-work`/`none`; `write-plan`→`write-plan`/`review-plan`; `execute-plan`→`execute-plan`/`review-patch+review-plan-conformance`).
-- `execute-plan` bodies carry the accepted plan path (and plan SHA-256 when available) plus the write-plan Card id in Repository grounding.
+- `execute-plan` bodies carry the accepted plan path (and plan SHA-256 when available) plus the write-plan Card id in Repository grounding. That body reference answers "which accepted Plan feeds this card" — `feature_id` never replaces it.
+- Feature identity = the `feature_id` frontmatter value. The parent link is dispatch gating only (execute waits for write-plan; downstream features wait for upstream) and is never evidence of same-feature. Query same-feature cards by body `feature_id:` match within the board.
 - Native Card fields: `assignee: default`, `workspace_kind=dir` with the exact repository path, `skills: [development-orchestrator, <delegate-adapter>]`. Card `model`/`provider` configure the Hermes worker, not Pi.
 - Record product decisions, observable contracts, constraints, and concise load-bearing repository facts — never transcripts, raw logs, or copied Coding Agent internals.
 
@@ -106,6 +107,7 @@ The Origin recommends, Kenan decides:
 - Direct feature: create one draft Card in `triage`; after intent convergence, finalize it to dispatch.
 - Plan-driven feature: create both draft Cards in `triage` and immediately link `write-plan` as parent of `execute-plan`. After product intent converges, finalize **only the write-plan Card**. The execute-plan Card must remain `triage` because no accepted Plan path/SHA exists yet.
 - A PASS review completes the write-plan Card. The Origin then reads its exact Plan path and SHA-256 from the native handoff, folds those plus the write-plan Card id into the execute-plan body, and finalizes the execute-plan Card. Since its parent is now done, native gating promotes it to `ready`.
+- Abnormal-card handling: same-scope retry reopens the original card (`unblock`), never a new card. A scope change rebuilds the stage card: create the new card with the same `feature_id`, parent it, then **archive** (not block) the old card with a `superseded by <new-id>` comment. Invariant: per `feature_id` + stage, at most one non-archived card exists at any moment. Existing completed cards keep their historical frontmatter; do not rewrite done cards.
 - An already-accepted Plan is the only case where an execute-plan Card may be created/finalized directly. A merely converged feature request is not an accepted Plan.
 - Do not enable Goal Mode; do not rely on auto-decompose (`kanban.auto_decompose` is false).
 - Before dispatching trusted-directory work, verify both `kanban.max_in_progress_per_profile=1` (per board) and `kanban.max_in_progress=1` (host-wide across boards).

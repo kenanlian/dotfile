@@ -1,7 +1,7 @@
 ---
 name: hermes-kanban-workflows
 description: "Use when building or verifying Hermes Kanban workflows."
-version: 3.0.1
+version: 3.1.0
 tags: [kanban, multi-agent, dispatcher, relay, external-guard, workflow, verification]
 ---
 
@@ -42,6 +42,7 @@ Load before creating, finalizing, routing, transitioning, reconciling, or comple
 - Each active development project under `~/Secret-Projects/` uses a dedicated board whose slug is the kebab-case directory basename and whose default workdir is the project root; a repository without development work needs no board. Hermes self-work and projects outside that tree use `default`.
 - Cards work directly in the trusted repository directory on main under Kenan's convention; do not use scratch/worktree unless the caller explicitly chooses another supported workspace contract.
 - One Card represents one independently closable direct task or one stage of a plan-driven feature. A plan-driven feature has exactly two Cards (`write-plan` parent, `execute-plan` child); Relay attempts, review rounds, retries, artifacts, and same-stage fixes are never separate Cards.
+- Feature identity lives in the body frontmatter `feature_id` (see `development-orchestrator`): same value = same feature. Parent links are dispatch gating only — dependency chains, review cards, and stage pairs all use them, so a parent edge is never evidence of same-feature. When a stage card is rebuilt after a scope change, keep the same `feature_id`, parent the new card, and archive (not block) the superseded card with a `superseded by <new-id>` comment; per `feature_id` + stage at most one non-archived card may exist.
 - Use native parent links. Parent-blocked children remain `todo` and promote automatically after all parents complete.
 - Use exact board slugs and explicit board arguments when no task-scoped binding exists. Read back every created or mutated target before claiming success.
 
