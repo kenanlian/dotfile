@@ -24,7 +24,7 @@ review/direct/grounding 固定 glm-5.3 无 fallback
 §
 opencode 走本地代理挂死已加直连规则；复发查代理路由。
 §
-评审 artifact 元数据最小：reviewer frontmatter 可 unknown；session/resume 标识仅记外部 guard 状态。
+评审 artifact 元数据最小：reviewer frontmatter 可 unknown；session/resume 的真源是外部 Guard，评审/UI 证据只引用绑定（含 run id、round、session_id），不另立真源。
 §
 Pi 工作流用全局 Agent Skills；expert 后端按配置灵活选。
 §
