@@ -4,7 +4,7 @@ description: Transport Pi runs for development-orchestrator.
 license: MIT
 compatibility: Requires the `pi` CLI (~/.local/bin/pi) 0.84.4+, Node 18+, and git.
 metadata:
-  version: 0.4.1
+  version: 0.5.0
   hermes:
     related_skills: [development-orchestrator, pi-coding-agent]
 ---
@@ -15,7 +15,10 @@ Provide reliable Pi CLI transport for `development-orchestrator`: preflight, exa
 
 ## When to Use
 
-Load only when `development-orchestrator` has selected Pi as the external parent agent.
+Load when `development-orchestrator`/the Development Workflow Harness has selected Pi as
+the external parent agent, or when Kenan explicitly commissions a one-off current-session
+Pi run outside the managed Card workflow. In the latter case this Skill provides transport
+only: do not create Cards, invoke the Harness/guard, or import managed lifecycle policy.
 
 Do not use this Skill to decide requirements, decide whether Origin grounding is needed, perform code review, define behavioral acceptance, or replace target-discovered Agent Skills.
 
@@ -32,7 +35,7 @@ pi --list-models <search>
 Select the model by the commissioned relay stage; the authoritative stage→model map is the Pi commissioning map in `development-orchestrator`. Unless the user explicitly requests another model:
 
 - **Stage implement relays** (`write-plan`, `execute-plan`) and their same-session rework: primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`.
-- **All review relays** (`review-plan`, `review-patch`, `review-plan-conformance`), **direct implement relays**, and **Origin grounding relays** (read-only factual grounding outside any Card): `zai-coding-cn/glm-5.3`, no fallback.
+- **All review relays** (`review-plan`, `review-execute-candidate`), **direct implement relays**, and **Origin grounding relays** (read-only factual grounding outside any Card): `zai-coding-cn/glm-5.3`, no fallback.
 
 All tiers run `--thinking high`. Models are provider-prefixed (`provider/model`), optionally with a `:thinking` suffix (`pi --model zai-coding-cn/glm-5.3:high`). If the brief's task scoping proves wrong mid-run, stop expansion and reclassify before continuing.
 
@@ -88,7 +91,7 @@ Start a separate fresh Execution Parent with `--write`, `--auto-handoff-plan <ab
 
 ### Card review
 
-Start every review relay fresh with `--read-only` under `zai-coding-cn/glm-5.3` (no fallback); never pass a planning/execution `--session`. Begin with the required `review-plan`, `review-patch`, or `review-plan-conformance` Skill directive and exact Plan/commit-range inputs. Explicitly forbid the reviewer and every delegated child from writing or invoking write-access children. Give each relay a unique out dir/result path, wait for process exit, and validate the terminal result directly; the write-mode external guard is not reused by Review Workers. Review relays never pass `--auto-handoff-plan`.
+Start every review relay fresh with `--read-only` under `zai-coding-cn/glm-5.3` (no fallback); never pass a planning/execution `--session`. Begin with `review-plan` for write-plan review or the single merged `review-execute-candidate` Skill for execute review, plus exact Plan/candidate/commit-range inputs. Explicitly forbid the reviewer and every delegated child from writing or invoking write-access children. Give each relay a unique run-scoped out dir/result path, wait for process exit, and validate the terminal result directly; the write-mode external guard is not reused by Review Workers. Review relays never pass `--auto-handoff-plan`.
 
 ### Behavioral rework
 

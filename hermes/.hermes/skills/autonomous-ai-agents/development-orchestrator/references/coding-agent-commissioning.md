@@ -1,61 +1,61 @@
 # Coding Agent Commissioning
 
-`development-orchestrator` owns product policy, Card topology, lifecycle, acceptance, landing, and verdict mapping. The selected transport adapter owns exact CLI syntax, permissions, fresh/resumed Pi Session mechanics, process/result capture, and truthful Relay artifacts. Pi Skills own engineering internals.
+`development-orchestrator` owns product policy. The Development Workflow Harness derives the stage operation, Skill, mode, model, thinking, resume rule, Plan identity, Auto Handoff, and output namespace from the current `development-stage.v2` Card and run. The selected transport adapter owns exact CLI syntax and terminal Relay artifacts. Pi Skills own engineering internals.
 
-Workers commission only the public entry Skill named by the Card. They do not reconstruct that Skill's internal delegation, persistence, or review protocol.
+A Worker calls `devflow_start_or_inspect_relay`; it does not launch adapters or the external guard directly. Do not reconstruct a target Skill's internal delegation or persistence protocol.
 
-## Rules shared by every relay
+## Shared rules
 
-1. Begin the brief with `Use the <skill> Skill (discovered from the global Skill root).`
-2. Pass the exact Card/Plan/diff inputs named below; do not paste Skill text.
-3. State the write boundary and all prohibited external actions.
-4. Require a terminal top-level outcome, exact verification evidence, changed-file scope, artifacts, and limitations.
-5. A streamed fragment or final prose without a terminal `delegate-relay.result.v1` is not completion.
+1. Every brief starts `Use the <skill> Skill (discovered from the global Skill root).`
+2. Pass exact Card/Plan/candidate inputs and stable artifact pointers; do not paste Skill text.
+3. State source/write boundaries and all prohibited external effects.
+4. Require terminal outcome, exact verification evidence, changed-file scope, artifacts, and limitations.
+5. A fragment or prose self-report without terminal `delegate-relay.result.v1` is not completion.
+6. Writable Pi may edit only authorized scope and must not commit/push. Every reviewer and delegated child is source/worktree read-only and must not invoke a write-access child.
 
-## Direct implement relay
+## Direct implement
 
-Start one fresh `--write` Pi parent using `delegate-work`. A direct Card never enters the native review lane.
+Fresh write-mode Pi parent, `delegate-work`, `zai-coding-cn/glm-5.3`, high thinking, no fallback, no Auto Handoff:
 
 ```text
 Use the delegate-work Skill (discovered from the global Skill root).
 
-Implement this bounded direct Card in the current repository.
-
+Implement this bounded direct development-stage.v2 Card in the exact repository.
 <Card Goal, Observable acceptance, Included scope, Non-goals,
 Settled decisions, UI classification, and Authority boundaries>
 
-Inspect before editing; preserve unrelated work. Own implementation, internal delegation,
-focused and integration verification, and a renderer-ready handoff when UI acceptance is
-required. Return top-level outcome, exact commands and observed results, changed files,
-artifacts, and limitations. Do not commit, push, open a PR, release, deploy, publish,
-change versions, or perform unauthorized external effects.
+Inspect before editing; preserve unrelated work. Own todo decomposition, bounded internal
+delegation, implementation, focused/integration verification, and a renderer-ready handoff
+when UI acceptance is required. Return outcome, commands and observed results, changed files,
+artifacts, and limitations. Do not commit, push, open a PR, release, deploy, publish, change
+versions, or perform unauthorized external effects.
 ```
 
-If broader coupling or a load-bearing decision appears, stop and return evidence so the Origin can reclassify the feature into stage Cards.
+Broader coupling or a load-bearing product decision stops for Origin reclassification.
 
-## Write-plan implement relay
+## Write-plan implement
 
-Start a fresh Planning Parent with `--write`; never pass an Origin/discussion Session ID. Rework after `kanban_request_changes` resumes this exact Planning Session.
+Fresh write-mode Planning parent, primary `kimi-coding/k3` and one `zai-coding-cn/glm-5.3` fallback only for real quota/provider unavailability, high thinking. Never reuse an Origin session or pass Auto Handoff. Same-scope rework resumes the exact Planning session.
 
 ```text
 Use the write-plan Skill (discovered from the global Skill root).
 
-Create a self-contained execution Plan from this converged development-stage.v1 write-plan Card.
+Create a self-contained execution Plan from this converged development-stage.v2 write-plan Card.
 <Card Goal, Observable acceptance, Included scope, Non-goals,
 Settled decisions, UI contract, and Authority boundaries>
 
 Outer native Card review owns final plan review. Skip the Pi-internal review-plan cycle,
 create no .dev/plan-review directory, and report `skip: outer review gate`.
-Re-verify repository facts. Return the exact Plan path and SHA-256, top-level planning
-outcome, artifacts, unresolved decisions, and limitations. Do not implement product code,
-commit, push, or perform external effects.
+Re-verify repository facts. Return the exact Plan path and SHA-256, top-level planning outcome,
+artifacts, unresolved decisions, and limitations. Do not implement product code, commit, push,
+or perform external effects.
 ```
 
-The Implement Worker validates the terminal result, exact Plan path, and SHA; commits only the artifacts repository under its convention; then requests review with `reviewer="default"`.
+The Harness validates the terminal result and exact Plan identity before `devflow_implement_handoff` requests review.
 
-## Execute-plan implement relay
+## Execute-plan implement
 
-Start a fresh Execution Parent with `--write`, the exact accepted Plan path/SHA, and `--auto-handoff-plan <absolute accepted plan path>`; never reuse Planning or Origin Sessions. Rework after review/UI failure resumes this exact Execution Session.
+Fresh write-mode Execution parent, same model policy as write-plan, high thinking, exact accepted Plan path/SHA, and mandatory `--auto-handoff-plan <absolute-plan-path>`. Never reuse Planning or Origin sessions. Same-scope rework resumes the exact Execution session and re-passes the same accepted Plan.
 
 ```text
 Use the execute-plan Skill (discovered from the global Skill root).
@@ -64,56 +64,65 @@ Plan file: <absolute accepted Plan path>
 Plan SHA-256: <accepted digest>
 Execute the Plan through completion while preserving unrelated work and Card authority.
 
-Outer native Card review owns final patch and plan-conformance review. Skip the
+Outer native Card review owns final merged patch/plan-conformance review. Skip the
 Pi-internal post-execution review cycle, create no .dev/review directory, and report
 `skip: outer review gate`.
 
-Return implementation outcome, exact verification commands and observed results,
-changed files, renderer build/install/reload steps when UI acceptance is required,
-artifacts, deviations, and limitations. Do not commit, push, open a PR, release,
-deploy, publish, change versions, or perform unauthorized external effects.
+Return implementation outcome, exact verification commands and observed results, changed
+files, renderer build/install/reload steps when UI acceptance is required, artifacts,
+deviations, and limitations. Do not commit, push, open a PR, release, deploy, publish,
+change versions, or perform unauthorized external effects.
 ```
+
+Before guard reservation the Harness verifies Plan SHA, adapter option, Auto Handoff extension root, and output paths. At terminal it verifies the result's exact Auto Handoff identity.
 
 ## Review relays
 
-Every Review Worker starts fresh Pi Sessions with `--read-only`; it never resumes an implement Session, never uses the write-mode external guard, and never passes `--auto-handoff-plan`. For Card review round `N`, use `development-artifacts/<board>/tasks/<card-id>/reviews/round-N/run-<kanban-run-id>/<review-skill>/` and its own `result.json`; validate process exit plus `delegate-relay.result.v1`. A replacement review run never reuses the prior run's directory.
+Every Review Worker uses one fresh `--read-only` Pi session under `zai-coding-cn/glm-5.3`, high thinking, no fallback, no implement session, no write guard, and no Auto Handoff. For round `N` use:
 
-`--read-only` restricts only the top-level Pi tools; `delegate_agent` remains available. Every review brief must include:
+```text
+~/Secret-Projects/development-artifacts/<board>/tasks/<card-id>/
+  reviews/round-<N>/run-<kanban-run-id>/<review-skill>/
+```
+
+Every review brief includes:
 
 ```text
 You and every delegated child are source/worktree read-only. Do not edit files, create
-audit artifacts, run builds/tests, invoke write-access children, commit, push, or perform
-external effects. Return the complete standalone review in the final response.
+workspace audit artifacts, run builds/tests or state-changing commands, invoke write-access
+children, commit, push, or perform external effects. Return the complete standalone review
+in the final response.
 ```
 
-Do not provide `Raw Review Artifact`; native Card runs/comments are the outer review record.
+The run-scoped adapter directory is control-plane evidence, not a reviewer-authored workspace artifact.
 
 ### Write-plan review
 
-Use `review-plan` with the exact Plan path/SHA, repository root/HEAD, intended behavior, and Card review round. The Plan is mutable only in the later implement rework run.
+Use `review-plan` with exact Plan path/SHA, repository root/HEAD, intended behavior, Card/run identity, and review round.
 
-### Execute-plan reviews
+### Execute-plan review
 
-Run two fresh relays and aggregate them:
+Run exactly one `review-execute-candidate` Relay. Pass exact board/card/feature, review run/round, repository, `diff_base`, committed `diff_head`/candidate, accepted Plan path/SHA, intended behavior, implementation handoff, and current candidate-bound UI/manual evidence paths when present.
 
-1. `review-patch`: exact `diff_base`, committed `diff_head`, repository root, intended behavior, implementation handoff, and UI-acceptance evidence when present.
-2. `review-plan-conformance`: exact Plan path/SHA plus the same commit range, implementation handoff, and UI-acceptance evidence when present.
+The Skill returns separate:
 
-Normalize their native verdicts under `development-orchestrator`; do not blindly forward a Pi verdict.
+```yaml
+patch_gate:
+  verdict: pass | fail
+  findings: []
+plan_conformance_gate:
+  verdict: pass | fail
+  findings: []
+overall:
+  verdict: pass | revise | blocked
+```
+
+Either sub-gate failure forces `overall: revise`. The outer Review Worker validates identity and routes through `devflow_review_verdict`; it never blindly forwards prose.
 
 ## Rework
 
-A fresh Implement Worker resumes the exact recorded Planning/Execution Session with only the finding or UI-failure delta and stable artifact pointers. It never replaces a resumable Session. Continuity loss is a `needs_input` decision before any fresh replacement. Execute-plan rework resumes that exact Execution Session and re-passes `--auto-handoff-plan` with the same accepted plan path; write-plan rework does not.
+A fresh Implement Worker resumes the exact recorded Planning/Execution session with only the accepted findings or UI-failure delta plus stable artifact pointers. It never replaces a resumable session. Execute rework creates a new guard attempt and re-passes mandatory Auto Handoff. Lost continuity, changed product intent, or invalid Plan returns to Origin rather than guessing.
 
 ## Terminal result boundary
 
-A valid handoff contains:
-
-- terminal status and process-exit truth;
-- exact Pi Session identity;
-- requested/resolved model, thinking, and mode;
-- final message and changed-file snapshot;
-- load-bearing artifact paths;
-- top-level workflow outcome, skipped outer-owned gates, unresolved decisions, and limitations.
-
-The Worker advances only when the adapter result is `status: completed`, `exitCode: 0`, and all stage-required fields are present and unambiguous. Other terminal statuses are evidence to reconcile or block, never permission to continue. If the writable Pi process committed or pushed despite the brief, treat it as a boundary violation and stop for attribution/recovery.
+Advancement requires process exit plus a valid `delegate-relay.result.v1` with `status: completed`, `exitCode: 0`, expected CWD/mode/model/thinking/session, and stage-required output. Other terminal statuses, malformed evidence, unexpected commits/pushes, or missing capability are evidence to block/reconcile, never permission to continue.

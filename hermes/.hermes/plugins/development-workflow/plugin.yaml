@@ -1,12 +1,11 @@
 name: development-workflow
-version: 0.1.0
+version: "0.2.0"
 description: >-
-  Development workflow intent finalization for the default-profile
-  orchestrator. Registers the narrow kanban_finalize_intent tool: a guarded,
-  read-back-verified wrapper around hermes_cli.kanban_db.specify_triage_task()
-  that atomically finalizes a converged development-task.v1 Card from triage.
-  Origin/orchestrator-only; performs no arbitrary status, claim, or SQL
-  mutation.
+  Development Workflow Harness v2: development-stage.v2 card contract, Guard v2
+  lineage, eight Origin/Worker devflow tools, and a fail-closed pre_tool_call
+  safety net. Enforces Origin, Implement Worker, Review Worker, and non-owning
+  roles. Standalone plugin-only surface; no Hermes core patch. Temporary
+  kanban_finalize_intent remains for development-task.v1 drafts.
 author: Kenan
 kind: standalone
 platforms:
@@ -14,3 +13,13 @@ platforms:
   - macos
 provides_tools:
   - kanban_finalize_intent
+  - devflow_create_feature
+  - devflow_record_decision
+  - devflow_finalize_stage
+  - devflow_inspect
+  - devflow_start_or_inspect_relay
+  - devflow_ui_lease
+  - devflow_implement_handoff
+  - devflow_review_verdict
+provides_hooks:
+  - pre_tool_call

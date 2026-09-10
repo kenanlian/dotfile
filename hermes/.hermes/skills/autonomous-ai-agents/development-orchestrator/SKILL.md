@@ -1,7 +1,7 @@
 ---
 name: development-orchestrator
 description: Proxy development through Cursor, Codex, OpenCode, or Pi.
-version: 2.3.0
+version: 3.0.0
 author: 柯楠, Hermes Agent
 license: MIT
 platforms: [macos]
@@ -13,218 +13,199 @@ metadata:
 
 # Development Orchestrator
 
-Use this Skill as Kenan's single entry point for work that may change source code, tests, builds, migrations, developer tooling, generated runtime behavior, or product behavior. One feature flows through ONE direct Card or TWO stage Cards (Write Plan → Execute Plan); every implement round and every review round is delegated to the Pi Coding Agent by a fresh Dispatcher Worker.
+Use this Skill as Kenan's entry point for work that may change code, tests, builds, migrations, developer tooling, generated runtime behavior, or product behavior. Watson is the user-facing name of the `default` Hermes profile; durable routing always uses `default`.
 
-Watson is the user-facing name of the `default` Hermes profile; durable routing always uses `default`.
+## Product routes
 
-## MVP contract
+Before any development work or Card creation, Kenan chooses one route:
 
-Hermes Kanban is the sole Card/run/retry/heartbeat/handoff/notification control plane. Dispatcher-spawned Workers own runs. The small external execution guard (`development_external_guard.py`, documented in `hermes-kanban-workflows/references/execution-recovery.md`) only prevents duplicate Coding Agent Relays, records session/recovery facts, and detects the Card-trailer landing commit. Ambiguous external state blocks the Card; a Worker never guesses that a new spawn is safe.
+1. **Current interactive session** — no Card and no Harness-managed profile. The session acts only under the explicit one-off authorization.
+2. **Direct Card** — one managed Card, no independent review lane.
+3. **Two-stage Cards** — one `write-plan` Card followed by one parent-gated `execute-plan` Card; both use native in-card review.
 
-Topology: simple features run on ONE direct Card (no card review). Plan-driven features run on TWO stage Cards — `write-plan` then `execute-plan`, child depends on parent. Each stage Card owns its review IN-CARD through the native review lane: the implement Worker calls `kanban_request_review` without pinning a reviewer; Kanban's native default reviewer routing launches a fresh review Worker to delegate read-only Pi review relays; `kanban_request_changes` returns the Card to the implementer without block-loop accounting.
+Recommend direct only for bounded work without load-bearing architecture, persistence, migration, security, compatibility, release, broad coupling, or unresolved product decisions. Use two-stage for major, ambiguous, cross-module, or multi-part work. Investigation that disproves direct scope stops for reclassification instead of silently expanding.
 
-No Goal Mode, no auto-decompose, no per-Card Cron, no monitor, no scheduled job of any kind.
-
-## Layering and ownership
+## Layering
 
 ```text
-L1 development-orchestrator      product/development control plane (this Skill)
-L2 hermes-kanban-workflows       durable Kanban mechanics + external guard reference
-L3 selected *-delegate adapter   Coding Agent transport mechanics
-L4 external Coding Agent Skills  engineering workflow internals (agent_skills repo)
+L1 development-orchestrator      product policy and accepted intent
+L2 development-workflow Harness  deterministic role, contract, evidence, and transition gates
+L3 Hermes Kanban                 Card/run/claim/review/retry/dependency/notification truth
+L4 external execution guard      write-Relay attempt/session/Git-landing lineage
+L5 selected *-delegate adapter   Coding Agent transport
+L6 external Coding Agent Skills  engineering internals
 ```
 
-Dependencies are one-way. This Skill owns user intent, topology, authority, UI classification, commissioning, landing, and completion. Lower layers expose public results; they must not redefine policy. Pi-side entry Skills are commissioned per Card run. `write-plan` and `execute-plan` were explicitly amended so a brief declaring this outer native review gate skips their duplicate internal final-review cycles; their internal planning, delegation, implementation, and verification remain unchanged.
+Kanban is the sole lifecycle truth. The Harness reads current facts, rejects known-invalid managed actions, and calls native primitives through one compatibility adapter; it does not copy lifecycle state. The external guard owns only write-mode Relay attempts, exact sessions, terminal results, Git baseline, and landing lineage. Git owns candidate commits. Artifacts own immutable evidence. A UI lease is only a machine-local resource lock.
 
-The selected Coding Agent parent owns repository investigation, technical design, planning/implementation, tests, integration, internal work-package delegation, and a verified handoff. Every stage implement brief must say that the **outer native Card review gate owns final review**. This causes `write-plan`/`execute-plan` to report `skip: outer review gate` and prevents duplicate `.dev/plan-review` or `.dev/review` cycles. Never reconstruct their internal persistence formats.
-
-Before creating, finalizing, routing, transitioning, reconciling, or completing a development Card — or operating its external guard state — load `hermes-kanban-workflows`.
+Before any managed Card/guard action, load `hermes-kanban-workflows`. Never bypass a `devflow_*` managed tool with a native lifecycle call, raw SQLite, direct guard command, or Relay launcher.
 
 ## Session roles
 
-Handoffs use the Card, its comments/events, and the guard state file — never conversation memory.
+The Harness derives role from runtime and current Kanban facts; a model cannot self-declare it.
 
-- **Origin default-profile session** — interactive session with Kenan. Owns intent convergence and dispatch authorization; records append-only amendments; may commission temporary read-only grounding; never implements, reviews engineering output, or lands.
-- **Implement Worker** — Dispatcher-spawned worker owning one implement run: guard init/inspect, Pi implement relay, UI acceptance (execute/direct cards), landing, then `kanban_request_review` (stage cards) or `kanban_complete` (direct card).
-- **Review Worker** — fresh Dispatcher-spawned worker claimed from the review lane: delegates read-only Pi review relay(s), maps findings to exactly one verdict, never edits implementation.
+- **Origin** — interactive `default` profile, no Dispatcher task/run environment, and an orchestrator-capable surface. It converges intent, creates/finalizes stages, records accepted decisions/amendments/manual verdicts, inspects, and explicitly unblocks. It never starts a managed Relay, lands a candidate, submits review evidence, or operates a Worker's UI lease.
+- **Implement Worker** — current task/run/claim all match Kanban, run is active, and `claimed.source_status != review`. It starts/attaches/consumes the write Relay, runs engineering closure, freezes candidates, performs required UI acceptance, lands under authority, and hands off through `devflow_implement_handoff`.
+- **Review Worker** — current task/run/claim match, run is active, `claimed.source_status == review`, and the latest handoff is the current candidate's `review_requested`. It starts one fresh read-only review Relay and ends through `devflow_review_verdict`.
+- **Non-owning Worker** — task/run/claim mismatch or a terminal run. It may only inspect/read/exit. It cannot write files, comment, operate Terminal/Relay/Guard/Git/UI, message externally, or transition Kanban. The Harness disables stop-nudge in that old process so it can exit without touching the current run.
+- **Unmanaged** — ordinary work outside a managed development Card.
 
-At most one role actively orchestrates a Card at a time. No scheduled job ever advances a Card.
+`stale` is a Kanban-native outcome, never a synonym for non-owning. Dispatcher alone detects/reclaims stale workers.
 
-Stage-card notifications (`review_requested`, verdicts, completions) are dispatch artifacts, not commissions. When a Card enters `review`, native routing has already spawned a fresh Review Worker (visible as a `claimed`+`spawned` pair after the handoff); the Origin never dispatches review relays or writes `reviews/` namespaces — its share is read-only fact reconciliation, and after a PASS the fold-and-finalize step of the stage-release flow.
-
-## Pi commissioning map
-
-| Card stage | Implement relay brief | Implement model | Review relay brief(s) | Review model | Review rounds |
-|---|---|---|---|---|---|
-| `direct` | `delegate-work` | `zai-coding-cn/glm-5.3` | none | — | — |
-| `write-plan` | `write-plan` | `kimi-coding/k3` → fallback `zai-coding-cn/glm-5.3` | `review-plan` | `zai-coding-cn/glm-5.3` | ≤3 |
-| `execute-plan` | `execute-plan` | `kimi-coding/k3` → fallback `zai-coding-cn/glm-5.3` | `review-patch` + `review-plan-conformance` | `zai-coding-cn/glm-5.3` | ≤3 |
-
-- Every relay goes through exactly one selected `*-delegate` adapter (default Pi). Implement relays are write-mode; review relays are fresh, read-only, and never resume an implement session.
-- Relay models are Pi provider-prefixed ids run with `--thinking high`; `pi-delegate` owns id format and the fallback mechanics. The k3→glm-5.3 switch fires only on actual quota exhaustion or provider unavailability (one re-dispatch, exact session resumed). glm-5.3 relays — every review and direct implement — have no fallback: failure there is terminal and the Worker blocks typed; never silently substitute a model.
-- Every relay runs under `delegate-work` discipline: a direct implement brief opens with the `delegate-work` directive, while `write-plan`, `execute-plan`, and all three review Skills embed `delegate-work` internally — no extra directive is needed for those briefs.
-- Begin every brief with `Use the <skill> Skill (discovered from the global Skill root).` plus exact inputs: plan path for write/execute relays; diff base/head, reviewed head, or workspace scope plus intended behavior for review relays.
-- Card `skills` pins both `development-orchestrator` and the selected delegate adapter. Review Workers additionally get `sdlc-review` force-loaded by the dispatcher. For a `development-stage.v1` Card, use `sdlc-review` only for role separation and terminal verdict discipline; this Skill's commissioning map replaces its local inspection/test procedure with the required read-only Pi review relay(s).
-- Adapter `--read-only` constrains only the top-level Pi tool set; `delegate_agent` is still available. Every review brief must therefore forbid the reviewer **and all delegated children** from editing files or invoking write-access children. This is an instruction boundary, not an OS sandbox.
-- If a brief's task scoping proves wrong mid-run, stop expansion and reclassify rather than silently switching skills.
-- Execute-plan implement relays and every same-session rework relay pass `--auto-handoff-plan <absolute accepted plan path>` so the top-level Pi parent runs Auto Handoff scoped to the relay out dir; direct, write-plan, and all review relays never pass it; delegated children never receive the extension.
-
-## Stage Card contract (development-stage.v1)
-
-Every Card body starts with:
+## Managed Card contract (`development-stage.v2`)
 
 ```yaml
 ---
-schema: development-stage.v1
-feature_id: <kebab-case id shared by this feature's cards — feature identity, set once at write-plan creation and reused verbatim by every execute card; a rebuilt card keeps it>
+schema: development-stage.v2
+feature_id: <stable-kebab-case-id>
 stage: direct | write-plan | execute-plan
 intent: draft | converged
 ui_acceptance: pending | required | not-required
 manual_acceptance: []
-coding_agent: pi
-pi_implement_skill: delegate-work | write-plan | execute-plan
-pi_review_skill: none | review-plan | review-patch+review-plan-conformance
+coding_agent: pi | cursor | codex | opencode
+accepted_plan: null
 ---
 ```
 
-Follow it with the same sections as before: `# Goal`, `# Observable acceptance`, `# Included scope`, `# Non-goals`, `# Settled decisions`, `# Open decisions`, `# Repository grounding`, `# Authority boundaries`.
+For a converged execute stage:
 
-Rules:
+```yaml
+accepted_plan:
+  card_id: <write-plan-card-id>
+  path: <absolute-plan-path>
+  sha256: <64-lowercase-hex>
+```
 
-- `intent: draft` cards sit in `triage`. `intent: converged` requires non-empty Goal and Observable acceptance, resolved UI classification, `Open decisions: None`, and stage-consistent skill fields (`direct`→`delegate-work`/`none`; `write-plan`→`write-plan`/`review-plan`; `execute-plan`→`execute-plan`/`review-patch+review-plan-conformance`).
-- `execute-plan` bodies carry the accepted plan path (and plan SHA-256 when available) plus the write-plan Card id in Repository grounding. That body reference answers "which accepted Plan feeds this card" — `feature_id` never replaces it.
-- Feature identity = the `feature_id` frontmatter value. The parent link is dispatch gating only (execute waits for write-plan; downstream features wait for upstream) and is never evidence of same-feature. Query same-feature cards by body `feature_id:` match within the board.
-- Native Card fields: `assignee: default`, `workspace_kind=dir` with the exact repository path, `skills: [development-orchestrator, <delegate-adapter>]`. Card `model`/`provider` configure the Hermes worker, not Pi.
-- Record product decisions, observable contracts, constraints, and concise load-bearing repository facts — never transcripts, raw logs, or copied Coding Agent internals.
+The body has exactly these level-one sections in order:
 
-## Card topology and route selection
+1. `# Goal`
+2. `# Observable acceptance`
+3. `# Included scope`
+4. `# Non-goals`
+5. `# Settled decisions`
+6. `# Open decisions`
+7. `# Repository grounding`
+8. `# Authority boundaries`
 
-The Origin recommends, Kenan decides:
+Goal, Observable acceptance, Included scope, and Authority boundaries must be substantive. A converged Card has `Open decisions` exactly `None`, a resolved UI classification, and a supported adapter. Direct/write-plan use `accepted_plan: null`; execute requires a readable, non-empty, SHA-matching Plan handed off by the same feature's write-plan Card. `manual_acceptance` is non-empty only when UI is required.
 
-- **One direct Card** — narrow, single-module work with no architecture, persistence, migration, dependency, release, security, broad-coupling, or unresolved product decision. One write-mode relay with `delegate-work`; the Worker verifies, accepts UI when required, lands, and completes. No card review.
-- **Two stage Cards** — major, cross-module, architectural, persistent, migratory, ambiguous, broad-impact, or multi-part work. Write Plan Card first; Execute Plan Card as its child (native parent link). The plan file produced by the write-plan Card is the sole authority for the execute-plan Card.
-- Investigation on a direct Card that exposes broader coupling or a load-bearing decision stops and re-routes the same feature into stage cards (converge with Kenan first) rather than silently expanding.
-- Downstream feature cards parent the feature's execute-plan Card (or the direct Card). Never park a long-running coordinator Card to wait for children — parent links and auto-promotion do that.
+Do not store derived Skill/mode/review fields in the Card. Policy derives them from stage and adapter:
 
-## Creation and stage-release flow
+| stage | implement Skill | review Skill | review lane | UI owner | Auto Handoff |
+|---|---|---|---|---|---|
+| direct | `delegate-work` | none | no | Implement Worker, conditional | no |
+| write-plan | `write-plan` | `review-plan` | yes | none | no |
+| execute-plan | `execute-plan` | `review-execute-candidate` | yes | Implement Worker, conditional | required |
 
-- Direct feature: create one draft Card in `triage`; after intent convergence, finalize it to dispatch.
-- Plan-driven feature: create both draft Cards in `triage` and immediately link `write-plan` as parent of `execute-plan`. After product intent converges, finalize **only the write-plan Card**. The execute-plan Card must remain `triage` because no accepted Plan path/SHA exists yet.
-- A PASS review completes the write-plan Card. The Origin then reads its exact Plan path and SHA-256 from the native handoff, folds those plus the write-plan Card id into the execute-plan body, and finalizes the execute-plan Card. Since its parent is now done, native gating promotes it to `ready`.
-- Abnormal-card handling: same-scope retry reopens the original card (`unblock`), never a new card. A scope change rebuilds the stage card: create the new card with the same `feature_id`, parent it, then **archive** (not block) the old card with a `superseded by <new-id>` comment. Invariant: per `feature_id` + stage, at most one non-archived card exists at any moment. Existing completed cards keep their historical frontmatter; do not rewrite done cards.
-- An already-accepted Plan is the only case where an execute-plan Card may be created/finalized directly. A merely converged feature request is not an accepted Plan.
-- Do not enable Goal Mode; do not rely on auto-decompose (`kanban.auto_decompose` is false).
-- Before dispatching trusted-directory work, verify both `kanban.max_in_progress_per_profile=1` (per board) and `kanban.max_in_progress=1` (host-wide across boards).
+Feature identity is the literal `feature_id`; a parent edge is only a dependency. Per board, at most one non-archived Card may exist for one `feature_id + stage`.
 
-## Intent convergence
+## Intent and stage release
 
-Discuss unsettled product intent directly with Kenan. If repository facts are needed, commission a temporary read-only relay and normalize only verified conclusions into the card. Before dispatch settle Goal, observable acceptance, scope, non-goals, decisions, topology (one vs two cards), UI classification, Coding Agent, and authority boundaries.
+Before creation settle only the problem, coarse impact, and route. Then:
 
-A product, compatibility, persistence, security, scope, irreversible, or authority decision discovered during execution is exceptional: block with `kind="needs_input"`. Ordinary technical choices already authorized by the card or plan remain with the Coding Agent.
+- `devflow_create_feature(route=direct|two-stage)` creates draft Card(s) in `triage`. Two-stage creation is atomic and immediately links write-plan as execute's parent; execute remains in triage even if its parent later completes.
+- During convergence, `devflow_record_decision(kind=intent-decision)` appends sourced decisions. There is no duplicate editable draft state and no `devflow_update_draft`.
+- `devflow_inspect` combines body and accepted decision comments. When intent is complete, Origin calls `devflow_finalize_stage` with one complete replacement v2 body.
+- For two-stage, finalize only write-plan first. After its PASS handoff, read exact Plan path/SHA/card id, fold them into execute's `accepted_plan`, then finalize execute. Native parent gating promotes it when ready.
+- Product behavior, scope, compatibility, migration, persistence, permission, security, or authority changes after dispatch return to Origin as `devflow_record_decision(kind=amendment)`. Ordinary implementation choices remain with the Coding Agent. If an amendment invalidates the accepted Plan, block execution and rebuild/review the stage chain.
 
-## Dispatcher fail-closed gate
+A same-scope retry reuses the Card. A scope-changing replacement keeps `feature_id`, creates and correctly parents the replacement, then archives the old Card with a `superseded by <id>` comment. Historical done bodies are immutable.
 
-Every Worker (implement or review) begins with `kanban_show()` and refuses execution unless:
+Before releasing trusted-directory work, read back both `kanban.max_in_progress=1` and `kanban.max_in_progress_per_profile=1`; two-stage also requires `kanban.review_dispatch=true`.
 
-- `schema: development-stage.v1` (a legacy `development-task.v1` card explicitly grandfathered on a board is acceptable);
-- implement runs: `intent: converged`, stage-consistent skill fields, resolved UI classification, non-empty Goal and Observable acceptance, `Open decisions: None`;
-- review runs: the card was claimed from `review` and the latest handoff is this card's `review_requested`;
-- Board/workdir are expected and assignee is literal `default`; `coding_agent` is supported.
+## Pi commissioning policy
 
-Never infer a missing route, settle a product decision, or repair a draft card in a worker. Block with the precise missing-contract reason.
+| stage | implement model | review model | rounds |
+|---|---|---|---|
+| direct | `zai-coding-cn/glm-5.3` | none | — |
+| write-plan | `kimi-coding/k3`, one fallback to `zai-coding-cn/glm-5.3` only for real quota/provider failure | `zai-coding-cn/glm-5.3` | ≤3 |
+| execute-plan | same implement policy | `zai-coding-cn/glm-5.3` | ≤3 |
+
+All run with high thinking. Direct, grounding, and review relays have no fallback. The Harness policy registry chooses Skill, mode, model, thinking, resume, Auto Handoff, and output namespace; model parameters do not override it.
+
+Every brief starts `Use the <skill> Skill (discovered from the global Skill root).` Direct uses `delegate-work`; the stage/review Skills own their internal `delegate-work` discipline. Implement relays are write-mode. Reviews are fresh and read-only, never resume implementation, never use the write guard, and forbid the parent and every child from writing or invoking write-access children.
+
+Execute/rework must pass the exact accepted Plan through `--auto-handoff-plan`. Before guard reservation, validate Plan path/SHA, extension root, adapter capability, out dir, and launcher option. At terminal validate `result.autoHandoff.enabled`, exact `planFile`, `<out-dir>/auto-handoff` handoffDir, and resolved extension root. Missing capability blocks; never silently degrade.
+
+See `references/coding-agent-commissioning.md` for exact brief contracts.
 
 ## Implement Worker flow
 
 ```text
-kanban_show → fail-closed gate
-→ guard init/inspect → Pi implement relay (skill per stage)
-→ consume terminal result (commands, observed results, changed files, artifacts, limitations)
-→ direct:      handoff-integrity closure → UI acceptance (if required) → check-run → landing commit → kanban_complete
-→ write-plan:  verify exact plan path + SHA → artifacts-repo commit per its convention → kanban_request_review(metadata: plan path/SHA + relay result; reviewer omitted)
-→ execute-plan: handoff-integrity closure → UI acceptance (if required) → check-run → landing commit → kanban_request_review(metadata: commit + diff base/head + relay result; reviewer omitted)
+devflow_inspect
+→ devflow_start_or_inspect_relay
+→ validate terminal delegate-relay.result.v1 and stage output
+→ engineering checks
+→ direct/execute: check current run, create local Card-trailer candidate commit
+→ required UI/manual acceptance against that exact candidate
+→ authorized push only after UI PASS
+→ recheck run/candidate
+→ devflow_implement_handoff
 ```
 
-- Advance beyond Relay handling only when `delegate-relay.result.v1` is terminal with `status: completed`, `exitCode: 0`, the expected mode/session/CWD, and every stage-required output. `unavailable` blocks `capability`; `failed`, `timeout`, or `aborted` never proceed to UI/landing/review and must be reconciled or blocked with the matching typed cause. Missing or ambiguous required output is not success.
-- Relay liveness: bounded observation slices, Kanban heartbeats during long operations, never deliberately exit while `running`. Native stale reclaim and the retry/circuit-breaker own Worker recycling.
-- Every implement brief begins with the stage Skill directive and explicitly says `Outer native Card review owns final review; skip the Pi-internal final review gate.`
-- Rework after `kanban_request_changes` runs in a fresh Implement Worker but resumes the exact recorded Pi implement session. A further rework round after a recorded-terminal rework attempt starts its next guard attempt with `start-or-inspect --new-attempt` (a guard CLI flag, not a relay flag); every attempt uses a fresh out dir and result path. Execute-plan rework relays re-pass `--auto-handoff-plan` with the same accepted plan path; write-plan rework does not.
+Write-plan hands off exact Plan path/SHA. Direct and execute create an immutable candidate manifest binding board/card/feature/run/attempt, candidate commit, diff base/head, accepted Plan identity, terminal Relay/session, and evidence hashes. A new candidate or Plan SHA invalidates old evidence without deleting it.
+
+Writable Pi must not commit or push. If it does, stop for attribution/recovery. Landing uses `Kanban-Task: <card-id>` and the guard's v2 landing lineage. UI failure stays with implementation: resume the exact session, create a new attempt and new local candidate, then rerun failed scenarios and necessary regression.
+
+`devflow_implement_handoff` performs validation and the native transition atomically:
+
+- direct → native complete;
+- write-plan → native request review;
+- execute-plan → native request review.
+
+Do not call `kanban_complete` or `kanban_request_review` directly for a managed v2 Card.
 
 ## Review Worker flow
 
 ```text
-kanban_show → read handoff + prior rounds (count changes_requested runs)
-→ fresh read-only Pi review relay(s), one per pi_review_skill
-→ map findings → exactly one verdict:
-   PASS   → kanban_complete(summary, metadata {verdict: pass, evidence, caveats})
-   REVISE → kanban_comment(full findings) + kanban_request_changes(reason)
-   BLOCK  → kanban_block (typed needs_input/capability; genuine human decision only)
+devflow_inspect
+→ one fresh read-only `review-plan` or `review-execute-candidate` Relay
+→ validate run-scoped result and evidence identity
+→ devflow_review_verdict(pass | revise | blocked)
 ```
 
-- The Review Worker does not use the write-mode external guard. For round `N`, each relay gets `development-artifacts/<board>/tasks/<card-id>/reviews/round-N/run-<kanban-run-id>/<review-skill>/` with its own `result.json`; the Worker waits for process exit, validates `delegate-relay.result.v1`, and records those paths in the native review run.
-- Normalize Pi verdict vocabularies before routing: `review-plan APPROVE`, `review-patch correct`, and `review-plan-conformance CONFORMS` are pass candidates. Any P0/P1 or finding that forces a load-bearing change is blocking; P2-only findings may pass only when the Review Worker records why they are bounded caveats. `INCOMPLETE` blocks only when the missing evidence needs human/external input; otherwise request changes for the missing proof.
-- `execute-plan` review aggregates BOTH relays (patch first, then conformance) over the same committed diff range and includes implementation plus UI-acceptance evidence in both briefs; any blocking finding in either → REVISE with merged findings in two labeled sections.
-- Review round = prior `changes_requested` runs + 1. Do not start round 4: comment the state and `kanban_block(needs_input)` for Kenan's authorization and a materially revised candidate.
-- The reviewer never edits implementation, never resumes implement sessions, and never runs local project checks. Its Pi relays are fresh `--read-only`, use plan or commit-range scope, and forbid write-access delegated children.
+`review-execute-candidate` reviews one frozen commit range and emits independent `patch_gate` and `plan_conformance_gate` results plus `overall`. Either sub-gate FAIL forces REVISE. The Review Worker verifies any existing UI/manual PASS evidence belongs to the same candidate/Plan; it does not drive the renderer again.
 
-## UI classification and acceptance
+`devflow_review_verdict` maps exactly one terminal action: PASS→native complete, REVISE→native request changes with findings reference, BLOCKED→genuine typed block. Review round is derived from native history. Do not begin round 4 without Kenan's explicit authorization and a materially revised candidate.
 
-UI scope includes graphical layout, menus, dialogs, hover, drag, scroll, keyboard/focus behavior, visible state, renderer persistence, and accessibility structure.
+## UI acceptance
 
-- `ui_acceptance: required`: the IMPLEMENT Worker exercises accepted scenarios in the real renderer per `references/behavior-acceptance.md`, BEFORE requesting review (execute/direct cards). Engineering tests never replace this gate.
-- `ui_acceptance: not-required`: never duplicate the Coding Agent's behavior verification; perform handoff-integrity closure only.
-- `manual_acceptance` is opt-in for behaviors Watson cannot reliably judge (VoiceOver narration, transient hover feel, drag feel, subjective density). When automated scenarios pass but manual items remain, comment the checklist and block `needs_input`; a user PASS unblocks to a fresh Implement Worker, which re-verifies run ownership and continues with landing then review/completion.
+Required UI acceptance belongs to the Implement Worker after candidate commit and before push/handoff. Engineering tests never replace a real renderer. Acquire the named resource with `devflow_ui_lease`, generate evidence while the run-bound lease is valid, and always release/record cleanup. Review only validates evidence binding.
 
-## Landing and authority
+If deterministic scenarios pass but `manual_acceptance` remains, persist a candidate-bound checklist and block `needs_input`. Origin records Kenan's PASS/FAIL through `devflow_record_decision(kind=manual-verdict)` and explicitly unblocks. A fresh Implement Worker revalidates candidate/Plan before continuing; FAIL resumes exact-session rework.
 
-Landing runs on the implement Worker (execute/direct cards) BEFORE `kanban_request_review`, so the reviewer sees a commit range:
+Use `references/behavior-acceptance.md` and the application-specific acceptance Skill.
 
-1. `check-run` passes; 2. compare Git status with the guard baseline; 3. stage only handoff-listed paths (a path dirty at baseline blocks); 4. search history for the trailer `Kanban-Task: <card-id>`; 5. an existing matching commit at/after baseline is recorded, not re-committed; 6. otherwise create exactly one commit with that trailer, read back hash + trailer, then `record-commit`.
+## Recovery and authority
 
-Write-mode Pi has shell access, so “do not commit/push” is an instruction boundary. If Git history shows that Pi committed or pushed despite the brief, stop and block for attribution/recovery; never silently adopt or rewrite that side effect as the Worker's authorized landing.
+Fresh sessions rebuild from persistent facts, not old chats:
 
-A REVISE → rework cycle produces a follow-up trailer commit the same way; push follows each landing commit under standing authorization (plugin repo main, CI only) — the card review may therefore land further commits. Ask case-by-case before pushing the site repo, tags, PRs, versions, releases, deployments, or any external action. The write-plan Card lands nothing in the product repo; artifacts-repo changes follow that repo's own convention.
+- Origin: board + task id (or feature id) → `devflow_inspect`.
+- Implement: current Kanban run/claim → accepted decisions → Guard v2 → terminal result → Git landings/candidate → UI/manual evidence.
+- Review: current `review_requested` handoff → frozen candidate/Plan → run-scoped review result.
 
-Return to Kenan before ambiguous visible behavior, scope, compatibility, persisted-data or migration policy, security/privacy, architectural guardrails, production dependencies, external services, irreversible actions, accepted-plan invalidation, lost session continuity, or remote/release actions outside standing authorization.
+Guard live means attach; terminal means consume; uncertain means typed block. Only same-scope implement rework resumes the exact Coding Agent session. No general force exists. A narrowly approved zero-side-effect uncertain recovery remains Origin-only and can never authorize a non-owning Worker or override live/ambiguous write risk.
 
-## Completion and amendments
+Do not commit, push, create PRs, tag, release, deploy, publish, alter versions, or perform irreversible actions without the applicable authority. Standing plugin-main CI authorization does not cover website production, tags, PRs, releases, or deployments.
 
-`kanban_complete(summary, metadata, artifacts)` stores the native handoff; subscribed conversations get the terminal notification. Include compact engineering evidence, verdict, UI verdict when relevant, artifacts, limitations, and commit identity.
+## Migration
 
-Decisions after dispatch are append-only structured comments recorded by the Origin; Workers honor body plus amendments in sequence; conflicting or non-user-approved amendments fail closed to `needs_input`. Repeated same-kind `needs_input` may recurrence-route to `triage`; the Origin folds body plus amendments into one converged body and re-finalizes.
-
-## Legacy cards (obsidian-card-workspace)
-
-`t_3a4ea8ff` (架构加固) is the grandfathered execute-plan stage Card — its plan was accepted on another machine and its guard/session history stands; it enters the Card review lane like any execute-plan Card. `t_5b033bdb` stays parked, never dispatched. `t_0af96a52` (Links 双链) stays hard-parked in `triage` pending deliberate convergence. The two experimental standalone review Cards remain archived.
-
-## Scheduled jobs
-
-None. Active-card visibility comes from native Kanban notifications and Worker reporting. No per-Card Cron, monitor, or wrapper exists.
-
-## MVP enforcement boundaries
-
-Mechanically enforced: native Card/run ownership and expected-run terminal transitions; write-mode Relay duplicate/recovery state; top-level Pi tool mode; process-exit/result schema/status; exact resumed Pi Session ID; Card-trailer landing evidence; top-level Auto Handoff extension loading + scoped env injection (execute-plan relays only).
-
-Instruction-enforced and then verified fail-closed: delegated children of a read-only Pi reviewer must not write; writable Pi must not commit/push; stage-specific outputs live in `finalMessage` rather than typed result fields. Workers inspect Git and required outputs and block on any violation or ambiguity.
-
-Read-only review Relays intentionally do not use the write-mode guard. A reclaimed review run can therefore leave an orphan read-only Pi process. The replacement run uses its own run-ID output directory, never overwrites prior evidence, and owns the only valid Kanban verdict through expected-run checking; duplicate read-only compute is tolerated in this MVP, but duplicate writes or Card transitions are not.
+New Cards use v2. Running/completed `development-stage.v1` Cards retain legacy inspect/transition compatibility until terminal; unfinalized legacy drafts may finalize as full v2. Guard v1 migrates in place on the first exclusive managed write with an atomic backup and lossless mapping to one attempt and optional landing. Failure to migrate is `HARNESS_INCOMPATIBLE`, never a reset.
 
 ## Invariants
 
-- Per feature: one direct Card, or one Write Plan + one Execute Plan stage Card. Relay attempts, retries, review rounds, artifacts, and same-scope fixes never become separate Cards.
-- Pi by default; other transports only by explicit task-scoped request.
-- Fresh relay per round; reviews are read-only and never resume implement sessions; rework resumes the exact recorded implement session.
-- Review is the native in-card lane: use Kanban's default reviewer routing (omit `reviewer`; persisted reviewer provenance owns re-review routing), with `sdlc-review` + adapter skill and ≤3 rounds without Kenan's authorization.
-- UI acceptance runs on the implement Worker before review request; engineering tests never replace it.
-- The guard owns only Relay identity/session/result and Git baseline/commit evidence.
-- Watson never writes, repairs, refactors, or code-reviews product code.
-- No unauthorized commit, push, PR, release, deployment, publication, version change, or irreversible action.
+- One direct Card, or one write-plan + execute-plan pair; retries, Relay attempts, review rounds, and evidence are not Cards.
+- Managed v2 creation/finalization/Relay/UI/handoff/verdict use `devflow_*` tools.
+- Current run/claim ownership is checked immediately before every managed side effect.
+- Review is one fresh read-only Relay per stage/round; execute uses the merged review Skill.
+- Required UI acceptance occurs once, on the Implement Worker, against the frozen current candidate.
+- No Goal Mode, auto-decompose, monitor, per-Card Cron, phase database, generic workflow DSL, or Core patch.
 
 ## References
 
 | Situation | Load |
 |---|---|
-| Coding Agent commissioning boundary | `references/coding-agent-commissioning.md` |
+| Coding Agent commissioning | `references/coding-agent-commissioning.md` |
 | Real-renderer UI acceptance | `references/behavior-acceptance.md` |
-| Any Kanban/external-guard operation | `hermes-kanban-workflows` |
-| Guard CLI and fail-closed semantics | `hermes-kanban-workflows/references/execution-recovery.md` |
-| Coding Agent dispatch | exactly one selected `*-delegate` adapter |
+| Managed Kanban/Harness/guard mechanics | `hermes-kanban-workflows` |
+| Coding Agent transport | exactly one selected `*-delegate` adapter |

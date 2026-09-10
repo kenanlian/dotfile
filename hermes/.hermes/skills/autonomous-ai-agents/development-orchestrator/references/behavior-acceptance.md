@@ -1,116 +1,104 @@
 # UI Behavior Acceptance
 
-The main Skill requires Watson behavior acceptance only when a task's accepted scope contains graphical UI behavior. This reference owns UI scenario construction, real-renderer execution, evidence, failure packets, and verdicts. It does not apply to non-UI CLI, API, service, migration, security, or developer-tooling tasks.
+Use only when accepted scope contains graphical UI behavior. This reference owns scenario construction, real-renderer execution, evidence, failure packets, and verdicts; application-specific mechanics stay in the matching acceptance Skill.
 
-## Continuous UI-acceptance session
+## Ownership and ordering
 
-UI acceptance is led by the Implement Worker for the current implement run, after the top-level implementation Relay reaches a verified terminal state (guard outcome `terminal`) and before landing/review handoff.
-
-1. Verify the terminal contract, artifact existence, and process exit.
-2. Confirm the intended build is installed and running in the target renderer.
-3. Execute deterministic UI checks directly through browser, `computer-use`, live DOM, or the application's official automation surface.
-4. Use `delegate_task` only for context-heavy or genuinely parallel-safe scenario groups.
-5. Never let two agents drive the same GUI/application instance concurrently.
-6. Subagents return observations, preliminary `PASS | FAIL | BLOCKED`, and evidence paths; Watson reads back key evidence and owns the final verdict.
-7. Subagents never modify product code, order rework, commit, push, release, or deploy.
-8. Batch manual-only experience checks for the user when automation cannot judge them reliably.
-
-Evidence convention:
+Required UI acceptance is led by the current **Implement Worker** after a frozen local candidate commit exists and before push or managed handoff:
 
 ```text
-development-artifacts/<project>/acceptance/<card-id>-<slug>/<run-id>/<scenario-id>/
+terminal implementation Relay + engineering checks
+→ devflow current-run/candidate validation
+→ local Card-trailer candidate commit + candidate manifest
+→ acquire named UI lease
+→ load exact candidate build and execute real-renderer scenarios
+→ persist candidate-bound evidence and release lease
+→ authorized push only after PASS
+→ recheck current run/candidate
+→ devflow_implement_handoff
 ```
 
-A simple UI task still has a card, so do not use a separate lightweight-task layout.
+The Review Worker does not drive UI again. It verifies that PASS evidence and any manual verdict belong to the current board/card/feature, producing implement run, candidate commit, diff range, accepted Plan SHA, and valid lease interval. A new candidate or Plan invalidates earlier evidence.
 
-## Build the UI checklist
+## UI lease
 
-Derive a small decisive set of scenarios from the card's accepted UI contract. Each scenario states:
+Before any agent drives a shared application resource, call `devflow_ui_lease(action=acquire)` with a stable resource such as `obsidian:<acceptance-vault>`. Only an owning Implement Worker with a frozen current candidate may acquire it.
 
-- renderer, build identity, starting state, and persisted state;
-- exact user actions;
-- expected visible output and UI state;
-- relevant empty, failure, cancellation, repeated, restart, and persistence behavior; and
-- cleanup before the next scenario.
+- Never let two agents or sessions drive one renderer/vault concurrently.
+- A live owning holder blocks acquisition.
+- Reclaim only when the holder process is dead and its run is no longer current.
+- The owner releases after evidence persistence and records cleanup. A lease is local coordination, not lifecycle truth.
+- If another session or the user is using the resource, stop rather than attempting to win focus or overwrite shared state.
 
-Do not repeat the coding agent's non-UI engineering checks.
+## Evidence layout and identity
 
-## Prepare the real renderer
+```text
+~/Secret-Projects/development-artifacts/<board>/tasks/<card-id>/
+  ui/<candidate-sha>/<implement-run-id>/
+```
 
-Require the implementation parent to return:
+Record one run manifest plus bounded scenario evidence. It includes:
 
-- artifact/build identity;
-- exact build and installation result;
-- target application and version;
-- setup, reload, restart, and fixture steps;
-- known environmental limitations; and
-- intended UI path.
+- schema/version and artifact content SHA;
+- board, Card, feature, stage, implement run and attempt;
+- candidate commit and diff base/head;
+- accepted Plan path/SHA when execute-plan;
+- terminal Relay/session identity;
+- candidate/build/install identity;
+- fixture starting state and cleanup result;
+- UI lease resource/holder/acquired/released identity;
+- each scenario's actions, expected/observed result, verdict, and evidence paths;
+- automation boundaries and pending manual items.
 
-Build success does not prove installation. Confirm the renderer is using the intended artifact before issuing a verdict.
+File presence is not PASS; the Harness parses identity and verdict.
+
+## Build the checklist
+
+Derive a small decisive set from the Card's accepted UI contract. Each scenario states renderer, exact candidate build, starting/persisted state, user actions, expected visible result, relevant empty/failure/cancel/repeat/restart behavior, evidence oracle, and cleanup. Do not repeat the Coding Agent's non-UI checks.
+
+## Prepare the renderer
+
+Require the implementation parent to return artifact/build identity, build/install result, target application/version, setup/reload/restart/fixture steps, environmental limitations, and intended UI path. Build success does not prove installation; verify the running renderer loaded the exact candidate artifact.
 
 ## Exercise and observe
 
-### Obsidian plugins
+Use deterministic UI checks through the real browser/application, `computer-use`, live DOM, or the application's official automation surface. `delegate_task` is allowed only for context-heavy or parallel-safe scenario groups that do not share one renderer. Subagents may observe and persist scoped evidence but never modify product code, order rework, commit, push, release, deploy, or own the final verdict. Watson reads back load-bearing evidence.
 
-1. Confirm the intended vault, plugin installation path, and build identity.
-2. Open Obsidian and reload the plugin or application as required.
-3. Navigate through the real command, menu, view, settings, keyboard, drag/drop, or persistence flow.
-4. Observe visible state, notifications, UI-backed files, and restart presentation.
-5. Avoid permission dialogs, passwords, destructive vault operations, and unrelated user data.
+For Obsidian plugins, use the `obsidian-plugin-acceptance` Skill. Prefer official CLI/eval for live state, live DOM for visible/ARIA/geometry evidence, stable screenshots for layout, and native input for pointer/hover/drag/menu/keyboard/focus behavior. Never operate on the primary vault or unrelated user data.
 
-Use the most reliable observable UI oracle:
+Watson normally owns deterministic visible projection, filtering, sorting, grouping, pins, Box membership, empty/repeated presentation, metadata refresh as rendered, restart presentation, objective geometry, overflow/overlap/duplication/omission, and structural accessibility.
 
-- official Obsidian CLI/eval when it reads live renderer state;
-- live DOM for visible content, geometry, active element, ARIA, and persistence projection;
-- stable screenshots for layout and styling;
-- native input for pointer-, hover-, drag-, menu-, keyboard-, and focus-dependent behavior.
+Reserve user-manual checks for actual VoiceOver speech, transient hover/native menus that cannot remain observable, long-gesture feel, and subjective native feel/density/rhythm/polish. For one native interaction make one normal attempt and at most one prescribed escalation; if still unverifiable, mark BLOCKED rather than substituting a weaker oracle.
 
-Watson normally owns deterministic UI checks such as visible projection, filtering, sorting, grouping, pins, Box membership, empty/repeated presentation, metadata refresh as rendered, restart presentation, objective geometry, overflow, overlap, duplication, omission, and structural accessibility.
-
-Reserve user-manual checks for actual VoiceOver speech, transient Hover/native menu behavior that cannot remain observable, long gesture smoothness, and subjective native feel, visual density, rhythm, or polish.
-
-For one native interaction, make one normal attempt and at most one prescribed escalation. If it remains unverifiable, stop and mark the scenario `BLOCKED`; do not substitute DOM invocation for pointer-only, Hover, drag, native menu, or spoken-accessibility proof.
-
-### Web and desktop applications
-
-Start the real built application, exercise the visible user flow, and observe rendered state, navigation, focus, responsive layout, persistence presentation, error UI, and UI-triggered externally visible effects. Use authorized accounts and avoid destructive or publication actions.
-
-## Record results
-
-For each scenario record:
+## Scenario record
 
 ```text
 Scenario: <name>
-Environment/build: <identity>
+Environment/build: <candidate identity>
+Starting state: <fixture/settings>
 Actions: <steps>
 Expected: <visible result>
 Observed: <visible result>
 Verdict: PASS | FAIL | BLOCKED
-Evidence: <screenshot/DOM/path/visible state or None>
+Evidence: <paths or None>
+Cleanup: <result>
 ```
 
-A `BLOCKED` scenario is not a pass. Tests, lint, typecheck, builds, internal reviews, and executor claims never convert it into one.
+Tests, lint, typecheck, builds, reviews, and executor claims never convert BLOCKED to PASS.
 
-## Failure packet
+## Failure and rework
 
-Return UI failures to the exact implementation parent with:
+A FAIL is a correctable implementation result, not a blocker. Keep implementation ownership and resume the exact recorded session with:
 
-- environment/build identity;
-- minimum reproducible UI steps;
-- expected versus observed visible behavior;
-- whether the failure is consistent or intermittent;
-- UI state before and after; and
-- screenshot, DOM, or other renderer evidence.
+- candidate/build identity;
+- minimal UI reproduction;
+- expected versus observed behavior;
+- consistency/intermittency;
+- before/after state; and
+- screenshot/DOM/renderer evidence.
 
-Describe behavior, not a guessed code cause. The implementation parent owns diagnosis, repair, verification, and any internal review rerun.
+Describe behavior, not a guessed cause. Start a new guard v2 rework attempt with a fresh output directory/result path and mandatory accepted-Plan Auto Handoff for execute-plan. The repaired output becomes a new local candidate; old evidence remains historical but cannot satisfy the gate. Verify failed scenarios first, then necessary regression.
 
-## Re-enter after UI failure
+Use BLOCKED only for permission, external environment, unavailable automation evidence, or a manual-only decision. Persist the pending checklist, release/clean the UI resource, and call typed `needs_input`. Origin records Kenan's candidate-bound verdict; after unblock a fresh Implement Worker revalidates candidate/Plan before continuing. Manual FAIL returns to exact-session rework.
 
-1. Resume the exact implementation session with the failure packet.
-2. Record the prior attempt terminal, then start one new top-level rework Relay through the external guard (`start-or-inspect --operation rework`); a further rework round after a recorded-terminal rework attempt needs `--new-attempt`, and every attempt uses a fresh out dir and result path.
-3. After the rework Relay reaches its verified terminal state, verify the failed UI scenarios first, then the necessary UI regression.
-4. Report continuity loss before replacing a non-resumable session.
-
-## Verdict
-
-Pass only when every authorized UI scenario is `PASS`. If any is `FAIL`, keep the Card `running` and return it to the implementation step via exact-session rework; if any is `BLOCKED`, report the blocker and keep the card open. Non-UI checks and residual engineering limitations remain the coding agent's recorded responsibility rather than additional Watson acceptance scenarios.
+Pass only when every authorized automated scenario is PASS and every required manual item has a current candidate-bound PASS. Release the lease and verify cleanup before handoff.

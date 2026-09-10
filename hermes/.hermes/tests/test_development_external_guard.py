@@ -1,4 +1,4 @@
-"""Tests for the development external-execution guard (MVP).
+"""Tests for the development external-execution guard (v2 lineage).
 
 Runs against the real Hermes Kanban DB API (``hermes_cli.kanban_db`` for
 fixtures, ``hermes_cli.kanban_db_connect.connect`` for connections) with an
@@ -31,6 +31,8 @@ from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
 SCRIPT = TESTS_DIR.parent / "scripts" / "development_external_guard.py"
+SCHEMA_V1 = "development-external-execution.v1"
+SCHEMA_V2 = "development-external-execution.v2"
 
 # ---------------------------------------------------------------------------
 # Bootstrap the installed Hermes runtime (mirrors the digest test harness).
@@ -65,6 +67,7 @@ _SCRUB_ENV_VARS = (
     "HERMES_KANBAN_WORKSPACE",
     "HERMES_KANBAN_TASK",
     "HERMES_KANBAN_RUN_ID",
+    "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_DELEGATED_CHILD_CONTEXT",
 )
 
@@ -138,15 +141,15 @@ class GuardCase(unittest.TestCase):
         self.git("commit", "-q", "--allow-empty", "-m", message)
         return self.git("rev-parse", "HEAD").strip()
 
-    def make_card(self, *, worker: str = "worker-a") -> tuple[str, int]:
+    def make_card(self, *, worker: str = "worker-a") -> tuple[str, int, str]:
         with closing(kanban_db_connect.connect(board=self.board)) as conn:
             tid = kb.create_task(conn, title="Dev task", board=self.board,
                                  workspace_kind="scratch")
             task = kb.claim_task(conn, tid, ttl_seconds=3600, claimer=worker)
         self.assertIsNotNone(task, "fixture card must claim ready -> running")
-        return tid, task.current_run_id
+        return tid, task.current_run_id, task.claim_lock
 
-    def reclaim_card(self, card: str, *, worker: str) -> int:
+    def reclaim_card(self, card: str, *, worker: str) -> tuple[int, str]:
         with closing(kanban_db_connect.connect(board=self.board)) as conn:
             with kb.write_txn(conn):
                 conn.execute(
@@ -155,7 +158,20 @@ class GuardCase(unittest.TestCase):
                     "current_run_id = NULL WHERE id = ?", (card,),
                 )
             task = kb.claim_task(conn, card, ttl_seconds=3600, claimer=worker)
-        return task.current_run_id
+        return task.current_run_id, task.claim_lock
+
+    def set_claim_lock(self, card: str, lock: str) -> None:
+        with closing(kanban_db_connect.connect(board=self.board)) as conn:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET claim_lock = ? WHERE id = ?",
+                    (lock, card),
+                )
+
+    def worker_env(self, card: str, run: int, lock: str) -> dict:
+        return {"HERMES_KANBAN_TASK": card,
+                "HERMES_KANBAN_RUN_ID": str(run),
+                "HERMES_KANBAN_CLAIM_LOCK": lock}
 
     def complete_card(self, card: str) -> None:
         with closing(kanban_db_connect.connect(board=self.board)) as conn:
@@ -166,6 +182,9 @@ class GuardCase(unittest.TestCase):
     def state_path(self, card: str) -> Path:
         return (self.artifacts / self.board / "tasks" / card
                 / "external-execution.json")
+
+    def backup_path(self, card: str) -> Path:
+        return self.state_path(card).with_name("external-execution.v1.bak.json")
 
     def guard(self, card: str, *argv, expect: int = 0,
               env_extra: dict = None):
@@ -202,6 +221,10 @@ class GuardCase(unittest.TestCase):
         self.state_path(card).write_text(
             json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
+    def current_attempt(self, card: str) -> dict | None:
+        attempts = self.read_state(card)["attempts"]
+        return attempts[-1] if attempts else None
+
     def start_or_inspect(self, card: str, *, operation: str = "execution",
                          out_dir: Path = None, result_path: Path = None,
                          cmd: list = None, plan: Path = None,
@@ -226,6 +249,15 @@ class GuardCase(unittest.TestCase):
         if pid:
             self._pids.append(pid)
         return out
+
+    def close_attempt(self, card: str, *, session: str, result_path: Path,
+                      pid: int, status: str = "completed") -> dict:
+        self.kill_tree(pid)
+        self.wait_until(lambda: not self.pid_alive(pid))
+        result_path.write_text(
+            self.result_body(session=session, status=status), encoding="utf-8")
+        return self.guard(card, "record-terminal", "--result-path",
+                          str(result_path))
 
     # -- relay / process helpers ------------------------------------------------
 
@@ -253,9 +285,11 @@ class GuardCase(unittest.TestCase):
         return ["/bin/sh", "-c", script]
 
     def result_body(self, *, session: str = None, status: str = "completed",
-                    thread: str = None) -> str:
+                    thread: str = None, exit_code=0) -> str:
         result = {"schema": "delegate-relay.result.v1", "status": status,
-                  "exitCode": 0, "artifacts": []}
+                  "artifacts": []}
+        if exit_code is not None:
+            result["exitCode"] = exit_code
         if session is not None:
             result["sessionId"] = session
         if thread is not None:
@@ -313,16 +347,18 @@ class TestInit(GuardCase):
         out = self.init(card)
         self.assertTrue(out["ok"])
         state = self.read_state(card)
-        self.assertEqual("development-external-execution.v1", state["schema"])
+        self.assertEqual(SCHEMA_V2, state["schema"])
         self.assertEqual(card, state["card_id"])
         self.assertEqual(str(self.repo), state["repo"])
         self.assertEqual(self.git("rev-parse", "HEAD").strip(),
-                         state["baseline_head"])
+                         state["baseline"]["head"])
         self.assertEqual(self.git("status", "--porcelain").splitlines(),
-                         state["baseline_porcelain"])
-        self.assertIsNone(state["attempt"])
-        self.assertIsNone(state["commit"])
+                         state["baseline"]["porcelain"])
+        self.assertEqual([], state["attempts"])
+        self.assertEqual([], state["landings"])
         self.assertTrue(state["updated_at"])
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(),
+                         out["baseline_head"])
 
         # A second init on existing state is an init conflict (exit 3).
         self.init(card, expect=3)
@@ -364,12 +400,13 @@ class TestSpawnAndAttach(GuardCase):
         outcomes = sorted(json.loads(stdout)["outcome"]
                           for _rc, stdout, _stderr in results)
         self.assertEqual(["attach", "spawned"], outcomes)
-        attempt = self.read_state(card)["attempt"]
+        attempt = self.current_attempt(card)
         self.assertEqual("running", attempt["state"])
         self.assertEqual(1, attempt["number"])
         self.assertIsNotNone(attempt["pid"])
         self._pids.append(attempt["pid"])
         self.assertEqual(1, self.pgrep_count(marker))
+        self.assertEqual(1, len(self.read_state(card)["attempts"]))
 
     def test_matching_live_process_returns_attach(self):
         card = f"t_{uuid.uuid4().hex[:12]}"
@@ -378,7 +415,7 @@ class TestSpawnAndAttach(GuardCase):
         self.assertEqual("spawned", spawn["outcome"])
         pid = spawn["pid"]
         self.assertTrue(self.pid_alive(pid))
-        attempt = self.read_state(card)["attempt"]
+        attempt = self.current_attempt(card)
         self.assertEqual("running", attempt["state"])
         self.assertEqual(pid, attempt["pid"])
         # Recorded identity is the exact current ps lstart output.
@@ -419,15 +456,16 @@ class TestRecordTerminal(GuardCase):
         self.assertEqual("terminal", seen["outcome"])
         self.assertEqual("sess-42", seen["session_id"])
         self.assertEqual("completed", seen["status"])
-        self.assertEqual("running", self.read_state(card)["attempt"]["state"])
+        self.assertEqual("running", self.current_attempt(card)["state"])
 
         recorded = self.guard(card, "record-terminal", "--result-path",
                               str(result_path))
         self.assertTrue(recorded["ok"])
         self.assertEqual("sess-42", recorded["session_id"])
-        attempt = self.read_state(card)["attempt"]
+        attempt = self.current_attempt(card)
         self.assertEqual("terminal", attempt["state"])
         self.assertEqual("sess-42", attempt["session_id"])
+        self.assertEqual("completed", attempt["terminal_status"])
 
         # Re-entering with the same operation consumes the result; no rerun.
         marker = self.marker()
@@ -436,7 +474,7 @@ class TestRecordTerminal(GuardCase):
                                       cmd=self.long_sleep_cmd(marker=marker))
         self.assertEqual("terminal", again["outcome"])
         self.assertEqual("sess-42", again["session_id"])
-        self.assertEqual(1, self.read_state(card)["attempt"]["number"])
+        self.assertEqual(1, self.current_attempt(card)["number"])
         self.assertEqual(0, self.pgrep_count(marker))
 
     def test_record_terminal_rejects_live_relay_and_invalid_evidence(self):
@@ -451,7 +489,7 @@ class TestRecordTerminal(GuardCase):
                                encoding="utf-8")
         self.guard(card, "record-terminal", "--result-path", str(result_path),
                    expect=3)
-        self.assertEqual("running", self.read_state(card)["attempt"]["state"])
+        self.assertEqual("running", self.current_attempt(card)["state"])
 
         self.kill_tree(live["pid"])
         self.wait_until(lambda: not self.pid_alive(live["pid"]))
@@ -461,10 +499,27 @@ class TestRecordTerminal(GuardCase):
         other.write_text(self.result_body(session="sess-x"), encoding="utf-8")
         self.guard(card, "record-terminal", "--result-path", str(other),
                    expect=4)
-        # Completed without any session id is invalid evidence.
+        # Completed without sessionId, or with a missing/nonzero exitCode,
+        # is invalid evidence (exit 4).
         result_path.write_text(self.result_body(), encoding="utf-8")
-        self.guard(card, "record-terminal", "--result-path", str(result_path),
-                   expect=4)
+        missing_session = self.guard(
+            card, "record-terminal", "--result-path", str(result_path),
+            expect=4)
+        self.assertEqual("session-id-required-for-completed",
+                         missing_session["reason"])
+        result_path.write_text(
+            self.result_body(session="sess-42", exit_code=None),
+            encoding="utf-8")
+        missing_exit = self.guard(
+            card, "record-terminal", "--result-path", str(result_path),
+            expect=4)
+        self.assertEqual("result-exitcode-invalid", missing_exit["reason"])
+        result_path.write_text(
+            self.result_body(session="sess-42", exit_code=2), encoding="utf-8")
+        nonzero_exit = self.guard(
+            card, "record-terminal", "--result-path", str(result_path),
+            expect=4)
+        self.assertEqual("result-exitcode-invalid", nonzero_exit["reason"])
         # Malformed / wrong-schema / unknown-status bodies are invalid.
         for body in ("{not: json",
                      '{"schema": "other.v1", "status": "completed"}',
@@ -473,7 +528,7 @@ class TestRecordTerminal(GuardCase):
             result_path.write_text(body, encoding="utf-8")
             self.guard(card, "record-terminal", "--result-path",
                        str(result_path), expect=4)
-        self.assertEqual("running", self.read_state(card)["attempt"]["state"])
+        self.assertEqual("running", self.current_attempt(card)["state"])
 
     def test_session_id_resolution_precedence(self):
         # --session-id wins over every result-borne id.
@@ -504,14 +559,16 @@ class TestRecordTerminal(GuardCase):
                          str(result_b))
         self.assertEqual("sess-b", out["session_id"])
 
-        # threadId alone still resolves; non-completed may end without an id.
+        # threadId alone still resolves for non-completed statuses;
+        # completed envelopes require sessionId on the result itself.
         card_c = f"t_{uuid.uuid4().hex[:12]}"
         self.init(card_c)
         result_c = self.root / "out-c" / "result.json"
         relay_c = self.start_or_inspect(card_c, result_path=result_c)
         self.kill_tree(relay_c["pid"])
         self.wait_until(lambda: not self.pid_alive(relay_c["pid"]))
-        result_c.write_text(self.result_body(thread="thread-c"),
+        result_c.write_text(self.result_body(status="failed",
+                                             thread="thread-c"),
                             encoding="utf-8")
         out = self.guard(card_c, "record-terminal", "--result-path",
                          str(result_c))
@@ -527,8 +584,9 @@ class TestRecordTerminal(GuardCase):
         out = self.guard(card_d, "record-terminal", "--result-path",
                          str(result_d))
         self.assertIsNone(out["session_id"])
-        self.assertEqual("terminal",
-                         self.read_state(card_d)["attempt"]["state"])
+        self.assertEqual("terminal", self.current_attempt(card_d)["state"])
+        self.assertEqual("failed",
+                         self.current_attempt(card_d)["terminal_status"])
 
 
 # ---------------------------------------------------------------------------
@@ -543,10 +601,10 @@ class TestUncertain(GuardCase):
             "pid": None, "process_start": None,
             "out_dir": str(self.root / "relay-out"),
             "result_path": str(self.root / "relay-out" / "result.json"),
-            "session_id": None,
+            "session_id": None, "terminal_status": None,
         }
         attempt.update(attempt_fields)
-        state["attempt"] = attempt
+        state["attempts"] = [attempt]
         self.write_state(card, state)
 
     def test_reserved_without_pid_is_uncertain_and_blocks(self):
@@ -559,7 +617,7 @@ class TestUncertain(GuardCase):
         self.assertEqual(0, self.pgrep_count(marker))
         # The block is durable: new attempts (any operation) stay uncertain.
         self.assertEqual("uncertain",
-                         self.read_state(card)["attempt"]["state"])
+                         self.current_attempt(card)["state"])
         again = self.start_or_inspect(card, operation="rework")
         self.assertEqual("uncertain", again["outcome"])
         self.assertEqual(0, self.pgrep_count(marker))
@@ -602,17 +660,66 @@ class TestUncertain(GuardCase):
         self.assertEqual("result-malformed", out["reason"])
         self.assertEqual(0, self.pgrep_count(marker))
         self.assertEqual("uncertain",
-                         self.read_state(card)["attempt"]["state"])
+                         self.current_attempt(card)["state"])
+
+    def test_invalid_completed_envelope_after_death_is_uncertain(self):
+        cases = (
+            ("no-session", self.result_body(),
+             "session-id-required-for-completed"),
+            ("missing-exit", self.result_body(session="sess-x", exit_code=None),
+             "result-exitcode-invalid"),
+            ("nonzero-exit", self.result_body(session="sess-x", exit_code=2),
+             "result-exitcode-invalid"),
+        )
+        for name, body, reason in cases:
+            with self.subTest(name):
+                card = f"t_{uuid.uuid4().hex[:12]}"
+                self.init(card)
+                result_path = self.root / f"relay-{name}" / "result.json"
+                spawn = self.start_or_inspect(
+                    card, result_path=result_path,
+                    cmd=self.relay_cmd(result_path, body=body))
+                self.assertTrue(
+                    self.wait_relay_finished(spawn["pid"], result_path))
+                marker = self.marker()
+                out = self.start_or_inspect(
+                    card, result_path=result_path,
+                    cmd=self.long_sleep_cmd(marker=marker))
+                self.assertEqual("uncertain", out["outcome"])
+                self.assertEqual(reason, out["reason"])
+                self.assertEqual(0, self.pgrep_count(marker))
+                self.assertEqual("uncertain",
+                                 self.current_attempt(card)["state"])
 
     def test_inspect_classifies_without_mutation(self):
         card = f"t_{uuid.uuid4().hex[:12]}"
         self.init(card)
-        self.assertEqual("none", self.guard(card, "inspect")["outcome"])
+        none = self.guard(card, "inspect")
+        self.assertEqual("none", none["outcome"])
+        self.assertEqual([], none["attempts"])
+        self.assertEqual([], none["landings"])
         self._fabricated(card, state="reserved", pid=None)
         before = self.read_state(card)
         out = self.guard(card, "inspect")
         self.assertEqual("uncertain", out["outcome"])
+        self.assertEqual([{"number": 1, "operation": "execution",
+                           "state": "reserved"}], out["attempts"])
         self.assertEqual(before, self.read_state(card))
+
+    def test_uncertain_blocks_new_attempt_flag(self):
+        card = f"t_{uuid.uuid4().hex[:12]}"
+        self.init(card)
+        self._fabricated(card, state="uncertain", pid=None)
+        marker = self.marker()
+        out = self.start_or_inspect(
+            card, operation="rework", new_attempt=True,
+            cmd=self.long_sleep_cmd(marker=marker))
+        self.assertEqual("uncertain", out["outcome"])
+        self.assertEqual(0, self.pgrep_count(marker))
+        state = self.read_state(card)
+        self.assertEqual(1, len(state["attempts"]))
+        self.assertEqual("uncertain", state["attempts"][0]["state"])
+        self.assertEqual(1, state["attempts"][0]["number"])
 
 
 # ---------------------------------------------------------------------------
@@ -633,15 +740,12 @@ class TestAttemptReplacement(GuardCase):
                                              marker=rejected_marker))
         self.assertEqual("attach", rejected["outcome"])
         self.assertEqual(0, self.pgrep_count(rejected_marker))
-        self.assertEqual(1, self.read_state(card)["attempt"]["number"])
+        self.assertEqual(1, self.current_attempt(card)["number"])
 
         # Relay ends with a valid result; record-terminal closes attempt 1.
         result_path = self.root / "relay-out" / "result.json"
-        self.kill_tree(first["pid"])
-        self.wait_until(lambda: not self.pid_alive(first["pid"]))
-        result_path.write_text(self.result_body(session="sess-1"),
-                               encoding="utf-8")
-        self.guard(card, "record-terminal", "--result-path", str(result_path))
+        self.close_attempt(card, session="sess-1", result_path=result_path,
+                           pid=first["pid"])
 
         # A different operation now spawns attempt number 2.
         second_out = self.root / "relay-out-2"
@@ -652,7 +756,11 @@ class TestAttemptReplacement(GuardCase):
             result_path=second_result,
             cmd=self.long_sleep_cmd(marker=second_marker))
         self.assertEqual("spawned", second["outcome"])
-        attempt = self.read_state(card)["attempt"]
+        state = self.read_state(card)
+        self.assertEqual(2, len(state["attempts"]))
+        self.assertEqual("terminal", state["attempts"][0]["state"])
+        self.assertEqual("sess-1", state["attempts"][0]["session_id"])
+        attempt = state["attempts"][1]
         self.assertEqual(2, attempt["number"])
         self.assertEqual("rework", attempt["operation"])
         self.assertEqual(str(second_result), attempt["result_path"])
@@ -668,11 +776,8 @@ class TestAttemptReplacement(GuardCase):
                                      out_dir=out_one,
                                      result_path=out_one / "result.json")
         result_one = out_one / "result.json"
-        self.kill_tree(first["pid"])
-        self.wait_until(lambda: not self.pid_alive(first["pid"]))
-        result_one.write_text(self.result_body(session="sess-1"),
-                              encoding="utf-8")
-        self.guard(card, "record-terminal", "--result-path", str(result_one))
+        self.close_attempt(card, session="sess-1", result_path=result_one,
+                           pid=first["pid"])
 
         # Attempt 2: rework (lifecycle change) -> recorded terminal.
         out_two = self.root / "relay-two"
@@ -681,18 +786,16 @@ class TestAttemptReplacement(GuardCase):
                                        result_path=out_two / "result.json")
         self.assertEqual("spawned", second["outcome"])
         result_two = out_two / "result.json"
-        self.kill_tree(second["pid"])
-        self.wait_until(lambda: not self.pid_alive(second["pid"]))
-        result_two.write_text(self.result_body(session="sess-2"),
-                              encoding="utf-8")
-        self.guard(card, "record-terminal", "--result-path", str(result_two))
+        self.close_attempt(card, session="sess-2", result_path=result_two,
+                           pid=second["pid"])
 
         # Plain same-operation re-entry consumes the terminal result
         # (RP-01 regression): no third relay without the explicit flag.
         consumed = self.start_or_inspect(card, operation="rework")
         self.assertEqual("terminal", consumed["outcome"])
         self.assertEqual("sess-2", consumed.get("session_id"))
-        self.assertEqual(2, self.read_state(card)["attempt"]["number"])
+        self.assertEqual(2, self.current_attempt(card)["number"])
+        self.assertEqual(2, len(self.read_state(card)["attempts"]))
 
         # --new-attempt explicitly reserves and spawns attempt 3.
         third_marker = self.marker()
@@ -704,9 +807,13 @@ class TestAttemptReplacement(GuardCase):
                                           marker=third_marker),
                                       new_attempt=True)
         self.assertEqual("spawned", third["outcome"])
-        attempt = self.read_state(card)["attempt"]
+        state = self.read_state(card)
+        self.assertEqual(3, len(state["attempts"]))
+        attempt = state["attempts"][2]
         self.assertEqual(3, attempt["number"])
         self.assertEqual("rework", attempt["operation"])
+        self.assertEqual("sess-1", state["attempts"][0]["session_id"])
+        self.assertEqual("sess-2", state["attempts"][1]["session_id"])
         self.assertEqual(1, self.pgrep_count(third_marker))
 
         # --new-attempt never bypasses the recorded-terminal requirement.
@@ -715,7 +822,7 @@ class TestAttemptReplacement(GuardCase):
         denied = self.start_or_inspect(card, operation="rework",
                                        new_attempt=True)
         self.assertEqual("uncertain", denied["outcome"])
-        self.assertEqual(3, self.read_state(card)["attempt"]["number"])
+        self.assertEqual(3, self.current_attempt(card)["number"])
 
     def test_plan_artifact_is_optional_for_planning_and_validated_when_given(self):
         planning_card = f"t_{uuid.uuid4().hex[:12]}"
@@ -732,7 +839,7 @@ class TestAttemptReplacement(GuardCase):
             invalid_card, operation="execution", plan=plan, expect=4)
         assert rejected is not None
         self.assertEqual("plan-artifact-invalid", rejected["reason"])
-        self.assertIsNone(self.read_state(invalid_card)["attempt"])
+        self.assertEqual([], self.read_state(invalid_card)["attempts"])
 
         valid_card = f"t_{uuid.uuid4().hex[:12]}"
         self.init(valid_card)
@@ -747,43 +854,70 @@ class TestAttemptReplacement(GuardCase):
 
 class TestCheckRun(GuardCase):
     def test_check_run_rejects_stale_reclaimed_and_mismatched_workers(self):
-        card, run = self.make_card()
+        card, run, lock = self.make_card()
         self.init(card)
-        env_ok = {"HERMES_KANBAN_TASK": card,
-                  "HERMES_KANBAN_RUN_ID": str(run)}
+        env_ok = self.worker_env(card, run, lock)
         out = self.guard(card, "check-run", env_extra=env_ok)
         self.assertTrue(out["ok"])
         self.assertEqual(run, out["run_id"])
 
+        # Missing claim lock is rejected after task/run env succeed.
+        missing_lock = self.guard(
+            card, "check-run", expect=5,
+            env_extra={"HERMES_KANBAN_TASK": card,
+                       "HERMES_KANBAN_RUN_ID": str(run)})
+        self.assertEqual("claim-lock-env-missing", missing_lock["reason"])
+
         # Mismatched env task and env run are both rejected with exit 5.
         self.guard(card, "check-run", expect=5,
                    env_extra={"HERMES_KANBAN_TASK": "t_someone_else",
-                              "HERMES_KANBAN_RUN_ID": str(run)})
+                              "HERMES_KANBAN_RUN_ID": str(run),
+                              "HERMES_KANBAN_CLAIM_LOCK": lock})
         self.guard(card, "check-run", expect=5,
                    env_extra={"HERMES_KANBAN_TASK": card,
-                              "HERMES_KANBAN_RUN_ID": str(run + 9)})
+                              "HERMES_KANBAN_RUN_ID": str(run + 9),
+                              "HERMES_KANBAN_CLAIM_LOCK": lock})
 
-        # A reclaimed card runs under a new run: the stale worker is refused.
-        new_run = self.reclaim_card(card, worker="worker-b")
+        # A forged claim_lock on the card does not match the env lock.
+        self.set_claim_lock(card, "forged-lock")
+        forged = self.guard(card, "check-run", expect=5, env_extra=env_ok)
+        self.assertEqual("claim-lock-mismatch", forged["reason"])
+        self.set_claim_lock(card, lock)
+
+        # A reclaimed card runs under a new run and lock: the stale worker
+        # is refused. New run + old lock is a claim-lock mismatch.
+        new_run, new_lock = self.reclaim_card(card, worker="worker-b")
         self.assertNotEqual(run, new_run)
+        self.assertNotEqual(lock, new_lock)
         self.guard(card, "check-run", expect=5, env_extra=env_ok)
-        fresh = self.guard(card, "check-run", env_extra={
-            "HERMES_KANBAN_TASK": card,
-            "HERMES_KANBAN_RUN_ID": str(new_run)})
+        stale_lock = self.guard(
+            card, "check-run", expect=5,
+            env_extra=self.worker_env(card, new_run, lock))
+        self.assertEqual("claim-lock-mismatch", stale_lock["reason"])
+        fresh = self.guard(card, "check-run",
+                           env_extra=self.worker_env(card, new_run, new_lock))
         self.assertTrue(fresh["ok"])
 
         # A done card is never owned again.
         self.complete_card(card)
-        self.guard(card, "check-run", expect=5, env_extra={
-            "HERMES_KANBAN_TASK": card,
-            "HERMES_KANBAN_RUN_ID": str(new_run)})
+        self.guard(card, "check-run", expect=5,
+                   env_extra=self.worker_env(card, new_run, new_lock))
 
 
 # ---------------------------------------------------------------------------
-# 8. record-commit trailer rules
+# 8. record-commit trailer rules and multi-landing
 # ---------------------------------------------------------------------------
 
 class TestRecordCommit(GuardCase):
+    def _terminal_execution(self, card: str) -> None:
+        out_dir = self.root / f"relay-{card}"
+        result_path = out_dir / "result.json"
+        spawn = self.start_or_inspect(card, operation="execution",
+                                      out_dir=out_dir,
+                                      result_path=result_path)
+        self.close_attempt(card, session="sess-land", result_path=result_path,
+                           pid=spawn["pid"])
+
     def test_record_commit_accepts_only_real_trailer_commit(self):
         card = f"t_{uuid.uuid4().hex[:12]}"
         trailer = f"Kanban-Task: {card}"
@@ -791,7 +925,8 @@ class TestRecordCommit(GuardCase):
         pre = self.commit(f"pre-baseline\n\n{trailer}")
         baseline = self.commit("baseline")
         self.init(card)
-        self.assertEqual(baseline, self.read_state(card)["baseline_head"])
+        self.assertEqual(baseline, self.read_state(card)["baseline"]["head"])
+        self._terminal_execution(card)
 
         # Unknown SHA, pre-baseline commit, missing and wrong trailers fail.
         self.guard(card, "record-commit", "--commit", "0" * 40, expect=4)
@@ -800,20 +935,286 @@ class TestRecordCommit(GuardCase):
         self.guard(card, "record-commit", "--commit", no_trailer, expect=4)
         wrong = self.commit(f"work\n\nKanban-Task: t_someone_else")
         self.guard(card, "record-commit", "--commit", wrong, expect=4)
-        self.assertIsNone(self.read_state(card)["commit"])
+        self.assertEqual([], self.read_state(card)["landings"])
 
         # The exact trailer commit is recorded; re-recording is idempotent.
         good = self.commit(f"land it\n\n{trailer}")
         out = self.guard(card, "record-commit", "--commit", good)
         self.assertTrue(out["ok"])
-        self.assertEqual({"sha": good, "trailer": trailer},
-                         self.read_state(card)["commit"])
+        landings = self.read_state(card)["landings"]
+        self.assertEqual(1, len(landings))
+        self.assertEqual(good, landings[0]["commit"])
+        self.assertEqual(1, landings[0]["attempt_number"])
+        self.assertTrue(landings[0]["parent"])
+        self.assertTrue(landings[0]["recorded_at"])
         again = self.guard(card, "record-commit", "--commit", good)
         self.assertTrue(again["ok"])
+        self.assertTrue(again.get("idempotent"))
+        self.assertEqual(1, len(self.read_state(card)["landings"]))
 
-        # A different SHA after one commit is recorded is a conflict.
+        # A different SHA after one commit is recorded is appended, not overwritten.
         other = self.commit(f"more work\n\n{trailer}")
-        self.guard(card, "record-commit", "--commit", other, expect=3)
+        appended = self.guard(card, "record-commit", "--commit", other)
+        self.assertTrue(appended["ok"])
+        landings = self.read_state(card)["landings"]
+        self.assertEqual(2, len(landings))
+        self.assertEqual(good, landings[0]["commit"])
+        self.assertEqual(other, landings[1]["commit"])
+        self.assertEqual(1, landings[1]["attempt_number"])
+
+    def test_record_commit_requires_terminal_attempt(self):
+        card = f"t_{uuid.uuid4().hex[:12]}"
+        trailer = f"Kanban-Task: {card}"
+        self.init(card)
+        good = self.commit(f"land it\n\n{trailer}")
+        out = self.guard(card, "record-commit", "--commit", good, expect=3)
+        self.assertEqual("no-terminal-attempt", out["reason"])
+        self.assertEqual([], self.read_state(card)["landings"])
+
+        # A live non-terminal attempt still cannot produce a landing.
+        spawn = self.start_or_inspect(card, operation="execution")
+        live = self.guard(card, "record-commit", "--commit", good, expect=3)
+        self.assertEqual("no-terminal-attempt", live["reason"])
+        self.assertEqual("running", self.current_attempt(card)["state"])
+        self.assertEqual([], self.read_state(card)["landings"])
+        self.kill_tree(spawn["pid"])
+
+    def test_record_commit_requires_completed_terminal_attempt(self):
+        card = f"t_{uuid.uuid4().hex[:12]}"
+        trailer = f"Kanban-Task: {card}"
+        self.init(card)
+        good = self.commit(f"land it\n\n{trailer}")
+
+        failed_dir = self.root / "relay-failed"
+        failed = self.start_or_inspect(card, operation="execution",
+                                       out_dir=failed_dir,
+                                       result_path=failed_dir / "result.json")
+        self.close_attempt(card, session="sess-fail",
+                           result_path=failed_dir / "result.json",
+                           pid=failed["pid"], status="failed")
+        refused_failed = self.guard(
+            card, "record-commit", "--commit", good, expect=3)
+        self.assertEqual("last-attempt-not-completed",
+                         refused_failed["reason"])
+        self.assertEqual([], self.read_state(card)["landings"])
+
+        unavail_dir = self.root / "relay-unavailable"
+        unavail = self.start_or_inspect(
+            card, operation="execution", out_dir=unavail_dir,
+            result_path=unavail_dir / "result.json", new_attempt=True)
+        self.close_attempt(card, session="sess-unavail",
+                           result_path=unavail_dir / "result.json",
+                           pid=unavail["pid"], status="unavailable")
+        refused_unavail = self.guard(
+            card, "record-commit", "--commit", good, expect=3)
+        self.assertEqual("last-attempt-not-completed",
+                         refused_unavail["reason"])
+        self.assertEqual([], self.read_state(card)["landings"])
+
+        done_dir = self.root / "relay-completed"
+        done = self.start_or_inspect(
+            card, operation="execution", out_dir=done_dir,
+            result_path=done_dir / "result.json", new_attempt=True)
+        self.close_attempt(card, session="sess-ok",
+                           result_path=done_dir / "result.json",
+                           pid=done["pid"])
+        recorded = self.guard(card, "record-commit", "--commit", good)
+        self.assertTrue(recorded["ok"])
+        landings = self.read_state(card)["landings"]
+        self.assertEqual(1, len(landings))
+        self.assertEqual(good, landings[0]["commit"])
+        self.assertEqual(3, landings[0]["attempt_number"])
+
+    def test_landing_cannot_reference_non_terminal_attempt(self):
+        card = f"t_{uuid.uuid4().hex[:12]}"
+        self.init(card)
+        state = self.read_state(card)
+        state["attempts"] = [{
+            "number": 1, "operation": "execution", "state": "running",
+            "pid": None, "process_start": None,
+            "out_dir": str(self.root / "relay-out"),
+            "result_path": str(self.root / "relay-out" / "result.json"),
+            "session_id": None, "terminal_status": None,
+        }]
+        state["landings"] = [{
+            "attempt_number": 1,
+            "commit": self.git("rev-parse", "HEAD").strip(),
+            "parent": "",
+            "recorded_at": "2024-01-01T00:00:00+00:00",
+        }]
+        self.write_state(card, state)
+        out = self.guard(card, "inspect", expect=4)
+        self.assertEqual("state-landing-corrupt", out["reason"])
+
+
+# ---------------------------------------------------------------------------
+# 9. multi-attempt / multi-landing lineage
+# ---------------------------------------------------------------------------
+
+class TestLineage(GuardCase):
+    def test_execution_then_rework_preserves_attempts_and_appends_landings(self):
+        card = f"t_{uuid.uuid4().hex[:12]}"
+        trailer = f"Kanban-Task: {card}"
+        self.init(card)
+
+        out_one = self.root / "relay-one"
+        first = self.start_or_inspect(card, operation="execution",
+                                     out_dir=out_one,
+                                     result_path=out_one / "result.json")
+        self.close_attempt(card, session="sess-exec",
+                           result_path=out_one / "result.json",
+                           pid=first["pid"])
+        landing_a = self.commit(f"candidate A\n\n{trailer}")
+        recorded_a = self.guard(card, "record-commit", "--commit", landing_a)
+        self.assertTrue(recorded_a["ok"])
+
+        out_two = self.root / "relay-two"
+        second = self.start_or_inspect(card, operation="rework",
+                                       out_dir=out_two,
+                                       result_path=out_two / "result.json")
+        self.assertEqual("spawned", second["outcome"])
+        self.close_attempt(card, session="sess-rework",
+                           result_path=out_two / "result.json",
+                           pid=second["pid"])
+        landing_b = self.commit(f"candidate B\n\n{trailer}")
+        recorded_b = self.guard(card, "record-commit", "--commit", landing_b)
+        self.assertTrue(recorded_b["ok"])
+
+        state = self.read_state(card)
+        self.assertEqual(SCHEMA_V2, state["schema"])
+        self.assertEqual(2, len(state["attempts"]))
+        self.assertEqual("execution", state["attempts"][0]["operation"])
+        self.assertEqual("terminal", state["attempts"][0]["state"])
+        self.assertEqual("sess-exec", state["attempts"][0]["session_id"])
+        self.assertEqual("completed", state["attempts"][0]["terminal_status"])
+        self.assertEqual("rework", state["attempts"][1]["operation"])
+        self.assertEqual("terminal", state["attempts"][1]["state"])
+        self.assertEqual("sess-rework", state["attempts"][1]["session_id"])
+        self.assertNotEqual(state["attempts"][0]["session_id"],
+                            state["attempts"][1]["session_id"])
+        self.assertEqual(2, len(state["landings"]))
+        self.assertEqual(landing_a, state["landings"][0]["commit"])
+        self.assertEqual(1, state["landings"][0]["attempt_number"])
+        self.assertEqual(landing_b, state["landings"][1]["commit"])
+        self.assertEqual(2, state["landings"][1]["attempt_number"])
+        parent_b = self.git("rev-parse", f"{landing_b}^").strip()
+        self.assertEqual(parent_b, state["landings"][1]["parent"])
+
+        inspected = self.guard(card, "inspect")
+        self.assertEqual("terminal", inspected["outcome"])
+        self.assertEqual("sess-rework", inspected["session_id"])
+        self.assertEqual([
+            {"number": 1, "operation": "execution", "state": "terminal"},
+            {"number": 2, "operation": "rework", "state": "terminal"},
+        ], inspected["attempts"])
+        self.assertEqual([
+            {"attempt_number": 1, "commit": landing_a},
+            {"attempt_number": 2, "commit": landing_b},
+        ], inspected["landings"])
+
+
+# ---------------------------------------------------------------------------
+# 10. v1 → v2 migration
+# ---------------------------------------------------------------------------
+
+class TestMigration(GuardCase):
+    def _v1_bytes(self, card: str, *, attempt: dict | None, commit: dict | None,
+                  baseline_head: str) -> bytes:
+        state = {
+            "schema": SCHEMA_V1,
+            "card_id": card,
+            "repo": str(self.repo),
+            "baseline_head": baseline_head,
+            "baseline_porcelain": self.git("status", "--porcelain").splitlines(),
+            "attempt": attempt,
+            "commit": commit,
+            "updated_at": "2024-01-01T00:00:00+00:00",
+        }
+        return (json.dumps(state, indent=2) + "\n").encode("utf-8")
+
+    def test_v1_migrates_on_first_exclusive_write_and_not_again(self):
+        card = f"t_{uuid.uuid4().hex[:12]}"
+        trailer = f"Kanban-Task: {card}"
+        baseline_head = self.git("rev-parse", "HEAD").strip()
+        landing = self.commit(f"v1 candidate\n\n{trailer}")
+        parent = self.git("rev-parse", f"{landing}^").strip()
+        attempt = {
+            "number": 1, "operation": "execution", "state": "terminal",
+            "pid": 4242, "process_start": "Mon Jan  1 00:00:00 2024",
+            "out_dir": str(self.root / "relay-out"),
+            "result_path": str(self.root / "relay-out" / "result.json"),
+            "session_id": "sess-v1",
+        }
+        original = self._v1_bytes(
+            card, attempt=attempt,
+            commit={"sha": landing, "trailer": trailer},
+            baseline_head=baseline_head)
+        path = self.state_path(card)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(original)
+
+        # inspect classifies v1 without migrating.
+        seen = self.guard(card, "inspect")
+        self.assertEqual("terminal", seen["outcome"])
+        self.assertEqual("sess-v1", seen["session_id"])
+        self.assertEqual(original, path.read_bytes())
+        self.assertFalse(self.backup_path(card).exists())
+
+        # Exclusive write migrates, then treats the existing commit as idempotent.
+        out = self.guard(card, "record-commit", "--commit", landing)
+        self.assertTrue(out["ok"])
+        self.assertTrue(out.get("idempotent"))
+
+        state = self.read_state(card)
+        self.assertEqual(SCHEMA_V2, state["schema"])
+        self.assertEqual(card, state["card_id"])
+        self.assertEqual(str(self.repo), state["repo"])
+        self.assertEqual(baseline_head, state["baseline"]["head"])
+        self.assertEqual(1, len(state["attempts"]))
+        migrated = state["attempts"][0]
+        self.assertEqual(1, migrated["number"])
+        self.assertEqual("execution", migrated["operation"])
+        self.assertEqual("terminal", migrated["state"])
+        self.assertEqual(4242, migrated["pid"])
+        self.assertEqual("Mon Jan  1 00:00:00 2024", migrated["process_start"])
+        self.assertEqual(str(self.root / "relay-out"), migrated["out_dir"])
+        self.assertEqual(str(self.root / "relay-out" / "result.json"),
+                         migrated["result_path"])
+        self.assertEqual("sess-v1", migrated["session_id"])
+        self.assertIsNone(migrated["terminal_status"])
+        self.assertEqual(1, len(state["landings"]))
+        self.assertEqual(landing, state["landings"][0]["commit"])
+        self.assertEqual(1, state["landings"][0]["attempt_number"])
+        self.assertEqual(parent, state["landings"][0]["parent"])
+        self.assertTrue(state["landings"][0]["recorded_at"])
+
+        bak = self.backup_path(card)
+        self.assertTrue(bak.is_file())
+        self.assertEqual(original, bak.read_bytes())
+
+        # Reload-and-validate: inspect of the migrated file succeeds.
+        inspected = self.guard(card, "inspect")
+        self.assertEqual("terminal", inspected["outcome"])
+        self.assertEqual(SCHEMA_V2, self.read_state(card)["schema"])
+
+        # A second exclusive write does not re-migrate or rewrite the backup.
+        bak_bytes = bak.read_bytes()
+        again = self.guard(card, "record-commit", "--commit", landing)
+        self.assertTrue(again.get("idempotent"))
+        self.assertEqual(bak_bytes, bak.read_bytes())
+        self.assertEqual(SCHEMA_V2, self.read_state(card)["schema"])
+        self.assertEqual(1, len(self.read_state(card)["landings"]))
+
+    def test_corrupt_v1_json_leaves_state_untouched(self):
+        card = f"t_{uuid.uuid4().hex[:12]}"
+        path = self.state_path(card)
+        path.parent.mkdir(parents=True)
+        original = b"{not: json\n"
+        path.write_bytes(original)
+        out = self.guard(card, "record-commit", "--commit", "0" * 40, expect=4)
+        self.assertEqual("state-corrupt-json", out["reason"])
+        self.assertEqual(original, path.read_bytes())
+        self.assertFalse(self.backup_path(card).exists())
 
 
 if __name__ == "__main__":

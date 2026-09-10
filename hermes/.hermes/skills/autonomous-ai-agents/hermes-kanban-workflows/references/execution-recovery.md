@@ -1,93 +1,138 @@
 # External Execution Guard
 
-This is the minimal recovery reference for write-mode planning/implementation/rework Relays in the development workflow MVP. The guard (`hermes/.hermes/scripts/development_external_guard.py`) is deliberately small and fail-closed: it prevents duplicate write-mode Coding Agent Relays, records their session/recovery facts, and detects an already-created landing commit. Fresh read-only Card-review Relays do not use this state; their process/result truth is recorded by the native review run. The guard does not recover crashes automatically and implements no workflow phase machine. Hermes Kanban owns everything else (Card status, runs, claims, review rounds, heartbeats, stale reclaim, retries, dependencies, handoff, notifications).
+Use for write-mode planning/implementation/rework Relays on managed development Cards. The guard prevents duplicate writes, records exact Relay/session recovery facts, and tracks Git landing lineage. Kanban owns lifecycle/run/review/retry/heartbeat/stale/notification state. Fresh read-only Review Relays do not use the guard.
 
-## CLI
+## Interpreter and CLI
+
+Run with the Hermes venv Python (`~/.hermes/hermes-agent/venv/bin/python3`, Python 3.11+). System `/usr/bin/python3` 3.9 fails when `check-run` lazily imports current `hermes_cli` because of PEP 604 annotations; other commands may appear to work and hide the mismatch.
 
 ```text
 development_external_guard.py [--artifacts-root DIR] --home HERMES_HOME --board BOARD --card CARD_ID COMMAND
+
   init --repo /abs/path
-  start-or-inspect --operation planning|execution|rework --out-dir DIR --result-path FILE --cmd-json JSON [--cwd DIR] [--plan-artifact FILE] [--new-attempt]
+  start-or-inspect --operation planning|execution|rework \
+    --out-dir DIR --result-path FILE --cmd-json JSON [--cwd DIR] \
+    [--plan-artifact FILE] [--new-attempt]
   inspect
   record-terminal --result-path FILE [--session-id ID]
   check-run
   record-commit --commit SHA
 ```
 
-Outcomes: `spawned | attach | terminal | uncertain` (`inspect` also returns `none` when no attempt exists).
+The Harness normally owns invocation through `devflow_start_or_inspect_relay`; Workers do not call this CLI directly. Outcomes are `spawned|attach|terminal|uncertain`; inspect also returns `none` before any attempt.
 
-## Canonical state
+## Canonical v2 state
 
 ```text
 ~/Secret-Projects/development-artifacts/<board>/tasks/<card-id>/external-execution.json
 ```
 
-Schema `development-external-execution.v1` (or `--artifacts-root DIR` to relocate). Minimal shape:
-
 ```json
 {
-  "schema": "development-external-execution.v1",
+  "schema": "development-external-execution.v2",
   "card_id": "t_xxx",
   "repo": "/absolute/repo",
-  "baseline_head": "<git commit>",
-  "baseline_porcelain": ["<git status --porcelain line>"],
-  "attempt": {
-    "number": 1,
-    "operation": "planning | execution | rework",
-    "state": "reserved | running | terminal | uncertain",
-    "pid": null,
-    "process_start": null,
-    "out_dir": "/absolute/path",
-    "result_path": "/absolute/path/result.json",
-    "session_id": null
+  "baseline": {
+    "head": "<git commit>",
+    "porcelain": ["<git status --porcelain line>"]
   },
-  "commit": null,
+  "attempts": [
+    {
+      "number": 1,
+      "operation": "planning | execution | rework",
+      "state": "reserved | running | terminal | uncertain",
+      "pid": null,
+      "process_start": null,
+      "out_dir": "/absolute/path",
+      "result_path": "/absolute/path/result.json",
+      "session_id": null,
+      "terminal_status": null
+    }
+  ],
+  "landings": [
+    {
+      "attempt_number": 1,
+      "commit": "<sha>",
+      "parent": "<sha>",
+      "recorded_at": "<ISO-8601>"
+    }
+  ],
   "updated_at": "<ISO-8601>"
 }
 ```
 
-Never hand-edit this file. Do not add Card status, run history, phase, heartbeat, retries, artifact arrays, revision, owner object, plan object, or landing object — those belong to Hermes Kanban or do not exist in the MVP.
+Constraints:
 
-## Commands
+- attempt number is monotonic;
+- at most one attempt is non-terminal;
+- every attempt has a unique output directory/result path;
+- only a terminal attempt can produce a landing;
+- recording the same commit for the same attempt is idempotent;
+- a different rework commit appends a landing instead of overwriting history;
+- exact-session rework takes its session from a prior terminal attempt;
+- no Card status, review round, UI/manual verdict, Plan acceptance, heartbeat, retry, or notification state is stored.
 
-- **`init --repo /abs/path`** — record Card/repo/Git baseline (HEAD + `git status --porcelain`) once, before the Coding Agent writes.
-- **`start-or-inspect`** — atomically reserve/start once, or report the existing state. Reserves before process creation. `--operation` is `planning`, `execution`, or `rework`. `--plan-artifact`, when supplied, must be an absolute readable non-empty file. Initial `write-plan` omits it because the Plan does not exist yet; `execute-plan` supplies the accepted Plan path; direct execution omits it. Validate only load-bearing paths: state path, out directory, result file, and any supplied Plan artifact.
-- **`inspect`** — classify the existing process/result without mutation. Returns `none` when no attempt exists.
-- **`record-terminal`** — accept a terminal `delegate-relay.result.v1` and record the exact session ID.
-- **`check-run`** — verify the current `HERMES_KANBAN_TASK`/`RUN_ID` still owns the native Card; rejects a stale/reclaimed Worker.
-- **`record-commit`** — record a commit that contains the exact `Kanban-Task: <card-id>` trailer.
+## v1 migration
 
-Classification rules:
+A valid `development-external-execution.v1` state migrates only on the first exclusive managed write:
 
-- A matching live PID/start identity returns `attach`.
-- A dead process with a valid `delegate-relay.result.v1` returns `terminal` and records the exact session ID.
-- Reserved-without-proof, PID mismatch, dead-without-result, or a malformed result returns `uncertain`; the guard never retries automatically.
-- A new attempt is allowed only after the previous attempt is recorded terminal — via a lifecycle-stage change (`planning` → `execution` → `rework`) or an explicit `--new-attempt`; plain same-operation re-entry consumes the recorded terminal result instead of rerunning.
-- Every attempt uses a fresh out dir and result path, so one attempt's `result.json` can never be mis-attributed to the next.
+1. lock and validate the existing state;
+2. write an atomic `.bak` snapshot before replacement;
+3. map `baseline_head`/`baseline_porcelain` into `baseline`;
+4. map the single `attempt` into `attempts[0]` without changing identity;
+5. map an existing recorded commit into the first landing bound to that terminal attempt;
+6. validate the complete v2 result and atomically replace the canonical file.
 
-## Safety rules
+Read-only inspect may report legacy facts without mutating them. Any lossy/ambiguous migration fails closed as `HARNESS_INCOMPATIBLE`; never reset history.
 
-1. Reserve before starting a Relay.
-2. Never start a second Relay while an earlier attempt may exist.
-3. Resume only an exact recorded Coding Agent Session after a known terminal attempt.
-4. Check the current native Kanban run (`check-run`) immediately before a write-mode Relay start, UI mutation, and Git commit.
-5. Detect an already-created commit using the Card-specific Git trailer.
-6. Any ambiguous state blocks the Card; the MVP never guesses that a new spawn is safe.
+## Commands and ordering
 
-`uncertain` handling: preserve evidence, block the Card with a precise typed blocker, and let the human decide. Exact-session continuation is a Worker policy decision using the terminal result's `session_id`; the guard does not implement a workflow phase machine.
+- `init` captures immutable Card/repository/Git baseline once before Coding Agent writes.
+- Before `start-or-inspect`, the Harness validates current run ownership, contract/stage, brief existence, adapter capability, command shape, output paths, and required accepted Plan/Auto Handoff. Invalid preflight must not create an attempt.
+- `start-or-inspect` reserves atomically before spawning. Plain re-entry attaches/consumes the current attempt. A new attempt is allowed only after the prior attempt is terminal and policy authorizes lifecycle progression or explicit rework.
+- `inspect` classifies without lifecycle mutation.
+- `record-terminal` validates terminal `delegate-relay.result.v1`, process exit, exact result path and session, then seals the current attempt.
+- `check-run` verifies `HERMES_KANBAN_TASK`, run id, and claim lock still own the native current run.
+- `record-commit` verifies an exact Card trailer and appends/idempotently reuses the landing bound to the current terminal attempt.
 
-## Landing rule
+Classification:
 
-Before commit:
+- matching live PID/start identity → `attach`;
+- dead process plus valid terminal result → `terminal`;
+- reserved without spawn proof, PID mismatch, dead without result, malformed result, or conflicting paths/session → `uncertain`;
+- uncertainty is never retried or deleted automatically.
 
-1. `check-run` must pass.
-2. Compare current Git status with the recorded baseline.
-3. Stage only paths listed in the Coding Agent handoff.
-4. If a staged path was dirty at baseline, block instead of attempting attribution.
-5. Search Git history for the exact trailer `Kanban-Task: <card-id>`.
-6. If a matching commit already exists at/after `baseline_head`, record it with `record-commit` and complete without a second commit.
-7. Otherwise create one commit with that trailer, read back its hash and trailer, then `record-commit`.
+## Auto Handoff
 
-## Relay-state vocabulary
+For execute-plan and execute rework, before reservation validate an absolute readable non-empty accepted Plan with matching SHA, Relay support for `--auto-handoff-plan`, extension root, and scoped output directory. At terminal require:
 
-The global status Digest was removed on 2026-09-07; no Cron renders Relay state. The vocabulary `none/reserved/live/terminal/uncertain` remains the guard-state vocabulary seen in `inspect` output and guard state files. Missing or malformed guard state never hides the Card's native status.
+```text
+result.autoHandoff.enabled == true
+result.autoHandoff.planFile == <exact accepted Plan>
+result.autoHandoff.handoffDir == <attempt out-dir>/auto-handoff
+result.autoHandoff.extensionRoot == <resolved root>
+```
+
+Direct, write-plan, review, and delegated child runs do not load Auto Handoff.
+
+## Landing
+
+After terminal Relay and engineering checks:
+
+1. `check-run` passes.
+2. Compare current Git status with immutable baseline and preserve unrelated pre-existing changes.
+3. Stage only handoff-owned paths; an ambiguously dirty baseline path blocks attribution.
+4. Create or locate one local candidate commit with exact `Kanban-Task: <card-id>` trailer.
+5. Record the landing against the terminal attempt.
+6. Generate a candidate manifest.
+7. Perform required UI/manual acceptance against that exact local commit.
+8. Push only after UI PASS and only under applicable authority.
+9. Recheck run and candidate before managed handoff.
+
+Rework creates a new terminal attempt and a new landing/candidate. Old landings and evidence remain historical.
+
+## Uncertain recovery
+
+Default action is preserve evidence and typed block. There is no CLI reset and no general force.
+
+A known zero-side-effect pre-spawn false uncertainty may be repaired only by the interactive Origin after Kenan explicitly approves that exact Card/action. Reconfirm all of: no live PID, no result, artifact SHA unchanged, repository clean/at baseline, and no external side effect. Snapshot the state to a separate backup, then restore it from the last committed terminal truth and inspect before unblocking. Prefer restoring a valid prior terminal state over deleting the file: deletion creates a separate state-missing condition that requires reinitialization. A blocked/non-owning Worker never performs this recovery.

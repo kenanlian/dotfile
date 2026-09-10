@@ -1,7 +1,7 @@
 ---
 name: obsidian-plugin-acceptance
 description: "Use when testing Obsidian plugins via obsidian-cli eval."
-version: 1.0.0
+version: 1.1.0
 license: MIT
 platforms: [macos]
 tags: [obsidian, plugin, behavior-acceptance, eval, dom]
@@ -24,6 +24,29 @@ Not for note/vault content management — that is the `obsidian` skill.
 - Obsidian desktop running; CLI enabled (Settings → General → Advanced → Command line interface).
 - Executable: `/Applications/Obsidian.app/Contents/MacOS/obsidian-cli` (the GUI binary is NOT the CLI).
 - A scratch vault dedicated to acceptance (never the user's primary vault). `vaults` lists registered names.
+
+### Managed development-stage.v2 acceptance
+
+When a `development-stage.v2` Implement Worker performs formal acceptance, this Skill owns
+only Obsidian execution mechanics; the Development Workflow Harness owns role, run,
+candidate, evidence, and lifecycle gates.
+
+1. Freeze and record the local Card-trailer candidate before loading its build.
+2. Acquire `devflow_ui_lease` for `obsidian:<acceptance-vault>` and require its board,
+   Card, implement run, PID/start identity, and candidate commit to match the current run.
+3. Prove the running plugin build comes from that exact candidate, then generate evidence
+   under `development-artifacts/<board>/tasks/<card>/ui/<candidate>/<run>/`.
+4. Bind the verdict to board/Card/feature/run/attempt, candidate/diff, accepted Plan SHA,
+   terminal Relay/session, fixture state, lease interval, scenario observations, evidence
+   content hashes, and cleanup.
+5. Release the lease after evidence is durably written. PASS authorizes the managed
+   handoff gate, not lifecycle transition by this Skill. A Review Worker validates this
+   evidence and never reruns Obsidian acceptance.
+
+A new candidate or Plan SHA invalidates old PASS evidence. UI FAIL returns to exact-session
+implementation rework and a new candidate; manual-only or external evidence gaps become a
+candidate-bound `needs_input` checklist. Never drive a shared acceptance vault without the
+lease, and stop if another CLI/session is already mutating it.
 
 ### 0. CLI fallback: direct CDP eval (when obsidian-cli hangs)
 
@@ -79,6 +102,15 @@ Open another leaf: `const leaf = app.workspace.getRightLeaf(false); await leaf.s
 ### 8. Fixture hygiene
 
 Create fixtures through the CLI (`create path=... content=...`) so the app indexes them. Beware: `create` on an existing path creates a suffixed duplicate ("Note 2.md") instead of overwriting — check the result line, and use `app.vault.process` for in-place rewrites. `delete` moves to trash. Never run `<cli> <subcmd> --help` as a bare command — unrecognized args execute a real default action (created "Untitled.md" in-session); read help only via the shell's own help path or docs. Clean up stray files before recording the verdict. A/B click-testing toolbar buttons drives REAL actions (a note button creates a file at vault root): snapshot `app.vault.getMarkdownFiles().length` first, trash strays via `app.vault.trash(file, false)`, and reconcile against a filesystem `find ... -name '*.md'` count — the in-memory index can lag one cycle, so trust the disk count plus `.trash` mtimes for the ledger.
+
+### 8.5. Timing, staleness, and off-Space traps (verified 2026-09-08, card-workspace links acceptance)
+
+- **`workspace.activeFile` (property) is null in an off-Space/hidden window** even though `activeLeaf.view.file` and `activeEditor.file` are correct. Plugins that use the `workspace.getActiveFile()` METHOD are unaffected. When probing, always use the method; never assert against the property in a background-driven session.
+- **`metadataCache 'changed'` fires ~1s BEFORE `resolvedLinks` is updated** (measured add-link: changed at t, resolvedLinks at t+1008ms). Any reconcile reading resolvedLinks inside a changed handler sees the PREVIOUS graph — one-generation stale. To assert live-graph updates, poll `resolvedLinks` directly for convergence, or assert after the second metadata event. This bit a shipped feature whose plan assumed changed-time reads were current.
+- **`metadataCache.resolvedLinks` does NOT rewrite backlink keys after a rename** (rename A.md→A2.md: dest maps of linkers keep pointing at A.md until each linker is re-resolved). Feature behavior that depends on backlinks after rename must re-scan or accept the stale window.
+- **Svelte 5 batched re-render**: after `.click()`, DOM reads earlier than ~200ms are false negatives (button labels, aria-pressed, class flips). Sleep ≥0.3s before asserting DOM state.
+- **Stale `lastFolderPath` pointing at a deleted folder makes the plugin's startup restore load NOTHING** (empty view, zero cards, no error) — pre-existing card-workspace behavior since 1.1.4. Before reload-based scenarios, reset it: `p.saveSettings({lastFolderPath: ''})` (fire-then-poll; the store exposes only load/save/debouncedWorkspaceWrite).
+- **Settings in-memory shape**: boxes live under `memory.boxes` (not `cardBoxes`); mutating via `plugin.saveSettings({...})` is the supported path.
 
 ### 9. Sidebar view instances and the plugin action layer
 

@@ -7,8 +7,8 @@ symlinks per custom skill:
 - `SOUL.md` (both profiles), `memories/MEMORY.md` + `USER.md` (both profiles)
 - `scripts/feishu.py`, `scripts/development_external_guard.py`
 - focused workflow tests under `tests/`
-- user plugin `plugins/development-workflow/` (`kanban_finalize_intent`)
-- 23 self-authored skills under `skills/<category>/<name>/`
+- standalone Harness plugin `plugins/development-workflow/` (`devflow_*` tools + safety hook)
+- self-authored/overridden skills under `skills/<category>/<name>/`
 - `profiles/executor/skills/devops/feishu-messaging/`
 
 ## Apply / refresh
@@ -17,38 +17,42 @@ symlinks per custom skill:
 stow --dir "$PWD" --target "$HOME" hermes
 ```
 
-## Development workflow (minimal MVP)
+## Development workflow Harness
 
-Hermes Kanban is the sole workflow control plane: statuses, runs, claims,
-heartbeats, stale reclaim, retries, dependencies, handoff, and terminal
-notifications are all native. One Dispatcher-spawned Execution Worker owns a
-development Card from claim to completion or block.
+Hermes Kanban remains the sole lifecycle control plane: statuses, runs, claims,
+heartbeats, stale reclaim, retries, dependencies, native review lane, handoff,
+and notifications are not copied. The standalone Development Workflow Harness
+reads those facts, derives Origin/Implement/Review/non-owning role, validates
+`development-stage.v2` contracts and evidence, and performs managed creation,
+finalization, Relay commissioning, UI leases, implementation handoff, and review
+verdicts through `devflow_*` tools. A `pre_tool_call` hook blocks known bypasses
+and non-owning mutations without changing unrelated Hermes behavior.
 
-The small fail-closed external guard (`scripts/development_external_guard.py`)
-owns only Relay identity/session/result plus Git baseline/commit evidence. It
-prevents duplicate Coding Agent Relays, records exact-session recovery facts,
-and detects the already-created `Kanban-Task: <card-id>` landing commit; its
-canonical state is
-`~/Secret-Projects/development-artifacts/<board>/tasks/<card-id>/external-execution.json`
-(`development-external-execution.v1`). Ambiguous state (`uncertain`) blocks the
-Card; the guard never guesses that a new spawn is safe.
+The fail-closed external guard (`scripts/development_external_guard.py`) owns only
+write-mode Relay attempt/session/result plus immutable Git baseline and landing
+lineage. Its canonical `development-external-execution.v2` state is
+`~/Secret-Projects/development-artifacts/<board>/tasks/<card-id>/external-execution.json`;
+v1 migrates losslessly on the first exclusive managed write. Ambiguous state
+(`uncertain`) blocks and is never automatically reset or retried.
 
-The global read-only status Digest was removed on 2026-09-07: the Cron job
-was deleted, and `development_status_digest.py`, its regular-file launcher, and
-its test were removed from this package (git history retains them). There are
-no per-Card Crons, monitors, or wrappers, and no Goal Mode, review lane, or
-hook-driven transitions. Workflow prose lives in the `development-orchestrator`
-and `hermes-kanban-workflows` skills.
+There is no Goal Mode, auto-decompose, per-Card Cron, monitor, generic workflow
+DSL, duplicate phase database, or Hermes Core patch. Execute review is one fresh
+read-only `review-execute-candidate` Relay with separate Patch and Plan
+Conformance gates. Required UI acceptance is performed once by the Implement
+Worker against the frozen candidate under a run-bound UI lease; review validates
+the evidence instead of driving the renderer again. Policy lives in
+`development-orchestrator`; mechanics live in `hermes-kanban-workflows`.
 
 ## User plugin compatibility
 
 `plugins/development-workflow/` is stowed to
 `~/.hermes/plugins/development-workflow` and enabled with
-`hermes plugins enable development-workflow`. It wraps Hermes' internal
-`hermes_cli.kanban_db.specify_triage_task()` API rather than patching Core or
-writing SQLite directly. The files survive `hermes update`, but the internal
-API is version-coupled: rerun the plugin's focused temporary-`HERMES_HOME`
-tests after each Hermes update and adapt the plugin if the API changes.
+`hermes plugins enable development-workflow`. All version-coupled Hermes access
+is concentrated in its `hermes_adapter.py`; the plugin does not patch Core or
+duplicate native state machines. Mutating Devflow tools fail closed when a
+required API capability is absent, while read-only inspect returns diagnostics
+when possible. Rerun focused tests plus a temporary-`HERMES_HOME` real plugin
+load after each Hermes update.
 
 ## Deliberately NOT managed here
 

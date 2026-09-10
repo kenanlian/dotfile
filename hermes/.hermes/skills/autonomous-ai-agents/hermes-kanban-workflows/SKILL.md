@@ -1,145 +1,140 @@
 ---
 name: hermes-kanban-workflows
 description: "Use when building or verifying Hermes Kanban workflows."
-version: 3.1.0
+version: 4.0.0
 tags: [kanban, multi-agent, dispatcher, relay, external-guard, workflow, verification]
 ---
 
 # Hermes Kanban Workflows
 
-Implement durable board, stage-Card, Dispatcher, dependency, review-lane, external-guard, reconciliation, and handoff mechanics for the development workflow. Development policy is owned by the calling `development-orchestrator`; this Skill implements the requested Kanban transition and must not redefine route or acceptance policy.
+Implement durable Kanban and Development Workflow Harness mechanics. Product route and acceptance policy come from `development-orchestrator`; this Skill must not redefine them.
 
-## Active-role model
+## Ownership
 
-Three roles may act on a development Card, but only one is active at a time:
+Hermes Kanban is the only Card/run/claim/status/dependency/review/retry/heartbeat/stale-reclaim/handoff/comment/notification truth. The standalone `development-workflow` plugin reads that truth, validates managed actions, and invokes native primitives through one adapter; it does not copy lifecycle state. The external guard owns only write-mode Relay attempt/session/result, Git baseline, and landing lineage. Git owns candidate commits. Artifacts own immutable evidence. UI leases own short-lived local resource exclusion.
 
-- **Origin default-profile session** — the interactive session with Kenan. Owns intent convergence, accepted amendment comments, and unblocking; never owns execution.
-- **Implement Worker** — a Dispatcher-spawned worker claimed from `ready`; owns one planning/implementation/rework run, any required UI acceptance, landing, and either `kanban_complete` (direct) or `kanban_request_review` (stage Card).
-- **Review Worker** — a fresh Dispatcher-spawned worker claimed from `review`; delegates the stage-specific read-only review relay(s) and ends with exactly one of `kanban_complete`, `kanban_request_changes`, or a genuine typed `kanban_block`.
+No Goal Mode, auto-decompose, monitor, scheduled workflow job, generic workflow DSL, or second phase database advances development Cards.
 
-No scheduled job ever advances, retries, blocks, unblocks, commits, or completes a Card. No scheduled job exists in this workflow — the global status Digest was removed 2026-09-07 and the Cron job list is empty.
+## Roles and ownership loss
 
-## Ownership split
+The Harness derives role from runtime and current Kanban facts:
 
-Hermes Kanban natively owns all of:
+- Origin: interactive `default` profile without Dispatcher task/run env; creates/finalizes/records decisions/inspects/unblocks.
+- Implement Worker: task, run, claim lock, active run, and `claimed.source_status != review` all match.
+- Review Worker: the same ownership checks, `claimed.source_status == review`, and current `review_requested` candidate handoff.
+- Non-owning Worker: any ownership mismatch or terminal run; inspect/read/exit only.
 
-- statuses `triage/todo/ready/running/blocked/done`;
-- the current run and claim;
-- worker PID, heartbeat, stale/crash reclaim, retry/circuit-breaker;
-- dependencies and parent handoffs;
-- comments and user decisions;
-- completion metadata and downloadable artifacts;
-- terminal notifications.
+`stale`, `timed_out`, `crashed`, and `reclaimed` are distinct native outcomes. Ownership loss is `non-owning` / `RUN_OWNERSHIP_LOST` and never changes Kanban. A non-owning Worker cannot write comments/files, run Terminal/Relay/Guard/Git/UI, message externally, or transition a Card; its process-local stop nudge is disabled so it can exit normally.
 
-The external execution guard owns ONLY write-mode planning/implementation/rework Relay identity/session/result plus Git baseline/commit evidence. Read-only review Relay truth belongs to the native review run handoff; the guard is not reused by a Review Worker. It must not copy Card status, run history, review rounds, phase, heartbeat, retries, artifact arrays, or notification state.
+## Managed Card mechanics
 
-## When to use
+New development Cards use `development-stage.v2`. The body stores stable product identity only: feature/stage/intent/UI/manual/coding-agent/accepted-Plan plus the fixed eight sections. Skill, mode, review gate, Auto Handoff, and completion owner are derived by the Harness policy registry.
 
-Load before creating, finalizing, routing, transitioning, reconciling, or completing a development Card, and before operating its external guard state. Also load for board provisioning, Dispatcher behavior, dependencies, task-scoped tools, handoff integrity, and Kanban verification.
+Use the Harness surface for managed Cards:
 
-## Board and Card mechanics
+| Tool | Role | Purpose |
+|---|---|---|
+| `devflow_inspect` | any/read-only | Reconstruct role, Card pair, Plan, guard, candidate, gates, lease, allowed actions, remediation |
+| `devflow_create_feature` | Origin | Create direct draft or atomic write-plan+execute-plan draft pair |
+| `devflow_record_decision` | Origin | Append sourced intent decision, amendment, or candidate-bound manual verdict |
+| `devflow_finalize_stage` | Origin | Validate full v2 replacement body/capabilities and call native specification |
+| `devflow_start_or_inspect_relay` | owning Worker | Derive and launch/attach/consume the exact write or review Relay |
+| `devflow_ui_lease` | Implement Worker | Acquire/release/inspect a candidate/run-bound named resource |
+| `devflow_implement_handoff` | Implement Worker | Validate current Plan/candidate/checks/UI then native complete/request-review |
+| `devflow_review_verdict` | Review Worker | Validate current review evidence then native complete/request-changes/block |
 
-- Each active development project under `~/Secret-Projects/` uses a dedicated board whose slug is the kebab-case directory basename and whose default workdir is the project root; a repository without development work needs no board. Hermes self-work and projects outside that tree use `default`.
-- Cards work directly in the trusted repository directory on main under Kenan's convention; do not use scratch/worktree unless the caller explicitly chooses another supported workspace contract.
-- One Card represents one independently closable direct task or one stage of a plan-driven feature. A plan-driven feature has exactly two Cards (`write-plan` parent, `execute-plan` child); Relay attempts, review rounds, retries, artifacts, and same-stage fixes are never separate Cards.
-- Feature identity lives in the body frontmatter `feature_id` (see `development-orchestrator`): same value = same feature. Parent links are dispatch gating only — dependency chains, review cards, and stage pairs all use them, so a parent edge is never evidence of same-feature. When a stage card is rebuilt after a scope change, keep the same `feature_id`, parent the new card, and archive (not block) the superseded card with a `superseded by <new-id>` comment; per `feature_id` + stage at most one non-archived card may exist.
-- Use native parent links. Parent-blocked children remain `todo` and promote automatically after all parents complete.
-- Use exact board slugs and explicit board arguments when no task-scoped binding exists. Read back every created or mutated target before claiming success.
+Do not use raw `kanban_create/link/finalize`, native lifecycle transitions, direct guard calls, or direct Relay launchers to bypass these tools on a managed v2 Card. The plugin's `pre_tool_call` hook is a safety net, not the preferred happy path. It blocks known bypasses, review writes, and non-owning mutations; internal failure returns `HARNESS_STATE_UNAVAILABLE` for protected actions while unrelated tools remain unaffected.
 
-For development Cards, the caller supplies a `development-stage.v1` body and policy fields. Create the Card with exactly:
+Legacy running/completed `development-stage.v1` and grandfathered `development-task.v1` cards retain narrow inspect/transition compatibility until terminal. New features never use them.
 
-- `board=<exact project board>` — never an implicit profile default;
-- `assignee=default` — the literal development-contract assignee;
-- `skills=[development-orchestrator, <selected-delegate-adapter>]` — pin both policy and transport (Pi default: `pi-delegate`);
-- `workspace_kind=dir`, `workspace_path=<exact repository root>` — the trusted repository itself.
+## Creation and release
 
-Converged tasks are created directly as dispatchable Cards. `kanban_finalize_intent` remains available only for existing triage/backlog Cards; it validates the complete replacement body and calls the native triage specification path, and it exits the default path. Do not repair missing product policy in this mechanics layer.
+- One direct route creates one triage draft.
+- Two-stage creation creates both triage drafts and their parent edge in one outer transaction, then readbacks both identities and the edge before commit. Failure rolls back everything.
+- Draft decisions are append-only comments. Finalization supplies one complete replacement body; no second draft store exists.
+- Only write-plan is finalized initially. Execute remains triage until Origin folds the exact same-feature write-plan handoff `{card_id,path,sha256}` into its v2 body and finalizes it.
+- Per board, one `feature_id + stage` has at most one non-archived Card.
+- Read back `kanban.max_in_progress=1`, `kanban.max_in_progress_per_profile=1`, and for two-stage `kanban.review_dispatch=true` before release.
 
-## Dispatcher semantics
+Native parent gates still own `todo→ready` promotion. The Harness never claims, dispatches, reclaims, retries, or sends notifications.
 
-- Dispatcher claims require `status=ready` and a non-empty assignee. The development contract uses literal `assignee=default`.
-- Card `model`/`provider` configure the spawned Hermes worker, not the external Coding Agent.
-- The worker receives `HERMES_KANBAN_DB`, `HERMES_KANBAN_BOARD`, `HERMES_KANBAN_TASK`, and the Card's workdir/skills.
-- Dispatcher workers must begin with `kanban_show()`. Implement runs end through `kanban_complete`, `kanban_request_review`, or a typed `kanban_block`; review runs end through `kanban_complete`, `kanban_request_changes`, or a typed `kanban_block`.
-- Interactive orchestrators need the `kanban` toolset; task-scoped workers receive focused lifecycle tools automatically. Orchestrator-only tools remain hidden from delegated children.
-- `kanban.max_in_progress_per_profile` is enforced separately inside each board DB. It does **not** serialize one profile across boards. `kanban.max_in_progress` is the host-wide cap across board dispatch; Kenan's direct-main workflow requires both values to be `1`. Read both back before dispatching trusted-directory work.
-- Emit heartbeats during long operations so stale reclaim does not silently recycle active work.
-- Before supervising a long background Relay, verify the Worker's effective wait ceiling. `process_manage(wait)` is clamped by `TERMINAL_TIMEOUT`; for a Card with `max_runtime_seconds`, Dispatcher raises the worker-scoped ceiling to `max_runtime_seconds - 30` seconds when needed.
-- For Relays expected to run longer than a few minutes, prefer 30–50 minute `process_manage(wait)` slices when the ceiling permits, then heartbeat before the next slice. Do not wake the model every few minutes, and do not reread `result.json` or the event stream while the process is still live; consume terminal artifacts only after process exit or during crash/reclaim reconciliation.
+## Managed transitions
 
-## Status transitions (native flow)
+Native status effects remain:
 
-Use native lifecycle tools, not raw SQL. This workflow uses only:
+- specification: `triage → todo|ready` after parent recomputation;
+- dispatch claim: `ready|review → running`;
+- direct implement handoff: `running → done`;
+- stage implement handoff: `running → review` with default reviewer routing;
+- review PASS: `running → done`;
+- review REVISE: `running → ready|todo`, restoring implementer and parent gating without block-loop accounting;
+- genuine blocker: `running → blocked`, typed `dependency|needs_input|capability|transient`;
+- explicit Origin unblock: `blocked → todo|ready` by parent gating.
 
-- draft specification: `triage → todo`, then `recompute_ready()` promotes to `ready` if parent gates are closed;
-- Dispatcher claim: `ready → running`;
-- completion: `running → done` via `kanban_complete` after landing;
-- stage handoff: implement `running → review` via `kanban_request_review(...)` with `reviewer` omitted, using Kanban's native default reviewer routing (and persisted reviewer provenance on re-review);
-- review pass: review `running → done` via `kanban_complete`;
-- review revise: review `running → ready|todo` via `kanban_request_changes`, restoring the recorded implementer and parent gating without block-loop accounting;
-- blocker: `running → blocked` with the typed `dependency | needs_input | capability | transient` kind that matches reality; unblock returns the Card to dispatch;
-- parking: `block` fires ONLY from `running`/`ready`; to park a `todo` Card non-dispatchably use `schedule` (`todo/ready/running/blocked → scheduled`, not claimable; `unblock` re-gates it).
-- hard park — a Card that must not auto-dispatch after parent completion stays in `triage` while `kanban.auto_decompose=false`; only the specification surface may release it.
+For managed v2 Cards these effects occur inside `devflow_implement_handoff` or `devflow_review_verdict`, bound to the expected current run. Never perform a separate preflight then manually copy parameters into a native transition.
 
-Direct Cards do not use the review lane. Both plan-driven stage Cards do. Keep `kanban.review_dispatch: true`; the Implement Worker completes required UI acceptance before requesting execute-stage review. Review Workers are fresh runs and receive `sdlc-review` plus the Card-pinned policy and adapter Skills.
+## External guard v2
 
-## External execution guard
-
-Each development Card owns at most one canonical guard state for its write-mode implement/rework lineage:
+Canonical state:
 
 ```text
 ~/Secret-Projects/development-artifacts/<board>/tasks/<card-id>/external-execution.json
 ```
 
-schema `development-external-execution.v1`, written only through `development_external_guard.py`. The guard is fail-closed: it reserves before process creation, never retries automatically, records the exact terminal session ID, verifies the current native run before side effects, and detects the Card-trailer landing commit. Allowed outcomes are `spawned | attach | terminal | uncertain` (`inspect` also returns `none` when no attempt exists). `uncertain` blocks the Card.
+Schema `development-external-execution.v2` stores immutable baseline plus append-only `attempts[]` and `landings[]`. At most one attempt is non-terminal; attempt numbers increase; only terminal attempts can land; duplicate recording of one commit is idempotent while a new rework commit appends. It stores no Card status, review round, UI verdict, Plan acceptance, heartbeat, retry, or notification state.
 
-Never hand-edit the state file, bypass the guard CLI for a write-mode Relay, or infer process safety from prose, PID absence, or elapsed time. Load `references/execution-recovery.md` before initializing, starting, inspecting, resuming, or landing a Card's external execution. A Review Worker instead validates each fresh read-only adapter process and `delegate-relay.result.v1` directly, records its result paths under a run-ID-specific directory, and relies on the native expected-run guard for its verdict. A reclaimed review run may leave duplicate read-only compute, but cannot overwrite another run's evidence or submit a stale verdict.
+The Harness validates ownership, brief, stage, Plan, adapter, Auto Handoff, argv, and paths **before** asking the guard to reserve. Outcomes remain `spawned|attach|terminal|uncertain` (`none` before an attempt). Uncertain always blocks; never reset or retry automatically.
 
-## Scheduled jobs
+Guard v1 migrates on the first exclusive write: atomic backup, lossless mapping to the first attempt and optional landing, full validation, then replacement. Migration failure returns `HARNESS_INCOMPATIBLE` and preserves evidence.
 
-None. The global status Digest Cron (`development-status-digest`) was removed on 2026-09-07; the Cron job list is empty and no per-Card Cron, monitor, or wrapper exists. Observe active Cards through native Kanban notifications, direct board queries, or the Worker's own heartbeats.
+Load `references/execution-recovery.md` before any guard operation.
 
-## Reconciliation
+## Relay and review evidence
 
-Do not trust a column or self-report alone. Check cheapest-first:
+A completed-looking Relay is incomplete until the process exited and `delegate-relay.result.v1` validates. Write attempts belong to Guard v2. Reviews are fresh read-only processes under:
 
-1. exact board/Card and comments/events;
-2. implement/rework: guard state, process identity, result path, session ID, commit;
-3. review: native review run plus each fresh adapter process and `result.json`;
-4. the accepted Plan path when the operation is planning;
-5. Git status/history against the recorded baseline;
-6. acceptance evidence when the caller requires it;
-7. session history only if ambiguity remains.
+```text
+.../reviews/round-<N>/run-<run-id>/<review-skill>/
+```
 
-Never mutate guard state, board, Git, or Cron during a progress-only read. Comment compact verified evidence on the Card when reconciliation changes lifecycle understanding.
+One review run cannot reuse another run's result. A reclaimed read-only process may finish, but its verdict cannot satisfy the current run.
 
-## Handoff integrity
+Write-plan review uses one `review-plan`. Execute review uses one `review-execute-candidate` with independent patch and plan-conformance gates. Review evidence binds board/card/feature/run/round/candidate/diff/accepted-Plan and artifact hashes. Any identity change invalidates it.
 
-A completed-looking Relay is incomplete if the process is live or the terminal `delegate-relay.result.v1` is malformed/missing. Validate terminal truth and load-bearing paths (state, out directory, result file, accepted Plan path) without duplicating engineering behavior tests; final deliverables ride native Kanban attachments. See `references/handoff-integrity.md`.
+## Candidate and UI evidence
 
-## Tool and API pitfalls
+Direct/execute handoff requires a local candidate commit with exact `Kanban-Task: <card-id>` trailer and an immutable manifest under `candidates/<sha>/candidate.json`. It binds current implement run, guard attempt/terminal session, diff base/head, and accepted Plan. Candidate commits follow engineering checks and precede required UI acceptance. Push occurs only after current-candidate UI/manual PASS under applicable authority.
 
-1. Prefer `kanban_*` tools; never patch Kanban SQLite directly.
-2. Board resolution precedence is task-scoped DB/board binding, explicit board, active-board symlink, then profile default. Use profile-safe Hermes paths.
-3. A bare `task_id` in an unclaimed interactive session needs `board="default"` or the exact slug when the target is not the active board.
-4. `edit` does not replace lifecycle transitions; use specification, completion, block, or unblock surfaces.
-5. Repeated same-cause block/unblock can trigger triage. Use a precise typed blocker and do not loop.
-6. `workflow_template_id` and `current_step_key` are metadata, not Dispatcher routing.
-7. Native top-level `artifacts` are attachment paths; keep structured result objects under a nested metadata key to avoid collisions.
-8. Manage Cron jobs only through the supported Cron API/tool surface. Never remove or materially edit a job from inside its own active fire.
-9. In the Kanban CLI, `--board` is a parent-level flag: place it BEFORE the subcommand (`hermes kanban --board <slug> block ...`); positioned after the subcommand it is parsed as a task argument and the call fails.
+Automated UI acceptance runs under a named `devflow_ui_lease` and writes evidence under `ui/<candidate>/<run>/`. A live current owner blocks another holder. Reclaim requires dead PID and non-current run. Review validates current evidence; it does not drive the renderer.
 
-## Verification
+## Recovery
 
-Before reporting success, read back and confirm:
+`devflow_inspect` is the common recovery index:
 
-- exact board/workdir/task and parent gating;
-- exact body/assignee/status/event after intent finalization;
-- the write-mode guard state validates: expected schema, one canonical current-attempt lineage, terminal session ID, and recorded commit when landing applies;
-- `check-run` passes immediately before any write-mode Relay start, UI mutation, or Git commit; Review Workers validate their native review run through `kanban_show` and task-scoped terminal actions;
-- truthful `delegate-relay.result.v1` terminal truth and load-bearing paths;
-- `kanban.review_dispatch=true`; direct Cards complete without review, while both stage Cards use `request_review`/`request_changes` and a fresh Review Worker;
-- the Cron job list matches the current scheduled-jobs decision in §Scheduled jobs (empty as of 2026-09-07) with no per-Card Crons, monitors, or wrappers — check the live list, do not assert it;
-- requested status transition and no unrelated board mutation.
+- Worker with no args uses Dispatcher env.
+- Origin notification uses exact board + task id.
+- Known feature uses board + feature id.
+- Board-only lookup returns bounded active candidates and never guesses among multiples.
 
-Detailed mechanics live in `references/kanban-mechanics.md`, `references/execution-recovery.md`, and `references/handoff-integrity.md`.
+Rebuild cheapest-first: Card/current run/claim/events → decisions/amendments → Guard v2 or current review result → accepted Plan → Git/candidate → UI/manual evidence → session history only if still ambiguous.
+
+Write guard live means attach; terminal means consume; uncertain means typed block. Only same-scope rework resumes the exact implement session. Old Worker chats never regain ownership.
+
+## Reconciliation and readback
+
+After every external mutation, read back the exact target. Verify:
+
+- board/task/workspace/assignee/body/status/event and parent edge;
+- runtime role, current run, and claim lock immediately before side effects;
+- Guard schema, baseline, monotonic attempt lineage, one active attempt, terminal session, and append-only landing;
+- process exit and terminal Relay schema/status/CWD/mode/model/session/Auto Handoff identity;
+- accepted Plan path/SHA and same-feature write-plan handoff;
+- candidate trailer, manifest identity, diff range, and unchanged current HEAD at handoff;
+- review/UI/manual evidence identity and verdict;
+- the exact native transition and absence of unrelated board mutation.
+
+See `references/kanban-mechanics.md`, `references/execution-recovery.md`, and `references/handoff-integrity.md`.
+
+## Recovery authority
+
+No general force exists. A zero-side-effect pre-spawn uncertain recovery is Origin-only, requires Kenan's explicit single-Card approval, and must prove no live PID, no result, unchanged artifacts, and clean attributable Git state before restoring a previously committed terminal state. It never authorizes a non-owning Worker or overrides live/ambiguous write risk.

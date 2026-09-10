@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""External-execution guard for the Hermes development workflow MVP.
+"""External-execution guard for the Hermes development workflow.
 
 Fail-closed CLI that prevents duplicate Coding Agent Relay starts and records
-exact-session recovery facts.  Hermes Kanban stays the only workflow control
-plane; this guard owns ONLY relay identity/session/result evidence plus the
-git baseline/commit facts (plan sections 2.2-2.4).  Canonical state:
+exact-session recovery facts plus attempt/landing lineage.  Hermes Kanban
+stays the only workflow control plane; this guard owns ONLY relay
+identity/session/result evidence plus git baseline/landing facts (design
+§9.2, §15).  Canonical state:
 
     <artifacts-root>/<board>/tasks/<card-id>/external-execution.json
+
+Schema ``development-external-execution.v2`` stores append-only ``attempts``
+and ``landings``.  A valid v1 file migrates in place on the first exclusive
+write (atomic ``external-execution.v1.bak.json`` backup).  Read-only
+commands classify v1 without mutating it.
 
 Commands: init | start-or-inspect | inspect | record-terminal | check-run |
 record-commit.  Outcomes: spawned | attach | terminal | uncertain (``inspect``
@@ -15,9 +21,10 @@ second spawn; it classifies ``uncertain`` and durably blocks new attempts.
 
 Exit codes: 0 classified outcome (uncertain included); 2 usage; 3 init
 conflict or state-transition violation; 4 corrupt/missing state or invalid
-evidence; 5 check-run failure; 6 unexpected internal error.  Every command prints one JSON object to
-stdout.  Stdlib only; ``check-run`` lazily imports the installed ``hermes_cli``
-runtime, bootstrapping ``sys.path`` from ``<home>/hermes-agent``.
+evidence; 5 check-run failure; 6 unexpected internal error.  Every command
+prints one JSON object to stdout.  Stdlib only; ``check-run`` lazily imports
+the installed ``hermes_cli`` runtime, bootstrapping ``sys.path`` from
+``<home>/hermes-agent``.
 """
 
 from __future__ import annotations
@@ -32,16 +39,23 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-SCHEMA = "development-external-execution.v1"
+SCHEMA_V1 = "development-external-execution.v1"
+SCHEMA_V2 = "development-external-execution.v2"
+SCHEMA = SCHEMA_V2
 RESULT_SCHEMA = "delegate-relay.result.v1"
 RESULT_STATUSES = ("completed", "failed", "timeout", "aborted", "unavailable")
 OPERATIONS = ("planning", "execution", "rework")
 ATTEMPT_STATES = ("reserved", "running", "terminal", "uncertain")
+NON_TERMINAL_STATES = ("reserved", "running", "uncertain")
 ATTEMPT_KEYS = ("number", "operation", "state", "pid", "process_start",
-                "out_dir", "result_path", "session_id")
+                "out_dir", "result_path", "session_id", "terminal_status")
+V1_ATTEMPT_KEYS = ("number", "operation", "state", "pid", "process_start",
+                   "out_dir", "result_path", "session_id")
+LANDING_KEYS = ("attempt_number", "commit", "parent", "recorded_at")
 TERMINAL_CARD_STATUSES = ("done", "archived")
+V1_BACKUP_NAME = "external-execution.v1.bak.json"
 EXIT_OK, EXIT_USAGE, EXIT_CONFLICT = 0, 2, 3
 EXIT_EVIDENCE, EXIT_CHECK_RUN, EXIT_INTERNAL = 4, 5, 6
 
@@ -96,11 +110,27 @@ def git(repo: str, *args: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, check=False)
 
 
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_optional_str(value: Any) -> bool:
+    return value is None or isinstance(value, str)
+
+
+def _is_nonempty_str(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
 # --- State I/O: one advisory lock; atomic temp-file + os.replace writes ---
 
 def state_path_for(args: argparse.Namespace) -> Path:
     return Path(args.artifacts_root) / args.board / "tasks" / args.card_id \
         / "external-execution.json"
+
+
+def v1_backup_path(path: Path) -> Path:
+    return path.parent / V1_BACKUP_NAME
 
 
 @contextlib.contextmanager
@@ -114,50 +144,12 @@ def state_lock(path: Path):
         os.close(fd)
 
 
-def _validate_attempt(attempt: Any) -> None:
-    if attempt is None:
-        return
-    number, pid = attempt.get("number"), attempt.get("pid")
-    ok = (
-        isinstance(attempt, dict)
-        and all(k in attempt for k in ATTEMPT_KEYS)
-        and attempt["state"] in ATTEMPT_STATES
-        and attempt["operation"] in OPERATIONS
-        and isinstance(number, int) and not isinstance(number, bool) and number >= 1
-        and (pid is None or (isinstance(pid, int) and not isinstance(pid, bool)))
-        and all(attempt[k] is None or isinstance(attempt[k], str)
-                for k in ("process_start", "session_id"))
-        and all(isinstance(attempt[k], str) and attempt[k]
-                for k in ("out_dir", "result_path"))
-    )
-    if not ok:
-        raise _bad("state-attempt-corrupt")
-
-
-def load_state(path: Path, card_id: str) -> Dict[str, Any]:
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        raise _bad("state-missing")
-    try:
-        state = json.loads(raw)
-    except ValueError:
-        raise _bad("state-corrupt-json")
-    if not isinstance(state, dict) or state.get("schema") != SCHEMA:
-        raise _bad("state-schema-invalid")
-    if state.get("card_id") != card_id:
-        raise _bad("state-card-mismatch")
-    _validate_attempt(state.get("attempt"))
-    return state
-
-
-def write_state(path: Path, state: Dict[str, Any]) -> None:
-    state["updated_at"] = utc_now()
-    data = json.dumps(state, indent=2) + "\n"
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent),
                                prefix=".external-execution.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
@@ -166,6 +158,269 @@ def write_state(path: Path, state: Dict[str, Any]) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+def _validate_attempt_fields(attempt: Any, *, keys: Tuple[str, ...],
+                             require_terminal_status: bool) -> None:
+    if not isinstance(attempt, dict) or any(k not in attempt for k in keys):
+        raise _bad("state-attempt-corrupt")
+    number, pid = attempt.get("number"), attempt.get("pid")
+    ok = (
+        attempt["state"] in ATTEMPT_STATES
+        and attempt["operation"] in OPERATIONS
+        and _is_int(number) and number >= 1
+        and (pid is None or _is_int(pid))
+        and _is_optional_str(attempt.get("process_start"))
+        and _is_optional_str(attempt.get("session_id"))
+        and all(_is_nonempty_str(attempt[k]) for k in ("out_dir", "result_path"))
+    )
+    if require_terminal_status:
+        terminal_status = attempt.get("terminal_status")
+        ok = ok and (
+            terminal_status is None
+            or (isinstance(terminal_status, str)
+                and terminal_status in RESULT_STATUSES)
+        )
+        if attempt["state"] != "terminal" and terminal_status is not None:
+            ok = False
+    if not ok:
+        raise _bad("state-attempt-corrupt")
+
+
+def _validate_v1_attempt(attempt: Any) -> None:
+    if attempt is None:
+        return
+    _validate_attempt_fields(attempt, keys=V1_ATTEMPT_KEYS,
+                             require_terminal_status=False)
+
+
+def _validate_v2_attempt(attempt: Any) -> None:
+    _validate_attempt_fields(attempt, keys=ATTEMPT_KEYS,
+                             require_terminal_status=True)
+
+
+def _validate_v1_state(state: Dict[str, Any], card_id: str) -> None:
+    if state.get("card_id") != card_id:
+        raise _bad("state-card-mismatch")
+    repo, head, porcelain = (
+        state.get("repo"), state.get("baseline_head"),
+        state.get("baseline_porcelain"),
+    )
+    if not _is_nonempty_str(repo) or not _is_nonempty_str(head):
+        raise _bad("harness-incompatible")
+    if not isinstance(porcelain, list) or not all(isinstance(x, str) for x in porcelain):
+        raise _bad("harness-incompatible")
+    _validate_v1_attempt(state.get("attempt"))
+    commit = state.get("commit")
+    if commit is None:
+        return
+    if not (isinstance(commit, dict) and _is_nonempty_str(commit.get("sha"))):
+        raise _bad("harness-incompatible")
+
+
+def _validate_v2_state(state: Dict[str, Any], card_id: str) -> None:
+    if state.get("schema") != SCHEMA_V2:
+        raise _bad("state-schema-invalid")
+    if state.get("card_id") != card_id:
+        raise _bad("state-card-mismatch")
+    if not _is_nonempty_str(state.get("repo")):
+        raise _bad("state-schema-invalid")
+    baseline = state.get("baseline")
+    if not (
+        isinstance(baseline, dict)
+        and _is_nonempty_str(baseline.get("head"))
+        and isinstance(baseline.get("porcelain"), list)
+        and all(isinstance(x, str) for x in baseline["porcelain"])
+    ):
+        raise _bad("state-schema-invalid")
+    attempts = state.get("attempts")
+    landings = state.get("landings")
+    if not isinstance(attempts, list) or not isinstance(landings, list):
+        raise _bad("state-schema-invalid")
+    non_terminal = 0
+    by_number: Dict[int, Dict[str, Any]] = {}
+    for index, attempt in enumerate(attempts, start=1):
+        _validate_v2_attempt(attempt)
+        if attempt["number"] != index:
+            raise _bad("state-attempt-corrupt")
+        if attempt["state"] in NON_TERMINAL_STATES:
+            non_terminal += 1
+        by_number[attempt["number"]] = attempt
+    if non_terminal > 1:
+        raise _bad("state-attempt-corrupt")
+    seen_commits: set = set()
+    for landing in landings:
+        if not isinstance(landing, dict) or any(k not in landing for k in LANDING_KEYS):
+            raise _bad("state-landing-corrupt")
+        number, commit, parent, recorded_at = (
+            landing.get("attempt_number"), landing.get("commit"),
+            landing.get("parent"), landing.get("recorded_at"),
+        )
+        if not _is_nonempty_str(commit) or not isinstance(parent, str) \
+                or not _is_nonempty_str(recorded_at):
+            raise _bad("state-landing-corrupt")
+        if number is not None:
+            if not _is_int(number) or number not in by_number:
+                raise _bad("state-landing-corrupt")
+            if by_number[number]["state"] != "terminal":
+                raise _bad("state-landing-corrupt")
+        if commit in seen_commits:
+            raise _bad("state-landing-corrupt")
+        seen_commits.add(commit)
+
+
+def _read_raw_state(path: Path) -> Tuple[bytes, Any]:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        raise _bad("state-missing")
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise _bad("state-corrupt-json")
+    return raw, parsed
+
+
+def git_first_parent(repo: str, sha: str, *, missing_reason: str) -> str:
+    """First parent SHA of ``sha``, or ``''`` for a root commit."""
+    parents = git(repo, "rev-parse", f"{sha}^@")
+    if parents.returncode == 0:
+        lines = [line.strip() for line in parents.stdout.splitlines() if line.strip()]
+        if lines:
+            return lines[0]
+        verify = git(repo, "rev-parse", "--verify", f"{sha}^{{commit}}")
+        if verify.returncode == 0 and verify.stdout.strip():
+            return ""
+        raise _bad(missing_reason)
+    pretty = git(repo, "log", "-1", "--format=%P", sha)
+    if pretty.returncode == 0:
+        parts = pretty.stdout.strip().split()
+        return parts[0] if parts else ""
+    raise _bad(missing_reason)
+
+
+def git_full_sha(repo: str, sha: str, *, missing_reason: str) -> str:
+    resolved = git(repo, "rev-parse", f"{sha}^{{commit}}")
+    if resolved.returncode != 0 or not resolved.stdout.strip():
+        raise _bad(missing_reason)
+    return resolved.stdout.strip()
+
+
+def _v1_attempt_to_v2(attempt: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if attempt is None:
+        return None
+    converted = {key: attempt[key] for key in V1_ATTEMPT_KEYS}
+    converted["terminal_status"] = None
+    return converted
+
+
+def _v1_to_v2(v1: Dict[str, Any], *, recorded_at: str,
+              resolve_parent: bool) -> Dict[str, Any]:
+    attempt = _v1_attempt_to_v2(v1.get("attempt"))
+    attempts: List[Dict[str, Any]] = [] if attempt is None else [attempt]
+    landings: List[Dict[str, Any]] = []
+    commit = v1.get("commit")
+    if isinstance(commit, dict) and _is_nonempty_str(commit.get("sha")):
+        sha = commit["sha"]
+        parent = ""
+        if resolve_parent:
+            sha = git_full_sha(v1["repo"], sha,
+                               missing_reason="migration-commit-unresolvable")
+            parent = git_first_parent(
+                v1["repo"], sha, missing_reason="migration-commit-unresolvable")
+        attempt_number = None
+        if attempts:
+            if attempts[0]["state"] != "terminal":
+                raise _bad("harness-incompatible")
+            attempt_number = attempts[0]["number"]
+        landings.append({
+            "attempt_number": attempt_number,
+            "commit": sha,
+            "parent": parent,
+            "recorded_at": recorded_at,
+        })
+    return {
+        "schema": SCHEMA_V2,
+        "card_id": v1["card_id"],
+        "repo": v1["repo"],
+        "baseline": {
+            "head": v1["baseline_head"],
+            "porcelain": list(v1["baseline_porcelain"]),
+        },
+        "attempts": attempts,
+        "landings": landings,
+    }
+
+
+def _migrate_v1(path: Path, raw: bytes, v1: Dict[str, Any],
+                card_id: str) -> Dict[str, Any]:
+    """Lossless v1→v2 rewrite. Fail closed before touching files on error."""
+    _validate_v1_state(v1, card_id)
+    migrated = _v1_to_v2(v1, recorded_at=utc_now(), resolve_parent=True)
+    _validate_v2_state(migrated, card_id)
+    _atomic_write_bytes(v1_backup_path(path), raw)
+    write_state(path, migrated)
+    reloaded = json.loads(path.read_text(encoding="utf-8"))
+    _validate_v2_state(reloaded, card_id)
+    return reloaded
+
+
+def load_state(path: Path, card_id: str, *, migrate: bool = False) -> Dict[str, Any]:
+    raw, parsed = _read_raw_state(path)
+    if not isinstance(parsed, dict):
+        raise _bad("state-corrupt-json")
+    schema = parsed.get("schema")
+    if schema == SCHEMA_V2:
+        _validate_v2_state(parsed, card_id)
+        return parsed
+    if schema == SCHEMA_V1:
+        _validate_v1_state(parsed, card_id)
+        if migrate:
+            return _migrate_v1(path, raw, parsed, card_id)
+        converted = _v1_to_v2(parsed, recorded_at=utc_now(), resolve_parent=False)
+        _validate_v2_state(converted, card_id)
+        return converted
+    raise _bad("state-schema-invalid")
+
+
+def write_state(path: Path, state: Dict[str, Any]) -> None:
+    state["schema"] = SCHEMA_V2
+    state["updated_at"] = utc_now()
+    _validate_v2_state(state, state["card_id"])
+    data = json.dumps(state, indent=2) + "\n"
+    _atomic_write_bytes(path, data.encode("utf-8"))
+
+
+def current_attempt(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    attempts = state["attempts"]
+    return attempts[-1] if attempts else None
+
+
+def latest_terminal_attempt(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    for attempt in reversed(state["attempts"]):
+        if attempt["state"] == "terminal":
+            return attempt
+    return None
+
+
+def non_terminal_attempt(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    found = [a for a in state["attempts"] if a["state"] != "terminal"]
+    return found[-1] if found else None
+
+
+def attempts_summary(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [{"number": a["number"], "operation": a["operation"],
+             "state": a["state"]} for a in state["attempts"]]
+
+
+def landings_summary(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [{"attempt_number": row["attempt_number"], "commit": row["commit"]}
+            for row in state["landings"]]
+
+
+def next_attempt_number(state: Dict[str, Any]) -> int:
+    attempts = state["attempts"]
+    return (max(a["number"] for a in attempts) + 1) if attempts else 1
 
 
 # --- Relay result evidence --------------------------------------------------
@@ -183,6 +438,12 @@ def load_result(result_path: str) -> Tuple[Optional[dict], Optional[str]]:
         return None, "result-schema-mismatch"
     if result.get("status") not in RESULT_STATUSES:
         return None, "result-status-invalid"
+    if result["status"] == "completed":
+        exit_code = result.get("exitCode")
+        if not _is_int(exit_code) or exit_code != 0:
+            return None, "result-exitcode-invalid"
+        if not _is_nonempty_str(result.get("sessionId")):
+            return None, "session-id-required-for-completed"
     return result, None
 
 
@@ -247,9 +508,11 @@ def cmd_init(args: argparse.Namespace) -> int:
             raise GuardError(EXIT_CONFLICT, "init-conflict")
         write_state(path, {
             "schema": SCHEMA, "card_id": args.card_id, "repo": args.repo,
-            "baseline_head": head.stdout.strip(),
-            "baseline_porcelain": porcelain.stdout.splitlines(),
-            "attempt": None, "commit": None,
+            "baseline": {
+                "head": head.stdout.strip(),
+                "porcelain": porcelain.stdout.splitlines(),
+            },
+            "attempts": [], "landings": [],
         })
     report("init", "initialized", card_id=args.card_id, board=args.board,
            state_path=str(path), baseline_head=head.stdout.strip())
@@ -293,11 +556,13 @@ def _spawn_attempt(args: argparse.Namespace, path: Path,
                    state: Dict[str, Any], number: int) -> int:
     argv = _parse_cmd_json(args.cmd_json)
     _validate_spawn_paths(args)  # usage errors must not leave a reservation
-    state["attempt"] = {
+    attempt = {
         "number": number, "operation": args.operation, "state": "reserved",
         "pid": None, "process_start": None, "out_dir": args.out_dir,
         "result_path": args.result_path, "session_id": None,
+        "terminal_status": None,
     }
+    state["attempts"].append(attempt)
     write_state(path, state)  # reserve BEFORE any process exists
     try:
         with open(os.path.join(args.out_dir, "guard-stdout.log"), "ab") as out_fh, \
@@ -311,7 +576,6 @@ def _spawn_attempt(args: argparse.Namespace, path: Path,
         report("start-or-inspect", "uncertain", attempt_number=number,
                reason=f"spawn-failed: {err}")
         return EXIT_OK
-    attempt = state["attempt"]
     attempt["pid"] = proc.pid
     attempt["process_start"] = ps_lstart(proc.pid)
     attempt["state"] = "running"
@@ -324,18 +588,18 @@ def _spawn_attempt(args: argparse.Namespace, path: Path,
 def cmd_start_or_inspect(args: argparse.Namespace) -> int:
     path = state_path_for(args)
     with state_lock(path):
-        state = load_state(path, args.card_id)
-        attempt = state["attempt"]
+        state = load_state(path, args.card_id, migrate=True)
+        attempt = current_attempt(state)
         if attempt is None:
             return _spawn_attempt(args, path, state, 1)
         outcome, info = classify_attempt(attempt)
         if outcome == "terminal" and attempt["state"] == "terminal" and (
                 args.new_attempt or attempt["operation"] != args.operation):
-            # Only a recorded-terminal attempt may be replaced (number+1):
+            # Only a recorded-terminal attempt may be followed (max+1):
             # either an explicit --new-attempt request or a lifecycle-stage
             # change (planning -> execution -> rework).  Plain same-operation
             # re-entry keeps consuming the recorded terminal result.
-            return _spawn_attempt(args, path, state, attempt["number"] + 1)
+            return _spawn_attempt(args, path, state, next_attempt_number(state))
         if outcome == "uncertain" and attempt["state"] != "uncertain":
             attempt["state"] = "uncertain"  # durably block new attempts
             write_state(path, state)
@@ -345,21 +609,25 @@ def cmd_start_or_inspect(args: argparse.Namespace) -> int:
 
 def cmd_inspect(args: argparse.Namespace) -> int:
     state = load_state(state_path_for(args), args.card_id)
-    if state["attempt"] is None:
-        report("inspect", "none")
+    attempt = current_attempt(state)
+    extra = {"attempts": attempts_summary(state),
+             "landings": landings_summary(state)}
+    if attempt is None:
+        report("inspect", "none", **extra)
         return EXIT_OK
-    outcome, info = classify_attempt(state["attempt"])
-    report("inspect", outcome, **info)
+    outcome, info = classify_attempt(attempt)
+    report("inspect", outcome, **extra, **info)
     return EXIT_OK
 
 
 def cmd_record_terminal(args: argparse.Namespace) -> int:
     path = state_path_for(args)
     with state_lock(path):
-        state = load_state(path, args.card_id)
-        attempt = state["attempt"]
+        state = load_state(path, args.card_id, migrate=True)
+        attempt = non_terminal_attempt(state)
         if attempt is None:
-            raise GuardError(EXIT_CONFLICT, "no-attempt")
+            reason = "no-attempt" if not state["attempts"] else "attempt-terminal"
+            raise GuardError(EXIT_CONFLICT, reason)
         if attempt["state"] not in ("reserved", "running"):
             raise GuardError(EXIT_CONFLICT, f"attempt-{attempt['state']}")
         if attempt["pid"] is not None and pid_alive(attempt["pid"]):
@@ -376,6 +644,7 @@ def cmd_record_terminal(args: argparse.Namespace) -> int:
             raise _bad("session-id-required-for-completed")
         attempt["state"] = "terminal"
         attempt["session_id"] = session_id
+        attempt["terminal_status"] = result["status"]
         write_state(path, state)
     report("record-terminal", "terminal", attempt_number=attempt["number"],
            session_id=session_id, status=result["status"])
@@ -429,36 +698,60 @@ def cmd_check_run(args: argparse.Namespace) -> int:
         return reject("card-not-running")
     if str(task.current_run_id) != env_run:
         return reject("run-id-mismatch")
+    env_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip()
+    if not env_lock:
+        return reject("claim-lock-env-missing")
+    if env_lock != task.claim_lock:
+        return reject("claim-lock-mismatch")
     report("check-run", "ok", card_id=args.card_id, run_id=task.current_run_id)
     return EXIT_OK
+
+
+def _landing_for_commit(state: Dict[str, Any], sha: str) -> Optional[Dict[str, Any]]:
+    for landing in state["landings"]:
+        if landing["commit"] == sha:
+            return landing
+    return None
 
 
 def cmd_record_commit(args: argparse.Namespace) -> int:
     path = state_path_for(args)
     with state_lock(path):
-        state = load_state(path, args.card_id)
-        resolved = git(state["repo"], "rev-parse", args.commit + "^{commit}")
-        if resolved.returncode != 0 or not resolved.stdout.strip():
-            raise _bad("commit-unknown")
-        full_sha = resolved.stdout.strip()
+        state = load_state(path, args.card_id, migrate=True)
+        full_sha = git_full_sha(state["repo"], args.commit,
+                                missing_reason="commit-unknown")
+        existing = _landing_for_commit(state, full_sha)
+        if existing is not None:
+            trailer = f"Kanban-Task: {args.card_id}"
+            report("record-commit", "recorded",
+                   commit={"sha": existing["commit"], "trailer": trailer},
+                   landing=existing, idempotent=True)
+            return EXIT_OK
+        terminal = latest_terminal_attempt(state)
+        if terminal is None:
+            raise GuardError(EXIT_CONFLICT, "no-terminal-attempt")
+        if terminal.get("terminal_status") != "completed":
+            raise GuardError(EXIT_CONFLICT, "last-attempt-not-completed")
         trailer = f"Kanban-Task: {args.card_id}"
-        recorded = state.get("commit")
-        if isinstance(recorded, dict):
-            if recorded.get("sha") == full_sha:
-                report("record-commit", "recorded", commit=recorded,
-                       idempotent=True)
-                return EXIT_OK
-            raise GuardError(EXIT_CONFLICT, "commit-already-recorded")
         message = git(state["repo"], "show", "-s", "--format=%B", full_sha)
         if message.returncode != 0 or trailer not in message.stdout.splitlines():
             raise _bad("trailer-missing")
         ancestry = git(state["repo"], "merge-base", "--is-ancestor",
-                       state["baseline_head"], full_sha)
+                       state["baseline"]["head"], full_sha)
         if ancestry.returncode != 0:
             raise _bad("commit-pre-baseline")
-        state["commit"] = {"sha": full_sha, "trailer": trailer}
+        parent = git_first_parent(state["repo"], full_sha,
+                                  missing_reason="commit-parent-unresolvable")
+        landing = {
+            "attempt_number": terminal["number"],
+            "commit": full_sha,
+            "parent": parent,
+            "recorded_at": utc_now(),
+        }
+        state["landings"].append(landing)
         write_state(path, state)
-    report("record-commit", "recorded", commit=state["commit"])
+    report("record-commit", "recorded",
+           commit={"sha": full_sha, "trailer": trailer}, landing=landing)
     return EXIT_OK
 
 

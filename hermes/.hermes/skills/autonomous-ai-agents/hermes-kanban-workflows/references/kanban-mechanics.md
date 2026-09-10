@@ -30,7 +30,7 @@ Verified 2026-09-01 against live source, CLI, and official docs. Re-verify after
 
 - Auto bridge (#31752): `_touch_activity` → board `last_heartbeat_at`, rate-limited 1 write/60s, no-op outside dispatcher workers; explicit `kanban_heartbeat` still available for notes/long-op pre-emption.
 - `dispatch_stale_timeout_seconds` default 14400 (4h); stale reclaim SIGTERMs host-local worker, resets to ready, does NOT tick failure counter.
-- Long external waits: bounded slices (5–15 min) keep the agent loop ticking; a single multi-hour blocking call risks stale reclaim.
+- Long external waits: use 30–50 minute bounded slices when the effective tool/runtime ceiling permits, then heartbeat before another slice; a single multi-hour blocking call risks stale reclaim.
 
 ## Lifecycle Primitives (CLI-verified)
 
@@ -51,7 +51,7 @@ Verified 2026-09-01 against live source, CLI, and official docs. Re-verify after
 ## Native review config (in use by this workflow since 2026-09-07)
 
 - `kanban.review_dispatch` (default true) auto-claims `review`-column tasks and spawns the assignee with bundled `sdlc-review` skill plus card-pinned skills. Kenan's config now sets it to `true` (flipped 2026-09-07 for the two-stage-card in-card review model); stage Cards use `request-review`/`request-changes` as their review loop.
-- `kanban.auto_decompose` is false in Kenan's config; draft cards sit in `triage` untouched by aux-LLM decomposition. Convergence is Kenan-driven via `kanban_finalize_intent`.
+- `kanban.auto_decompose` is false in Kenan's config; draft cards sit in `triage` untouched by aux-LLM decomposition. Managed v2 convergence is Kenan-driven through append-only `devflow_record_decision` comments and one complete `devflow_finalize_stage` replacement body; `kanban_finalize_intent` is legacy-only.
 - Dispatcher force-loads `sdlc-review` onto review-lane claims (`kanban_db_dispatch.py` review branch merges it into `claimed.skills`); card-pinned adapter skills load alongside and the calling orchestrator's commissioning map takes precedence for inspection method.
 
 ## Dead-but-Present Metadata
