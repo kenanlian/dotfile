@@ -65,7 +65,7 @@ node <this-skill>/scripts/relay.mjs --brief <file> --cd <repo> [options]
 | `--auto-handoff-plan <file>` | Enable top-level Auto Handoff: one additional `-e` plus child-process `PI_AUTO_HANDOFF_PLAN_FILE` (the exact validated plan path) and `PI_AUTO_HANDOFF_HANDOFF_DIR` (`<actual out dir>/auto-handoff`). `<file>` must be an absolute readable non-empty regular file. Absence disables atomically. |
 | `-h`, `--help` | Relay header help. |
 
-The brief is passed via a temp file consumed by Pi's final argv position, never as an inline stdin pipe mid-argv; the relay never commits.
+The brief is passed to Pi on the child's stdin (no positional argument; pi consumes piped stdin as the initial prompt), never in argv; a first line of `/skill:<name> ` (name, then a space on the same line) is expanded by Pi into the full Skill even when that Skill is hidden by `disable-model-invocation: true` — always address commissioning Skills this way instead of prose-only references. The relay validates the `/skill:` first line shape and fails fast on a malformed one; the relay never commits.
 
 Extension loading is deterministic: `--no-extensions` plus explicit `-e <delegate-agent-root>` so the `delegate_agent` tool exists and nothing implicit loads. When `--auto-handoff-plan` is present, the relay loads one additional `-e` for the auto-handoff extension root (discovery: `PI_AUTO_HANDOFF_ROOT`, then `~/Secret-Projects/pi-auto-handoff`; `PI_AUTO_HANDOFF_ROOT` is a relay-internal discovery override, not a workflow-facing parameter) and injects child-process-scoped `PI_AUTO_HANDOFF_PLAN_FILE` and `PI_AUTO_HANDOFF_HANDOFF_DIR`; it never mutates the relay's own environment. Delegated children keep `--no-extensions` and never receive the auto-handoff extension. Global Skills discovery stays enabled — Skills come from the single global root `~/Secret-Projects/agent_skills/skills` via the dotfile-managed `~/.pi/agent/skills` symlink; the relay never copies or mirrors Skills.
 
@@ -79,19 +79,19 @@ For product discussion only, start fresh with `--read-only`; follow-ups may resu
 
 ### Direct implement
 
-Start a fresh direct Parent with `--write` under `zai-coding-cn/glm-5.3` (no fallback). Begin the brief with `Use the delegate-work Skill (discovered from the global Skill root).` plus exact task inputs; the `delegate-work` Skill owns the internal delegation discipline. Direct relays never pass `--auto-handoff-plan`.
+Start a fresh direct Parent with `--write` under `zai-coding-cn/glm-5.3` (no fallback). Begin the brief with the first line `/skill:delegate-work ` (trailing space, then the task body) plus exact task inputs; the `delegate-work` Skill owns the internal delegation discipline. Direct relays never pass `--auto-handoff-plan`.
 
 ### Explicit write-plan
 
-Start a fresh Planning Parent with `--write` and no Origin `--session`, under the stage implement model (primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`). Begin the brief with `Use the write-plan Skill (discovered from the global Skill root).`, include the complete converged Card contract, declare that the outer native Card review owns final plan review, and require the exact final Plan path/SHA plus top-level outcome. The target Skill skips its duplicate internal final-review cycle but owns planning internals and allowed planning writes. Write-plan relays never pass `--auto-handoff-plan`.
+Start a fresh Planning Parent with `--write` and no Origin `--session`, under the stage implement model (primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`). Begin the brief with the first line `/skill:write-plan ` (trailing space, then the brief body), include the complete converged Card contract, declare that the outer native Card review owns final plan review, and require the exact final Plan path/SHA plus top-level outcome. The target Skill skips its duplicate internal final-review cycle but owns planning internals and allowed planning writes. Write-plan relays never pass `--auto-handoff-plan`.
 
 ### Explicit execute-plan
 
-Start a separate fresh Execution Parent with `--write`, `--auto-handoff-plan <absolute accepted plan path>` (the same path the guard validated as `--plan-artifact`), and no Planning `--session`, under the stage implement model (primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`). Begin the brief with `Use the execute-plan Skill (discovered from the global Skill root).`, include the exact accepted Plan path/SHA, and declare that the outer native Card review owns final patch/conformance review. Preserve the returned execution `sessionId` for same-scope rework.
+Start a separate fresh Execution Parent with `--write`, `--auto-handoff-plan <absolute accepted plan path>` (the same path the guard validated as `--plan-artifact`), and no Planning `--session`, under the stage implement model (primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`). Begin the brief with the first line `/skill:execute-plan ` (trailing space, then the brief body), include the exact accepted Plan path/SHA, and declare that the outer native Card review owns final patch/conformance review. Preserve the returned execution `sessionId` for same-scope rework.
 
 ### Card review
 
-Start every review relay fresh with `--read-only` under `zai-coding-cn/glm-5.3` (no fallback); never pass a planning/execution `--session`. Begin with `review-plan` for write-plan review or the single merged `review-execute-candidate` Skill for execute review, plus exact Plan/candidate/commit-range inputs. Explicitly forbid the reviewer and every delegated child from writing or invoking write-access children. Give each relay a unique run-scoped out dir/result path, wait for process exit, and validate the terminal result directly; the write-mode external guard is not reused by Review Workers. Review relays never pass `--auto-handoff-plan`.
+Start every review relay fresh with `--read-only` under `zai-coding-cn/glm-5.3` (no fallback); never pass a planning/execution `--session`. Begin with the first line `/skill:review-plan ` (write-plan review) or `/skill:review-execute-candidate ` (execute review) — same trailing-space rule — plus exact Plan/candidate/commit-range inputs. Explicitly forbid the reviewer and every delegated child from writing or invoking write-access children. Give each relay a unique run-scoped out dir/result path, wait for process exit, and validate the terminal result directly; the write-mode external guard is not reused by Review Workers. Review relays never pass `--auto-handoff-plan`.
 
 ### Behavioral rework
 

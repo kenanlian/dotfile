@@ -25,9 +25,13 @@
  * Per the settled user decision, there is NO call_allowlist against a read-only
  * parent invoking a write child; this relay intentionally does not gate that.
  *
- * The brief rides a temp file consumed at Pi's final argv position (Pi takes the
- * prompt as a positional argument), so it is never visible in the host process
- * list. The temp file is removed after the Pi child exits.
+ * The brief rides the child's stdin (no positional argument; pi consumes
+ * piped stdin as the initial prompt), so it is never
+ * visible in the host process list and a first line of "/skill:<name> " keeps
+ * Pi's explicit skill-command expansion working (Pi expands /skill: only when
+ * it starts the assembled message; stdin is the only channel that guarantees
+ * that position, and the expansion bypasses `disable-model-invocation: true`).
+ * A malformed /skill: first line fails fast instead of silently degrading.
  *
  * It deliberately does NOT commit, push, or perform any remote/release action.
  * Committing is always the orchestrator's job.
@@ -70,7 +74,7 @@
 import { spawn, execFileSync, spawnSync } from "node:child_process";
 import {
   mkdirSync, writeFileSync, renameSync, rmSync, readFileSync, existsSync,
-  appendFileSync, mkdtempSync, unlinkSync, statSync, accessSync,
+  appendFileSync, mkdtempSync, statSync, accessSync,
   constants as fsConstants,
 } from "node:fs";
 import { join, resolve, basename, dirname, isAbsolute } from "node:path";
@@ -282,7 +286,7 @@ function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
-function buildArgv(opts, extensionRoot, promptFile, autoHandoff) {
+function buildArgv(opts, extensionRoot, autoHandoff) {
   // Deterministic extension loading: -ne disables implicit discovery; the
   // explicit -e still loads under it. Skills discovery is left enabled.
   const argv = ["--mode", "json", "-p", "--no-extensions"];
@@ -300,8 +304,40 @@ function buildArgv(opts, extensionRoot, promptFile, autoHandoff) {
     // Fresh logical session ids are the caller's choice; without one Pi mints
     // its own, which the relay reports from the session event.
   }
-  argv.push("--", `@${promptFile}`);
+  // The brief rides the child's stdin: pi consumes piped stdin as the initial
+  // prompt with NO positional argument (unlike Codex, pi has no "-" positional
+  // — passing one is a usage error). Stdin is also the ONLY input channel that
+  // keeps a "/skill:<name> ..." first line at the very start of the assembled
+  // message (Pi's initial-message order is [stdin, @file attachments, CLI
+  // messages], and _expandSkillCommand only fires on a message that starts
+  // with "/skill:"). This is what makes explicit Skill invocation work for
+  // Skills hidden by `disable-model-invocation: true` — same mechanism Codex
+  // relays get natively via $name mentions.
   return argv;
+}
+
+// Fail fast on a malformed /skill: first line instead of silently degrading to
+// a pathless brief. Pi's _expandSkillCommand splits the skill name at the
+// FIRST SPACE (indexOf(" ")) — a name followed directly by a newline captures
+// the whole remaining brief as the "name", misses the Skill, and passes the
+// text through unchanged with no error. Enforce the exact shape Pi expands.
+const SKILL_PREFIX_LINE = /^\/skill:[a-z0-9][a-z0-9-]* \r?$/;
+
+function validateSkillPrefix(brief) {
+  const firstLineEnd = brief.indexOf("\n");
+  const firstLine = firstLineEnd === -1 ? brief : brief.slice(0, firstLineEnd);
+  if (!firstLine.startsWith("/skill:")) return brief;
+  if (!SKILL_PREFIX_LINE.test(firstLine)) {
+    fail(
+      `brief first line is a /skill: invocation but malformed (expected "/skill:<name> " with a trailing space on the same line, got ${JSON.stringify(firstLine)}): `
+      + "Pi's skill-command expansion splits the name at the first space, and a missing trailing space silently skips Skill loading",
+    );
+  }
+  const name = firstLine.slice("/skill:".length, -1);
+  if (name.startsWith("-") || name.endsWith("-") || name.includes("--")) {
+    fail(`brief /skill: name is malformed per Agent Skills rules: ${name}`);
+  }
+  return brief;
 }
 
 function prepareRunDir(opts, brief) {
@@ -531,14 +567,13 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
     process.exit(1);
   }
 
-  // The brief rides a temp file attached via Pi's `@file` message syntax
-  // (`pi [options] [--] [@files...] [messages...]`): argv carries only the fixed
-  // flags plus a temp path, never the brief text itself. The file outlives spawn
-  // (Pi reads it during startup) and is removed once the child has exited.
-  const promptFile = join(dirname(run.briefPath), "prompt-attachment.tmp");
-  writeFileSync(promptFile, brief, { encoding: "utf8", mode: 0o600 });
-  const argv = buildArgv(opts, extensionRoot, promptFile, run.autoHandoff);
-  const spawnOpts = { cwd: opts.cd, stdio: ["ignore", "pipe", "pipe"], detached: true };
+  // The brief rides the child's stdin: argv carries only fixed flags plus the
+  // trailing "-" positional (see buildArgv). Pi's readPipedStdin waits for
+  // stdin END before it starts, so the relay must write the whole brief and
+  // close the pipe promptly. EPIPE here only means the child died before
+  // consuming stdin; the close handler records the real exit status.
+  const argv = buildArgv(opts, extensionRoot, run.autoHandoff);
+  const spawnOpts = { cwd: opts.cd, stdio: ["pipe", "pipe", "pipe"], detached: true };
   if (run.autoHandoff.enabled) {
     spawnOpts.env = {
       ...process.env,
@@ -547,9 +582,8 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
     };
   }
   const child = spawn(bin, argv, spawnOpts);
-  const unlinkPrompt = () => { try { unlinkSync(promptFile); } catch { /* already gone */ } };
-  child.once("close", unlinkPrompt);
-  child.once("error", unlinkPrompt);
+  child.stdin.on("error", () => { /* EPIPE: child exited before reading stdin */ });
+  child.stdin.end(brief, "utf8");
 
   const scanner = makePiEventScanner();
   const stderrTail = [];
@@ -711,7 +745,7 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  const brief = readBrief(opts);
+  const brief = validateSkillPrefix(readBrief(opts));
   if (!brief.trim()) fail("empty brief (pass --brief <file> or pipe the brief on stdin)");
 
   const bin = piBinary();

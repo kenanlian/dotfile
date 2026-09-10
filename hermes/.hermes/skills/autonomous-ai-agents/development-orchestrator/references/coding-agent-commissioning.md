@@ -18,7 +18,7 @@ A Worker calls `devflow_start_or_inspect_relay`; it does not launch adapters or 
 Fresh write-mode Pi parent, `delegate-work`, `zai-coding-cn/glm-5.3`, high thinking, no fallback, no Auto Handoff:
 
 ```text
-Use the delegate-work Skill (discovered from the global Skill root).
+/skill:delegate-work 
 
 Implement this bounded direct development-stage.v2 Card in the exact repository.
 <Card Goal, Observable acceptance, Included scope, Non-goals,
@@ -38,7 +38,7 @@ Broader coupling or a load-bearing product decision stops for Origin reclassific
 Fresh write-mode Planning parent, primary `kimi-coding/k3` and one `zai-coding-cn/glm-5.3` fallback only for real quota/provider unavailability, high thinking. Never reuse an Origin session or pass Auto Handoff. Same-scope rework resumes the exact Planning session.
 
 ```text
-Use the write-plan Skill (discovered from the global Skill root).
+/skill:write-plan 
 
 Create a self-contained execution Plan from this converged development-stage.v2 write-plan Card.
 <Card Goal, Observable acceptance, Included scope, Non-goals,
@@ -58,7 +58,7 @@ The Harness validates the terminal result and exact Plan identity before `devflo
 Fresh write-mode Execution parent, same model policy as write-plan, high thinking, exact accepted Plan path/SHA, and mandatory `--auto-handoff-plan <absolute-plan-path>`. Never reuse Planning or Origin sessions. Same-scope rework resumes the exact Execution session and re-passes the same accepted Plan.
 
 ```text
-Use the execute-plan Skill (discovered from the global Skill root).
+/skill:execute-plan 
 
 Plan file: <absolute accepted Plan path>
 Plan SHA-256: <accepted digest>
@@ -98,11 +98,11 @@ The run-scoped adapter directory is control-plane evidence, not a reviewer-autho
 
 ### Write-plan review
 
-Use `review-plan` with exact Plan path/SHA, repository root/HEAD, intended behavior, Card/run identity, and review round.
+Use `/skill:review-plan ` as the brief's first line (same trailing-space rule as implement briefs) with exact Plan path/SHA, repository root/HEAD, intended behavior, Card/run identity, and review round.
 
 ### Execute-plan review
 
-Run exactly one `review-execute-candidate` Relay. Pass exact board/card/feature, review run/round, repository, `diff_base`, committed `diff_head`/candidate, accepted Plan path/SHA, intended behavior, implementation handoff, and current candidate-bound UI/manual evidence paths when present.
+Run exactly one `review-execute-candidate` Relay with the first line `/skill:review-execute-candidate `. Pass exact board/card/feature, review run/round, repository, `diff_base`, committed `diff_head`/candidate, accepted Plan path/SHA, intended behavior, implementation handoff, and current candidate-bound UI/manual evidence paths when present.
 
 The Skill returns separate:
 

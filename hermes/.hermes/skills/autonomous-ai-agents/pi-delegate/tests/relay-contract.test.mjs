@@ -51,7 +51,19 @@ test('relay never commits', () => {
   assert.ok(!/\bgit\s+(commit|push)/.test(source), 'relay must not run git commit/push');
 });
 
-test('prompt rides a temp attachment file, not argv text', () => {
-  assert.ok(source.includes('prompt-attachment.tmp'), 'uses a temp prompt attachment');
-  assert.ok(/`@\$\{promptFile\}`/.test(source) || /argv\.push\("--", `@\$\{promptFile\}`\)/.test(source), 'attaches via @file syntax');
+test('prompt rides the child stdin, not argv text', () => {
+  assert.ok(!source.includes('prompt-attachment.tmp'), 'no temp prompt attachment');
+  assert.ok(!/@\$\{promptFile\}/.test(source), 'no @file attachment syntax');
+  assert.ok(!/argv\.push\("-"\)/.test(source), 'pi has no "-" positional; stdin alone is the prompt');
+  assert.match(source, /stdio: \["pipe", "pipe", "pipe"\]/, 'stdin is a pipe so the relay can write the brief');
+  assert.match(source, /child\.stdin\.end\(brief/, 'writes the brief to child stdin');
+});
+
+test('/skill: first line is validated fail-fast', () => {
+  // Pi's _expandSkillCommand splits the skill name at the first SPACE; a name
+  // followed by a newline silently fails to expand. The relay must reject that
+  // shape instead of degrading to a pathless brief.
+  assert.match(source, /function validateSkillPrefix/, 'validator exists');
+  assert.match(source, /SKILL_PREFIX_LINE = \/\^\\\/skill:\[a-z0-9\]\[a-z0-9-\]\* \\r\?\$\//, 'exact first-line shape enforced');
+  assert.match(source, /validateSkillPrefix\(readBrief\(opts\)\)/, 'validation runs before dispatch');
 });
