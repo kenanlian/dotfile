@@ -89,7 +89,20 @@ DEVFLOW_START_OR_INSPECT_RELAY_SCHEMA = {
         "properties": {
             "brief_path": {
                 "type": "string",
-                "description": "Absolute path to the Relay brief; must cite the Card id.",
+                "description": (
+                    "Absolute path to the Relay brief; must cite the Card id. "
+                    "Implement lane requires this."
+                ),
+            },
+            "brief_content": {
+                "type": "string",
+                "description": (
+                    "Inline brief text for the review lane (review workers "
+                    "have no write tools). The harness validates the same "
+                    "contract and persists it into the run-scoped adapter "
+                    "directory before spawning. Either brief_path or "
+                    "brief_content, never both."
+                ),
             },
             "repo": {
                 "type": "string",
@@ -99,7 +112,7 @@ DEVFLOW_START_OR_INSPECT_RELAY_SCHEMA = {
                 ),
             },
         },
-        "required": ["brief_path"],
+        "required": [],
     },
 }
 
@@ -194,6 +207,7 @@ def handle_start_or_inspect_relay(args: dict, **_kw: Any) -> str:
     return _dispatch(
         op_start_or_inspect_relay,
         brief_path=str(args.get("brief_path") or "").strip(),
+        brief_content=args.get("brief_content"),
         repo=_opt_str(args.get("repo")),
     )
 

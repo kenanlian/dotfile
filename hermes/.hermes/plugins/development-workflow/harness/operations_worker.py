@@ -718,6 +718,49 @@ def _brief_or_fail(ctx: Any, brief_path: str, card_id: str) -> Path:
     return path
 
 
+def _resolve_brief_or_fail(
+    ctx: Any,
+    *,
+    brief_path: str | None,
+    brief_content: str | None,
+    card_id: str,
+    dest_dir: Path,
+) -> Path:
+    """Resolve the Relay brief to a file on disk.
+
+    ``brief_path`` keeps its legacy meaning (an already-on-disk brief the
+    caller authored). ``brief_content`` is the review-friendly channel: the
+    worker passes the brief text inline, the harness validates the same
+    contract (non-empty, cites the card id) and persists it into the
+    run-scoped adapter directory (control-plane evidence) before spawning.
+    Exactly one of the two must be provided. Returns the brief file path.
+    """
+    has_path = isinstance(brief_path, str) and bool(brief_path.strip())
+    has_content = isinstance(brief_content, str) and bool(brief_content.strip())
+    if has_path and has_content:
+        _fail(
+            ctx,
+            BRIEF_MISSING,
+            "pass either brief_path or brief_content, not both",
+            rule="exclusive",
+        )
+    if has_content:
+        text = str(brief_content)
+        if card_id not in text:
+            _fail(
+                ctx,
+                BRIEF_MISSING,
+                f"brief does not contain the current card id {card_id!r}",
+                rule="card-id",
+                card_id=card_id,
+            )
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        path = dest_dir / "brief.md"
+        path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+        return path
+    return _brief_or_fail(ctx, brief_path or "", card_id)
+
+
 def _validate_repo_or_fail(ctx: Any, repo: str | None) -> Path:
     if not isinstance(repo, str) or not repo.strip():
         _fail(
@@ -1307,7 +1350,8 @@ def _review_relay(
     ctx: Any,
     stage: Any,
     *,
-    brief_path: str,
+    brief_path: str | None,
+    brief_content: str | None,
     repo: Path,
 ) -> dict:
     ok, reasons = review_authority(adapter, ctx)
@@ -1357,7 +1401,13 @@ def _review_relay(
             card_id=card_id,
             round_n=round_n,
         )
-    brief = _brief_or_fail(ctx, brief_path, card_id)
+    brief = _resolve_brief_or_fail(
+        ctx,
+        brief_path=brief_path,
+        brief_content=brief_content,
+        card_id=card_id,
+        dest_dir=run_dir,
+    )
     return _review_spawn(
         ctx,
         spec,
@@ -1371,7 +1421,11 @@ def _review_relay(
 
 
 def op_start_or_inspect_relay(
-    adapter: Any, *, brief_path: str, repo: str | None = None
+    adapter: Any,
+    *,
+    brief_path: str | None = None,
+    brief_content: str | None = None,
+    repo: str | None = None,
 ) -> dict:
     """Derive commissioning and spawn, attach, or consume a Relay (§14, §19.5)."""
     ctx = _prologue(adapter)
@@ -1386,10 +1440,23 @@ def op_start_or_inspect_relay(
     stage, workspace = _worker_card(adapter, ctx)
     if ctx.role == "review-worker":
         return _review_relay(
-            adapter, ctx, stage, brief_path=brief_path, repo=workspace
+            adapter,
+            ctx,
+            stage,
+            brief_path=brief_path,
+            brief_content=brief_content,
+            repo=workspace,
+        )
+    if isinstance(brief_content, str) and brief_content.strip():
+        _fail(
+            ctx,
+            BRIEF_MISSING,
+            "brief_content is supported on the review lane only; implement "
+            "workers author the brief file and pass brief_path",
+            rule="review-only",
         )
     return _write_mode_relay(
-        adapter, ctx, stage, brief_path=brief_path, repo=workspace
+        adapter, ctx, stage, brief_path=brief_path or "", repo=workspace
     )
 
 

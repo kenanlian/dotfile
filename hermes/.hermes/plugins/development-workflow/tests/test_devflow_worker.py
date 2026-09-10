@@ -1223,6 +1223,107 @@ class TestReviewRelay(IsolatedWorkerHome):
         )
         self.assertEqual(claimed.status, "running")
 
+    def test_review_brief_content_persists_and_spawns(self) -> None:
+        created = self.create_feature(route="two-stage", feature_id="review-brief-inline")
+        wp_id = created["cards"][0]["task_id"]
+        ex_id = created["cards"][1]["task_id"]
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=wp_id,
+                body=v2_body(feature_id="review-brief-inline", stage="write-plan"),
+            ).get("ok")
+        )
+        self._claim_implement(wp_id)
+        self._consume_relay(self._write_brief(wp_id))
+        plan_path, digest = self._write_plan("review-brief-inline.md")
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_implement_handoff,
+                summary="plan ready",
+                plan_path=str(plan_path),
+            ).get("ok")
+        )
+        self._complete_in_review(wp_id, plan_path, digest)
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=ex_id,
+                body=v2_body(
+                    feature_id="review-brief-inline",
+                    stage="execute-plan",
+                    accepted_plan=accepted_plan_yaml(
+                        card_id=wp_id, path=str(plan_path), sha256=digest
+                    ),
+                ),
+            ).get("ok")
+        )
+        self._claim_implement(ex_id)
+        self._consume_relay(self._write_brief(ex_id))
+        self._land(ex_id)
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_implement_handoff, summary="candidate ready"
+            ).get("ok")
+        )
+        self._claim_review(ex_id)
+        self._relay_sleep = 20
+        # brief_content citing the wrong card must fail closed at spawn time.
+        bad = self.payload(
+            operations_worker.op_start_or_inspect_relay,
+            brief_content="brief for some other card\n",
+            repo=str(self.repo),
+        )
+        self.assertFalse(bad.get("ok"), bad)
+        self.assertEqual(bad.get("code"), "BRIEF_MISSING")
+        spawned = self.payload(
+            operations_worker.op_start_or_inspect_relay,
+            brief_content=(
+                f"/skill:review-execute-candidate \n"
+                f"Review card {ex_id} against the accepted plan.\n"
+            ),
+            repo=str(self.repo),
+        )
+        self.assertTrue(spawned.get("ok"), spawned)
+        self.assertEqual(spawned.get("outcome"), "spawned", spawned)
+        self._track(spawned)
+        brief_file = Path(spawned["out_dir"]) / "brief.md"
+        self.assertTrue(brief_file.is_file(), "brief should persist into run_dir")
+        self.assertIn(ex_id, brief_file.read_text(encoding="utf-8"))
+        # Once terminal, the same inline brief consumes without a new spawn.
+        self._kill(spawned["pid"])
+        self.assertTrue(
+            self.wait_until(lambda: not self.pid_alive(spawned["pid"]))
+        )
+        consumed = self.payload(
+            operations_worker.op_start_or_inspect_relay,
+            brief_content=(
+                f"/skill:review-execute-candidate \n"
+                f"Review card {ex_id} against the accepted plan.\n"
+            ),
+            repo=str(self.repo),
+        )
+        self.assertEqual(consumed.get("outcome"), "terminal", consumed)
+
+    def test_brief_content_review_only(self) -> None:
+        created = self.create_feature(route="two-stage", feature_id="inline-write")
+        wp_id = created["cards"][0]["task_id"]
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=wp_id,
+                body=v2_body(feature_id="inline-write", stage="write-plan"),
+            ).get("ok")
+        )
+        self._claim_implement(wp_id)
+        refused = self.payload(
+            operations_worker.op_start_or_inspect_relay,
+            brief_content=f"inline brief for {wp_id}\n",
+            repo=str(self.repo),
+        )
+        self.assertFalse(refused.get("ok"), refused)
+        self.assertEqual(refused.get("code"), "BRIEF_MISSING")
+
 
 class TestReviewVerdict(IsolatedWorkerHome):
     def _execute_in_review(self, feature_id: str):
