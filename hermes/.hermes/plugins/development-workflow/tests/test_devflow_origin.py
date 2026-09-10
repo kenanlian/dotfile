@@ -89,6 +89,14 @@ _SCRUB_ENV_VARS = (
     "HERMES_DELEGATED_CHILD_CONTEXT",
     "HERMES_KANBAN_STOP_NUDGE",
     "HERMES_DEVFLOW_ARTIFACTS_ROOT",
+    "HERMES_SESSION_PLATFORM",
+    "HERMES_SESSION_CHAT_ID",
+    "HERMES_SESSION_CHAT_TYPE",
+    "HERMES_SESSION_THREAD_ID",
+    "HERMES_SESSION_USER_ID",
+    "HERMES_SESSION_USER_ID_ALT",
+    "HERMES_SESSION_PROFILE",
+    "HERMES_SESSION_KEY",
     "HERMES_HOME",
 )
 
@@ -363,6 +371,53 @@ class TestCreateFeature(IsolatedOriginHome):
             self.assertEqual(ex_card.stage, "execute-plan")
             self.assertEqual(self.adapter.parent_ids(conn, ex_id), [wp_id])
             self.assertEqual(ex.status, "triage")
+        finally:
+            self.adapter.close(conn)
+
+    def test_create_feature_subscribes_creator_session(self) -> None:
+        """Harness-created cards notify like kanban_create cards (t_d55cb17d gap).
+
+        A gateway-session create writes notify subs for every card; a CLI-style
+        create (no session vars) writes none and still succeeds.
+        """
+        env = {
+            "HERMES_SESSION_PLATFORM": "feishu",
+            "HERMES_SESSION_CHAT_ID": "oc_test_chat",
+            "HERMES_SESSION_CHAT_TYPE": "dm",
+            "HERMES_SESSION_USER_ID": "ou_test_user",
+            "HERMES_SESSION_USER_ID_ALT": "on_test_alt",
+            "HERMES_SESSION_PROFILE": "default",
+        }
+        saved = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        try:
+            result = self.create_feature(route="two-stage", feature_id="notify-gap")
+            self.assertTrue(result.get("ok"), result)
+            conn = self.adapter.connect()
+            try:
+                for card in result["cards"]:
+                    rows = kb.list_notify_subs(conn, card["task_id"])
+                    self.assertEqual(len(rows), 1, (card["task_id"], rows))
+                    row = rows[0]
+                    self.assertEqual(row["platform"], "feishu")
+                    self.assertEqual(row["chat_id"], "oc_test_chat")
+                    self.assertEqual(row["user_id"], "ou_test_user")
+                    self.assertEqual(row["delivery_mode"], "notify+wake")
+            finally:
+                self.adapter.close(conn)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        plain = self.create_feature(feature_id="no-session")
+        self.assertTrue(plain.get("ok"), plain)
+        conn = self.adapter.connect()
+        try:
+            self.assertEqual(
+                kb.list_notify_subs(conn, plain["cards"][0]["task_id"]), []
+            )
         finally:
             self.adapter.close(conn)
 

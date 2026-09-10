@@ -859,6 +859,22 @@ def _verify_execute_plan_identity(
 # ---------------------------------------------------------------------------
 
 
+def _subscribe_creator(conn: Any, adapter: Any, task_ids: tuple[str, ...]) -> None:
+    """Subscribe the creating chat to each card's block/completion notifications.
+
+    ``kanban_create`` does this via ``_maybe_auto_subscribe`` (tool layer);
+    harness-created cards bypass that layer and would otherwise never notify —
+    observed on t_d55cb17d, whose capability blocks reached no Feishu chat.
+    Failures are swallowed inside the adapter: bookkeeping must never fail
+    card creation.
+    """
+    subscribe = getattr(adapter, "subscribe_creator_session", None)
+    if not callable(subscribe):
+        return
+    for task_id in task_ids:
+        subscribe(conn, task_id)
+
+
 def op_create_feature(
     adapter: Any,
     *,
@@ -938,6 +954,7 @@ def op_create_feature(
         "skills": pinned,
     }
     conn = _connect(adapter, resolved, ctx)
+    _created_ids: tuple[str, ...] = ()
     try:
         with adapter.write_txn(conn):
             _assert_feature_stage_free(
@@ -951,6 +968,7 @@ def op_create_feature(
                     parents=(),
                     **create_kwargs,
                 )
+                _created_ids = (task_id,)
                 task, _card, problems = _verify_created_card(
                     adapter,
                     conn,
@@ -1022,6 +1040,7 @@ def op_create_feature(
                     problems.append(
                         f"execute-plan parent_ids {parents!r} != [{wp_id!r}]"
                     )
+            _created_ids = (wp_id, exec_id)
             if problems:
                 _fail(
                     ctx,
@@ -1047,6 +1066,10 @@ def op_create_feature(
                 "next": _NEXT_TWO_STAGE,
             }
     finally:
+        # Post-commit: add_notify_sub opens its own write_txn, which must not
+        # nest inside the create transaction. Swallows failures by design.
+        if _created_ids:
+            _subscribe_creator(conn, adapter, _created_ids)
         adapter.close(conn)
 
 

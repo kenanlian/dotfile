@@ -10,6 +10,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -54,7 +55,12 @@ _FALLBACK_MARKERS = (
     "balance",
     "overloaded",
 )
-_IDENTITY_FIELDS = ("board", "card_id", "feature_id", "review_run_id", "round")
+_IDENTITY_FIELDS = ("board", "card_id", "feature_id", "round")
+# review_run_id is decorative in relay reports: briefs are reused across runs
+# (run-29 brief consumed by run-30; run-32 brief by run-33), so the echoed id
+# legitimately lags the consuming run. The harness stamps the authoritative
+# run id into the evidence doc; cross-card protection comes from
+# board/card_id/feature_id/round, which stay strictly compared.
 
 
 def task_dir(artifacts_root, board: str, card_id: str) -> Path:
@@ -393,23 +399,75 @@ def fallback_eligible(result) -> bool:
 
 
 def extract_review_report(final_message: str) -> dict:
-    """Parse one JSON/YAML review document from a relay ``finalMessage``."""
+    """Parse one JSON/YAML review document from a relay ``finalMessage``.
+
+    Relays prepend/append prose around the structured document, so beyond the
+    whole-message forms (raw, or one fence covering everything) the document is
+    located inside the message: fenced blocks first, then a bare mapping that
+    starts at a known top-level key.
+    """
     if not isinstance(final_message, str):
         raise ValueError(
             f"final_message must be a string (got {type(final_message).__name__})"
         )
-    text = _strip_one_markdown_fence(final_message)
-    if not text:
-        raise ValueError("review report is empty")
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        data = _load_strict_yaml(text)
-    if not isinstance(data, dict):
-        raise ValueError(
+    candidates = _review_document_candidates(final_message)
+    problems: list[str] = []
+    for text in candidates:
+        if not text:
+            continue
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                data = _load_strict_yaml(text)
+            except ValueError as exc:
+                problems.append(str(exc))
+                continue
+        if isinstance(data, dict):
+            return data
+        problems.append(
             f"review report must be a mapping (got {type(data).__name__})"
         )
-    return data
+    raise ValueError(
+        "review report is not a JSON/YAML document"
+        + (f": {'; '.join(problems)}" if problems else "")
+    )
+
+
+_REPORT_TOP_KEYS = (
+    "schema",
+    "verdict",
+    "card_id",
+    "feature_id",
+    "review_run_id",
+)
+
+
+def _review_document_candidates(final_message: str) -> list[str]:
+    stripped = final_message.strip()
+    if not stripped:
+        return []
+    candidates = [stripped, _strip_one_markdown_fence(stripped)]
+    lines = stripped.splitlines()
+    for index, line in enumerate(lines):
+        if not re.match(r"^```[\w+-]*\s*$", line.strip()):
+            continue
+        closing = next(
+            (
+                follow
+                for follow in range(index + 1, len(lines))
+                if lines[follow].strip() == "```"
+            ),
+            None,
+        )
+        if closing is not None:
+            candidates.append("\n".join(lines[index + 1 : closing]).strip())
+    for index, line in enumerate(lines):
+        key = line.split(":", 1)[0].strip()
+        if key in _REPORT_TOP_KEYS and not line.startswith((" ", "-", "#")):
+            candidates.append("\n".join(lines[index:]).strip())
+            break
+    return candidates
 
 
 def normalize_plan_review(

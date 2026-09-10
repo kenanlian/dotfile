@@ -314,6 +314,44 @@ class HermesAdapter:
         session_val = get_session_env("HERMES_CRON_SESSION", "")
         return bool(session_val) or bool(os.getenv("HERMES_CRON_SESSION"))
 
+    def subscribe_creator_session(self, conn: Any, task_id: str) -> bool:
+        """Subscribe the creating chat to ``task_id`` block/completion events.
+
+        Returns True iff a subscription was written. False (no persistent
+        channel: CLI/cron/test) or a swallowed failure never blocks creation —
+        parity with ``kanban_create``'s ``_maybe_auto_subscribe``.
+        """
+        try:
+            from gateway.session_context import get_session_env
+        except Exception:
+            return False
+        try:
+            platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+            chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+            if not platform or not chat_id:
+                return False
+            from hermes_cli import kanban_db_notify as _kbn
+
+            _kbn.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=platform,
+                chat_id=chat_id,
+                chat_type=get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None,
+                thread_id=get_session_env("HERMES_SESSION_THREAD_ID", "") or None,
+                user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None,
+                user_id_alt=get_session_env("HERMES_SESSION_USER_ID_ALT", "") or None,
+                notifier_profile=(
+                    get_session_env("HERMES_SESSION_PROFILE", "")
+                    or os.environ.get("HERMES_PROFILE")
+                    or "default"
+                ),
+                delivery_mode="notify+wake",
+            )
+            return True
+        except Exception:
+            return False
+
     def is_dispatcher_owned_worker(self) -> bool:
         """True when this process is a dispatcher-owned Kanban worker."""
         try:

@@ -816,6 +816,25 @@ class TestEvidence(IsolatedEvidenceHome):
         with self.assertRaises(ValueError):
             evidence.extract_review_report("this is not a review document")
 
+    def test_extract_review_report_locates_document_around_prose(self) -> None:
+        payload = {"schema": "development-plan-review.v1", "verdict": "pass"}
+        # Prose preamble + fenced YAML (observed round-2 shape).
+        fenced = "评审完成。\n\n```yaml\nschema: development-plan-review.v1\nverdict: pass\n```"
+        self.assertEqual(evidence.extract_review_report(fenced), payload)
+        # Prose preamble + bare YAML (observed round-1 shape).
+        bare = "总结两句。\ncard_id: t_x\nschema: development-plan-review.v1\nverdict: pass\n"
+        self.assertEqual(
+            evidence.extract_review_report(bare),
+            {"card_id": "t_x", "schema": "development-plan-review.v1", "verdict": "pass"},
+        )
+        # Prose both before and after the fenced document.
+        wrapped = "opening prose\n```json\n" + json.dumps(payload) + "\n```\ntrailing prose"
+        self.assertEqual(evidence.extract_review_report(wrapped), payload)
+        # Key-like prose lines that are not known top-level keys must not match.
+        with self.assertRaises(ValueError):
+            evidence.extract_review_report("随便一句话：不是报告。\n再来一句。")
+
+
     def test_normalize_plan_and_execute_review(self) -> None:
         plan_report = plan_review_yaml()
         normalized_plan = evidence.normalize_plan_review(
