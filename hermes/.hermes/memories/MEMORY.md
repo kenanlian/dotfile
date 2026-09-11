@@ -2,7 +2,7 @@
 §
 个人项目开发：持久化到 ~/Secret-Projects/development-artifacts；项目根 `.dev` 用相对软链，两个仓库分别 commit/push；`initiatives/` 只读退役，计划放 `.dev/plan/`。Kanban 一项目一 board；简单功能一张 direct 卡，复杂功能拆 write-plan→execute-plan 两张阶段卡。
 §
-managed 开发用 development-stage.v2 + devflow_* Harness；两阶段卡 write-plan 用 review-plan，execute 用单个 review-execute-candidate（独立 Patch/Conformance Gate），最多 3 轮，第 4 轮须柯楠授权且 candidate 有实质修订；Pi 内部 final gate 跳过。
+managed 开发用 development-stage.v2 + devflow_*（建卡前 load hermes-kanban-workflows）；三步 create_feature→record_decision→finalize_stage，八节顺序含 Open decisions，禁裸 kanban_create；write-plan 用 review-plan，execute 用 review-execute-candidate，≤3 轮，第 4 轮须柯楠授权；Pi final gate 跳过。
 §
 Obsidian UI 验收：华生负责 CLI/eval/DOM/截图可判定的功能、刷新、持久化、布局及结构可访问性；柯楠手验 VoiceOver 朗读、瞬时 Hover/菜单、长滚动/拖拽手感、原生感与密度。桌面控制一次常规+一次规定升级仍不可验即停止并交接。
 §
@@ -12,7 +12,7 @@ Feishu 发消息/@人：~/.hermes/scripts/feishu.py send --chat 群名 --at 名�
 §
 review/direct/grounding 固定 glm-5.3 无 fallback
 §
-真实工作前确认 `kanban.max_in_progress=1`（跨 board 主机级）且 `kanban.max_in_progress_per_profile=1`（board 内按 profile）；两者配合才全局串行。
+真实工作前确认 `kanban.max_in_progress=1`（跨 board 主机级）且 `kanban.max_in_progress_per_profile=1`（board 内按 profile）；两者配合才全局串行。agent.max_turns=250 为柯楠 deliberate 选择，勿上调（空转失控烧 token；空转根因走插件 0.2.1+ 阻塞等待解决）。
 §
 柯楠偏好自动化先做可运行 MVP：默认信任模型指令遵循，只保留高风险防线，遇到真实问题再增强可靠性；讨论先给最小统一接口，不预演复杂失败矩阵；明确“先讨论”时不实施。
 §
@@ -24,7 +24,7 @@ review/direct/grounding 固定 glm-5.3 无 fallback
 §
 opencode 走本地代理挂死已加直连规则；复发查代理路由。
 §
-评审 artifact 元数据最小：reviewer frontmatter 可 unknown；session/resume 的真源是外部 Guard，评审/UI 证据只引用绑定（含 run id、round、session_id），不另立真源。
+评审/UI 证据只引用绑定，不另立真源
 §
 Pi 工作流用全局 Agent Skills；expert 后端按配置灵活选。
 §
