@@ -563,11 +563,24 @@ def _require_ui_pass(
             verdicts=verdicts,
         )
     ev = _strip_path_key(pass_items[0])
+    # Bind against the run that PRODUCED the evidence. On the review-pass
+    # path the manifest is loaded from disk and its implement_run_id is the
+    # evidence's run; using ctx.env_run_id there (the review run) would make
+    # every ui_acceptance=required execute card unfailable-to-pass. On the
+    # implement paths the manifest was just written with
+    # implement_run_id=ctx.env_run_id, so the fallback is identical.
+    producing_run_id = manifest.get("implement_run_id")
+    run_id = (
+        int(producing_run_id)
+        if isinstance(producing_run_id, int)
+        and not isinstance(producing_run_id, bool)
+        else int(ctx.env_run_id)
+    )
     violations = verify_ui_evidence_binding(
         ev,
         manifest=manifest,
         card=stage,
-        run_id=int(ctx.env_run_id),
+        run_id=run_id,
         attempt_number=int(attempt_number),
         plan=plan,
         relay_session_id=relay_session_id,

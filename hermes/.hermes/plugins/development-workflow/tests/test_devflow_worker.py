@@ -664,10 +664,14 @@ class IsolatedWorkerHome(unittest.TestCase):
         return sha
 
     def _consume_relay(self, brief: Path, repo: Path | None = None) -> dict:
+        # wait_seconds=0 keeps the spawn call non-blocking so this helper can
+        # observe the two-phase spawn -> terminal flow (write lane blocks and
+        # consumes in one call when wait_seconds > 0; see test_relay_wait.py).
         spawned = self.payload(
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(repo or self.repo),
+            wait_seconds=0,
         )
         self.assertTrue(spawned.get("ok"), spawned)
         self.assertEqual(spawned.get("outcome"), "spawned", spawned)
@@ -788,6 +792,7 @@ class TestStartOrInspectWriteMode(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertTrue(spawned.get("ok"), spawned)
         self.assertEqual(spawned.get("outcome"), "spawned")
@@ -805,6 +810,7 @@ class TestStartOrInspectWriteMode(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertEqual(attached.get("outcome"), "attach", attached)
         self.assertEqual(attached.get("pid"), spawned.get("pid"))
@@ -1076,6 +1082,7 @@ class TestExecutePlanHandoff(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertEqual(spawned.get("outcome"), "spawned", spawned)
         self._track(spawned)
@@ -1335,9 +1342,9 @@ class TestReviewRelay(IsolatedWorkerHome):
 
     def test_review_wait_clamps_under_sequential_tool_ceiling(self) -> None:
         ctx = None
-        clamped = operations_worker._review_wait_seconds(self.adapter, ctx, 1800)
+        clamped = operations_worker._relay_wait_seconds(self.adapter, ctx, 1800)
         self.assertEqual(clamped, 390)
-        short = operations_worker._review_wait_seconds(self.adapter, ctx, 100)
+        short = operations_worker._relay_wait_seconds(self.adapter, ctx, 100)
         self.assertEqual(short, 100)
 
     def test_review_brief_content_persists_and_spawns(self) -> None:
@@ -1523,6 +1530,98 @@ class TestReviewVerdict(IsolatedWorkerHome):
             "review-execute-candidate",
         )
         (dest / evidence.REVIEW_EVIDENCE_FILENAME).unlink(missing_ok=True)
+        self._store_review_evidence(
+            ex_id,
+            valid_execute_review(
+                card_id=ex_id,
+                review_run_id=review.current_run_id,
+                round=1,
+                candidate_commit=sha,
+                accepted_plan_sha256=digest,
+            ),
+            run_id=review.current_run_id,
+            skill="review-execute-candidate",
+        )
+        passed = self.payload(
+            operations_worker.op_review_verdict,
+            verdict="pass",
+        )
+        self.assertTrue(passed.get("ok"), passed)
+        self.assertEqual(passed.get("status"), "done")
+
+    def test_execute_review_pass_binds_ui_evidence_to_implement_run(self) -> None:
+        """Review pass must bind UI evidence to the manifest's implement run.
+
+        UI evidence is produced by the implement worker (policy §UI), so its
+        run_id is the implement run — never the review run evaluating it.
+        """
+        feature_id = "verdict-exec-ui"
+        # Keep the fake relay alive across the spawn call so _consume_relay
+        # observes the two-phase spawn->terminal flow (see _relay_sleep note
+        # in TestStartOrInspectWriteMode).
+        self._relay_sleep = 20
+        created = self.create_feature(route="two-stage", feature_id=feature_id)
+        wp_id = created["cards"][0]["task_id"]
+        ex_id = created["cards"][1]["task_id"]
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=wp_id,
+                body=v2_body(feature_id=feature_id, stage="write-plan"),
+            ).get("ok")
+        )
+        self._claim_implement(wp_id)
+        self._consume_relay(self._write_brief(wp_id))
+        plan_path, digest = self._write_plan(f"{feature_id}.md")
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_implement_handoff,
+                summary="plan ready",
+                plan_path=str(plan_path),
+            ).get("ok")
+        )
+        self._complete_in_review(wp_id, plan_path, digest)
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=ex_id,
+                body=v2_body(
+                    feature_id=feature_id,
+                    stage="execute-plan",
+                    ui_acceptance="required",
+                    accepted_plan=accepted_plan_yaml(
+                        card_id=wp_id, path=str(plan_path), sha256=digest
+                    ),
+                ),
+            ).get("ok")
+        )
+        implement = self._claim_implement(ex_id)
+        self._consume_relay(self._write_brief(ex_id))
+        sha = self._land(ex_id)
+        acquired = self.payload(
+            operations_worker.op_ui_lease,
+            action="acquire",
+            resource_id="obsidian:acceptance",
+        )
+        self.assertTrue(acquired.get("ok"), acquired)
+        lease = acquired.get("lease") or {}
+        self._write_bound_ui_evidence(
+            ex_id,
+            sha,
+            lease={
+                "resource": "obsidian:acceptance",
+                "lease_id": lease.get("lease_id"),
+                "holder_run_id": implement.current_run_id,
+                "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
+                "released_at": "2026-09-10T00:01:00Z",
+            },
+        )
+        handed = self.payload(
+            operations_worker.op_implement_handoff, summary="candidate ready"
+        )
+        self.assertTrue(handed.get("ok"), handed)
+        review = self._claim_review(ex_id)
+        self.assertNotEqual(review.current_run_id, implement.current_run_id)
         self._store_review_evidence(
             ex_id,
             valid_execute_review(
@@ -1837,6 +1936,7 @@ class TestRelaySafetyRegressions(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertEqual(spawned.get("outcome"), "spawned", spawned)
         self._track(spawned)
@@ -1924,6 +2024,7 @@ class TestRelaySafetyRegressions(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertTrue(spawned.get("ok"), spawned)
         self.assertEqual(spawned.get("outcome"), "spawned")
@@ -1968,6 +2069,7 @@ class TestRelaySafetyRegressions(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertEqual(spawned.get("outcome"), "spawned", spawned)
         self.assertEqual(spawned.get("operation"), "rework")
@@ -1995,6 +2097,7 @@ class TestRelaySafetyRegressions(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self._track(spawned)
         self.assertTrue(self.wait_until(lambda: Path(spawned["result_path"]).is_file()))
@@ -2011,6 +2114,7 @@ class TestRelaySafetyRegressions(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertEqual(retry.get("outcome"), "spawned", retry)
         self.assertTrue(retry.get("fallback"))
@@ -2052,6 +2156,7 @@ class TestRelaySafetyRegressions(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self._track(spawned)
         self.assertTrue(self.wait_until(lambda: Path(spawned["result_path"]).is_file()))
@@ -2082,6 +2187,7 @@ class TestRelaySafetyRegressions(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self._track(spawned)
         self.assertTrue(self.wait_until(lambda: Path(spawned["result_path"]).is_file()))
@@ -2762,6 +2868,7 @@ class TestManifestUiAndContractGates(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertTrue(spawned.get("ok"), spawned)
         self.assertEqual(spawned.get("outcome"), "spawned")

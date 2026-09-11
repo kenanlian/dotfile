@@ -107,7 +107,10 @@ class TestPluginRegistration(unittest.TestCase):
         manifest = yaml.safe_load(
             (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
         )
-        self.assertEqual(str(manifest.get("version")), "0.2.0")
+        # Version is read from the manifest, not pinned: the pin below broke
+        # on every release bump (0.2.0 -> 0.2.1). Assert it parses as a
+        # semver string instead.
+        self.assertRegex(str(manifest.get("version")), r"^\d+\.\d+\.\d+$")
         self.assertEqual(manifest.get("kind"), "standalone")
         provided = list(manifest.get("provides_tools") or [])
         self.assertTrue(set(names).issubset(set(provided)))
