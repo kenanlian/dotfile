@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -837,6 +838,7 @@ class TestStartOrInspectWriteMode(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertTrue(review_spawned.get("ok"), review_spawned)
         self.assertEqual(review_spawned.get("outcome"), "spawned")
@@ -1189,6 +1191,7 @@ class TestReviewRelay(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief_ex),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertTrue(spawned.get("ok"), spawned)
         self.assertEqual(spawned.get("outcome"), "spawned")
@@ -1207,6 +1210,7 @@ class TestReviewRelay(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief_ex),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertEqual(attached.get("outcome"), "attach", attached)
         self._kill(spawned["pid"])
@@ -1222,6 +1226,112 @@ class TestReviewRelay(IsolatedWorkerHome):
             len(self._guard(ex_id).read_state()["attempts"]), attempts_before
         )
         self.assertEqual(claimed.status, "running")
+
+    def test_review_tool_waits_for_terminal_without_external_polling(self) -> None:
+        created = self.create_feature(route="two-stage", feature_id="review-wait")
+        wp_id = created["cards"][0]["task_id"]
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=wp_id,
+                body=v2_body(feature_id="review-wait", stage="write-plan"),
+            ).get("ok")
+        )
+        self._claim_implement(wp_id)
+        brief = self._write_brief(wp_id)
+        self._consume_relay(brief)
+        plan_path, _digest = self._write_plan("review-wait.md")
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_implement_handoff,
+                summary="plan ready",
+                plan_path=str(plan_path),
+            ).get("ok")
+        )
+        review = self._claim_review(wp_id)
+        self._relay_sleep = 0.2
+
+        result = json.loads(
+            tools_worker.handle_start_or_inspect_relay(
+                {
+                    "brief_content": (
+                        f"/skill:review-plan \nReview card {wp_id}.\n"
+                    ),
+                    "repo": str(self.repo),
+                }
+            )
+        )
+
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(result.get("outcome"), "terminal", result)
+        evidence_path = evidence.review_round_run_dir(
+            evidence.task_dir(self.adapter.artifacts_root, self.board, wp_id),
+            1,
+            review.current_run_id,
+            "review-plan",
+        ) / evidence.REVIEW_EVIDENCE_FILENAME
+        self.assertTrue(evidence_path.is_file())
+
+    def test_review_wait_rechecks_ownership_before_consuming(self) -> None:
+        created = self.create_feature(route="two-stage", feature_id="review-wait-owner")
+        wp_id = created["cards"][0]["task_id"]
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=wp_id,
+                body=v2_body(feature_id="review-wait-owner", stage="write-plan"),
+            ).get("ok")
+        )
+        self._claim_implement(wp_id)
+        brief = self._write_brief(wp_id)
+        self._consume_relay(brief)
+        plan_path, _digest = self._write_plan("review-wait-owner.md")
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_implement_handoff,
+                summary="plan ready",
+                plan_path=str(plan_path),
+            ).get("ok")
+        )
+        review = self._claim_review(wp_id)
+        self._relay_sleep = 0.2
+
+        def lose_ownership() -> None:
+            time.sleep(0.05)
+            conn = self.adapter.connect()
+            try:
+                self.adapter.complete_task(
+                    conn,
+                    wp_id,
+                    summary="external transition",
+                    expected_run_id=review.current_run_id,
+                )
+            finally:
+                self.adapter.close(conn)
+
+        thread = threading.Thread(target=lose_ownership)
+        thread.start()
+        try:
+            result = json.loads(
+                tools_worker.handle_start_or_inspect_relay(
+                    {
+                        "brief_content": f"/skill:review-plan \nReview card {wp_id}.\n",
+                        "repo": str(self.repo),
+                    }
+                )
+            )
+        finally:
+            thread.join()
+
+        self.assertFalse(result.get("ok"), result)
+        self.assertEqual(result.get("code"), errors.RUN_OWNERSHIP_LOST)
+        evidence_path = evidence.review_round_run_dir(
+            evidence.task_dir(self.adapter.artifacts_root, self.board, wp_id),
+            1,
+            review.current_run_id,
+            "review-plan",
+        ) / evidence.REVIEW_EVIDENCE_FILENAME
+        self.assertFalse(evidence_path.exists())
 
     def test_review_brief_content_persists_and_spawns(self) -> None:
         created = self.create_feature(route="two-stage", feature_id="review-brief-inline")
@@ -1283,6 +1393,7 @@ class TestReviewRelay(IsolatedWorkerHome):
                 f"Review card {ex_id} against the accepted plan.\n"
             ),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertTrue(spawned.get("ok"), spawned)
         self.assertEqual(spawned.get("outcome"), "spawned", spawned)
@@ -2008,6 +2119,7 @@ class TestReviewEnvelopeAndVerdict(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self.assertEqual(spawned.get("outcome"), "spawned", spawned)
         self._track(spawned)
@@ -2083,6 +2195,7 @@ class TestReviewEnvelopeAndVerdict(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self._track(spawned)
         self.wait_until(lambda: Path(spawned["result_path"]).is_file())
@@ -2122,6 +2235,7 @@ class TestReviewEnvelopeAndVerdict(IsolatedWorkerHome):
             operations_worker.op_start_or_inspect_relay,
             brief_path=str(brief),
             repo=str(self.repo),
+            wait_seconds=0,
         )
         self._track(spawned)
         self.wait_until(lambda: Path(spawned["result_path"]).is_file())

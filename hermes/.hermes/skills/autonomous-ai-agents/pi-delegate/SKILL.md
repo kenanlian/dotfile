@@ -93,6 +93,12 @@ Start a separate fresh Execution Parent with `--write`, `--auto-handoff-plan <ab
 
 Start every review relay fresh with `--read-only` under `zai-coding-cn/glm-5.3` (no fallback); never pass a planning/execution `--session`. Begin with the first line `/skill:review-plan ` (write-plan review) or `/skill:review-execute-candidate ` (execute review) — same trailing-space rule — plus exact Plan/candidate/commit-range inputs. Explicitly forbid the reviewer and every delegated child from writing or invoking write-access children. Give each relay a unique run-scoped out dir/result path, wait for process exit, and validate the terminal result directly; the write-mode external guard is not reused by Review Workers. Review relays never pass `--auto-handoff-plan`.
 
+For managed `development-stage.v2` work, the Harness owns that wait through
+`devflow_start_or_inspect_relay`: it waits 1800 seconds by default and consumes a
+terminal result in the same call. On `attach`, heartbeat once and repeat the bounded
+wait; do not poll `events.jsonl`/`result.json` in model turns. Direct invocation of
+`relay.mjs` outside the Harness retains the blocking behavior documented below.
+
 ### Behavioral rework
 
 Resume the exact recorded Pi `sessionId` with `--session <session-id> --write`, the observed failure packet, and the implement model of its relay family (stage cards: `kimi-coding/k3` primary, `zai-coding-cn/glm-5.3` fallback; direct: `zai-coding-cn/glm-5.3`). Execute-plan rework re-passes `--auto-handoff-plan` with the same accepted plan path (the same path the guard validated as `--plan-artifact`). Write-plan rework does not re-pass the option. The relay fails when that Session is absent or the observed ID differs; never replace it silently.

@@ -56,8 +56,11 @@ code-review procedure below:
 2. Start, attach, or consume the stage review only through
    `devflow_start_or_inspect_relay`. Write-plan uses one fresh read-only `review-plan`;
    execute-plan uses one fresh read-only `review-execute-candidate` with separate Patch
-   and Plan Conformance gates. Never use the write-mode guard, resume an implement
-   Session, or launch the adapter directly.
+   and Plan Conformance gates. The tool waits up to 1800 seconds by default; if it
+   returns `attach`, heartbeat once and call it again with `wait_seconds=1800` instead
+   of polling event/result files. Use `wait_seconds=0` only for an immediate diagnostic
+   inspection. Never use the write-mode guard, resume an implement Session, or launch
+   the adapter directly.
 3. The reviewer and every delegated child remain source/worktree read-only. Do not edit,
    run state-changing commands, invoke a write-access child, or rerun project tests. The
    Pi review Relay performs source review; this Hermes Worker validates its terminal

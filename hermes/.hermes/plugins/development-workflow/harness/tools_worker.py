@@ -111,6 +111,18 @@ DEVFLOW_START_OR_INSPECT_RELAY_SCHEMA = {
                     "Guard state on the first write-mode attempt."
                 ),
             },
+            "wait_seconds": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3000,
+                "default": 1800,
+                "description": (
+                    "Review lane only. Wait up to this many seconds for the "
+                    "current Relay before returning attach; terminal Relays "
+                    "are consumed in the same call. Defaults to 1800. Use 0 "
+                    "only for an immediate diagnostic inspection."
+                ),
+            },
         },
         "required": [],
     },
@@ -209,6 +221,7 @@ def handle_start_or_inspect_relay(args: dict, **_kw: Any) -> str:
         brief_path=str(args.get("brief_path") or "").strip(),
         brief_content=args.get("brief_content"),
         repo=_opt_str(args.get("repo")),
+        wait_seconds=args.get("wait_seconds"),
     )
 
 

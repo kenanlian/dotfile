@@ -10,6 +10,7 @@ from __future__ import annotations
 import atexit
 import os
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NoReturn
@@ -86,6 +87,8 @@ from .policy import (
 from .ui_lease import UiLeaseManager, lease_records, load_release_history
 
 REVIEW_RELAY_SCHEMA = "devflow-review-relay.v1"
+REVIEW_WAIT_DEFAULT_SECONDS = 1800
+REVIEW_WAIT_MAX_SECONDS = 3000
 BLOCK_KINDS = ("needs_input", "capability", "dependency", "transient")
 _NON_SUCCESS_STATUSES = frozenset({"failed", "timeout", "aborted", "unavailable"})
 _UNCERTAIN_REMEDIATION = (
@@ -1345,6 +1348,93 @@ def _review_consume_or_attach(
     }
 
 
+def _review_wait_seconds(ctx: Any, value: Any) -> int:
+    if value is None:
+        return REVIEW_WAIT_DEFAULT_SECONDS
+    if isinstance(value, bool) or not isinstance(value, int):
+        _fail(
+            ctx,
+            CARD_CONTRACT_INVALID,
+            "wait_seconds must be an integer",
+            wait_seconds=value,
+        )
+    if value < 0 or value > REVIEW_WAIT_MAX_SECONDS:
+        _fail(
+            ctx,
+            CARD_CONTRACT_INVALID,
+            f"wait_seconds must be between 0 and {REVIEW_WAIT_MAX_SECONDS}",
+            wait_seconds=value,
+        )
+    return value
+
+
+def _wait_for_review_process(pid: int, wait_seconds: int) -> None:
+    """Block on the run-owned review Relay without a model polling loop."""
+    if wait_seconds <= 0:
+        return
+    child = _LIVE_REVIEW_PROCS.get(pid)
+    if child is not None:
+        try:
+            child.wait(timeout=wait_seconds)
+        except subprocess.TimeoutExpired:
+            return
+        finally:
+            if child.poll() is not None:
+                _LIVE_REVIEW_PROCS.pop(pid, None)
+        return
+    deadline = time.monotonic() + wait_seconds
+    while _pid_alive(pid):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(1.0, remaining))
+
+
+def _review_wait_or_consume(
+    adapter: Any,
+    ctx: Any,
+    spec: Any,
+    stage: Any,
+    run_dir: Path,
+    record: dict,
+    model: str,
+    *,
+    wait_seconds: int,
+    expected_cwd: str,
+    board: str,
+    card_id: str,
+    round_n: int,
+) -> dict:
+    current = _review_consume_or_attach(
+        ctx,
+        spec,
+        stage,
+        run_dir,
+        record,
+        model,
+        expected_cwd=expected_cwd,
+        board=board,
+        card_id=card_id,
+        round_n=round_n,
+    )
+    if current.get("outcome") != "attach" or wait_seconds <= 0:
+        return current
+    _wait_for_review_process(int(current["pid"]), wait_seconds)
+    current_ctx = _prologue(adapter)
+    return _review_consume_or_attach(
+        current_ctx,
+        spec,
+        stage,
+        run_dir,
+        record,
+        model,
+        expected_cwd=expected_cwd,
+        board=board,
+        card_id=card_id,
+        round_n=round_n,
+    )
+
+
 def _review_relay(
     adapter: Any,
     ctx: Any,
@@ -1353,6 +1443,7 @@ def _review_relay(
     brief_path: str | None,
     brief_content: str | None,
     repo: Path,
+    wait_seconds: Any,
 ) -> dict:
     ok, reasons = review_authority(adapter, ctx)
     if not ok:
@@ -1388,14 +1479,17 @@ def _review_relay(
     record = load_json(record_path)
     model = spec.model
     cwd = str(repo)
+    bounded_wait = _review_wait_seconds(ctx, wait_seconds)
     if isinstance(record, dict):
-        return _review_consume_or_attach(
+        return _review_wait_or_consume(
+            adapter,
             ctx,
             spec,
             stage,
             run_dir,
             record,
             model,
+            wait_seconds=bounded_wait,
             expected_cwd=cwd,
             board=board,
             card_id=card_id,
@@ -1408,7 +1502,7 @@ def _review_relay(
         card_id=card_id,
         dest_dir=run_dir,
     )
-    return _review_spawn(
+    spawned = _review_spawn(
         ctx,
         spec,
         brief=brief,
@@ -1418,6 +1512,25 @@ def _review_relay(
         model=model,
         relay_script=Path(adapter.hermes_home) / spec.skill_script_relpath,
     )
+    if bounded_wait <= 0:
+        return spawned
+    record = load_json(record_path)
+    if not isinstance(record, dict):
+        _fail(ctx, RELAY_ATTEMPT_UNCERTAIN, "review relay record missing after spawn")
+    return _review_wait_or_consume(
+        adapter,
+        ctx,
+        spec,
+        stage,
+        run_dir,
+        record,
+        model,
+        wait_seconds=bounded_wait,
+        expected_cwd=cwd,
+        board=board,
+        card_id=card_id,
+        round_n=round_n,
+    )
 
 
 def op_start_or_inspect_relay(
@@ -1426,6 +1539,7 @@ def op_start_or_inspect_relay(
     brief_path: str | None = None,
     brief_content: str | None = None,
     repo: str | None = None,
+    wait_seconds: Any = None,
 ) -> dict:
     """Derive commissioning and spawn, attach, or consume a Relay (§14, §19.5)."""
     ctx = _prologue(adapter)
@@ -1446,6 +1560,7 @@ def op_start_or_inspect_relay(
             brief_path=brief_path,
             brief_content=brief_content,
             repo=workspace,
+            wait_seconds=wait_seconds,
         )
     if isinstance(brief_content, str) and brief_content.strip():
         _fail(

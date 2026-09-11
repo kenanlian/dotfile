@@ -601,6 +601,30 @@ class TestReviewMutationSurface(IsolatedHookHome):
             )
         )
 
+    def test_managed_review_describes_only_its_devflow_controls(self) -> None:
+        self._bind_managed_review_worker()
+        allowed = hook.pre_tool_call(
+            tool_name="tool_describe",
+            args={
+                "names": [
+                    "devflow_inspect",
+                    "devflow_start_or_inspect_relay",
+                    "devflow_review_verdict",
+                ]
+            },
+        )
+        self.assertIsNone(allowed)
+
+        mixed = hook.pre_tool_call(
+            tool_name="tool_describe",
+            args={"names": ["devflow_review_verdict", "process_manage"]},
+        )
+        self.assertTrue(_is_block(mixed), mixed)
+        searched = hook.pre_tool_call(
+            tool_name="tool_search", args={"queries": ["wait for relay"]}
+        )
+        self.assertTrue(_is_block(searched), searched)
+
     def test_implement_worker_write_file_allowed(self) -> None:
         self._bind_managed_implement_worker()
         implement = hook.pre_tool_call(

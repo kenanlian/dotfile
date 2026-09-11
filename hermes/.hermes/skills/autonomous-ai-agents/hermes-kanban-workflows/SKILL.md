@@ -38,7 +38,7 @@ Use the Harness surface for managed Cards:
 | `devflow_create_feature` | Origin | Create direct draft or atomic write-plan+execute-plan draft pair |
 | `devflow_record_decision` | Origin | Append sourced intent decision, amendment, or candidate-bound manual verdict |
 | `devflow_finalize_stage` | Origin | Validate full v2 replacement body/capabilities and call native specification |
-| `devflow_start_or_inspect_relay` | owning Worker | Derive and launch/attach/consume the exact write or review Relay |
+| `devflow_start_or_inspect_relay` | owning Worker | Derive and launch/attach/consume the exact write or review Relay; review calls wait up to 1800s by default |
 | `devflow_ui_lease` | Implement Worker | Acquire/release/inspect a candidate/run-bound named resource |
 | `devflow_implement_handoff` | Implement Worker | Validate current Plan/candidate/checks/UI then native complete/request-review |
 | `devflow_review_verdict` | Review Worker | Validate current review evidence then native complete/request-changes/block |
@@ -98,6 +98,11 @@ A completed-looking Relay is incomplete until the process exited and `delegate-r
 ```
 
 One review run cannot reuse another run's result. A reclaimed read-only process may finish, but its verdict cannot satisfy the current run.
+
+Review Workers wait inside `devflow_start_or_inspect_relay`, not by reading the
+event stream in model turns. The default bounded wait is 1800 seconds; `attach`
+means heartbeat once and invoke the same tool again. `wait_seconds=0` is for an
+immediate diagnostic inspection only.
 
 Write-plan review uses one `review-plan`. Execute review uses one `review-execute-candidate` with independent patch and plan-conformance gates. Review evidence binds board/card/feature/run/round/candidate/diff/accepted-Plan and artifact hashes. Any identity change invalidates it.
 

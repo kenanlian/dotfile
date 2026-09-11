@@ -105,6 +105,11 @@ The helper blocks. Use the orchestrator's background-command facility, or backgr
 it in a shell and poll for `result.json`. The run is done only when the process has
 exited and the file carries a `status`.
 
+Managed `development-stage.v2` Review Workers do not launch this helper directly.
+`devflow_start_or_inspect_relay` owns the process and blocks for 1800 seconds by
+default; an `attach` response means heartbeat once and repeat that bounded wait,
+never busy-poll the artifact files in model turns.
+
 A pre-run usage error exits 2 and writes no result. A missing `pi` binary exits 127
 and writes `status: "unavailable"`.
 

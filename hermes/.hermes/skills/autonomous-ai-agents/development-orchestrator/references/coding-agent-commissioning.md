@@ -94,7 +94,7 @@ children, commit, push, or perform external effects. Return the complete standal
 in the final response.
 ```
 
-The run-scoped adapter directory is control-plane evidence, not a reviewer-authored workspace artifact. Review workers pass the brief inline via `brief_content` (they have no write tools); the harness validates it, persists it to `<run-dir>/brief.md` for the evidence chain, and spawns the Relay.
+The run-scoped adapter directory is control-plane evidence, not a reviewer-authored workspace artifact. Review workers pass the brief inline via `brief_content` (they have no write tools); the harness validates it, persists it to `<run-dir>/brief.md` for the evidence chain, and spawns the Relay. `devflow_start_or_inspect_relay` waits up to 1800 seconds by default and consumes a terminal result in the same call. If it returns `attach`, heartbeat once and invoke it again with `wait_seconds=1800`; never busy-poll event/result files. `wait_seconds=0` is reserved for immediate diagnostic inspection.
 
 ### Write-plan review
 

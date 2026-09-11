@@ -30,7 +30,7 @@ Verified 2026-09-01 against live source, CLI, and official docs. Re-verify after
 
 - Auto bridge (#31752): `_touch_activity` → board `last_heartbeat_at`, rate-limited 1 write/60s, no-op outside dispatcher workers; explicit `kanban_heartbeat` still available for notes/long-op pre-emption.
 - `dispatch_stale_timeout_seconds` default 14400 (4h); stale reclaim SIGTERMs host-local worker, resets to ready, does NOT tick failure counter.
-- Long external waits: use 30–50 minute bounded slices when the effective tool/runtime ceiling permits, then heartbeat before another slice; a single multi-hour blocking call risks stale reclaim.
+- Long external waits: use 30–50 minute bounded slices when the effective tool/runtime ceiling permits, then heartbeat before another slice; managed Review Workers get this through `devflow_start_or_inspect_relay` (`wait_seconds=1800` by default), not model-turn polling. A single multi-hour blocking call risks stale reclaim.
 
 ## Lifecycle Primitives (CLI-verified)
 

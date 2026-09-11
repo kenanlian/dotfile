@@ -142,6 +142,13 @@ _REVIEW_ALLOW = _READ_ONLY | frozenset(
         "kanban_attach_url",
     }
 )
+_REVIEW_DESCRIBABLE_TOOLS = frozenset(
+    {
+        "devflow_inspect",
+        "devflow_start_or_inspect_relay",
+        "devflow_review_verdict",
+    }
+)
 _NON_OWNING_ALLOW = _READ_ONLY | _READ_ONLY_KANBAN | frozenset({"devflow_inspect"})
 
 
@@ -372,6 +379,25 @@ def _evaluate_protected(tool_name: str, args: dict) -> dict | None:
 
 
 def _review_policy(tool_name: str, args: dict) -> dict | None:
+    if tool_name == "tool_describe":
+        raw = args.get("names")
+        names = [raw] if isinstance(raw, str) else raw
+        normalized = {
+            str(name).strip()
+            for name in names or []
+            if isinstance(name, str) and str(name).strip()
+        }
+        if normalized and normalized <= _REVIEW_DESCRIBABLE_TOOLS:
+            return None
+        return _block(
+            "Review workers may describe only devflow_inspect, "
+            "devflow_start_or_inspect_relay, and devflow_review_verdict."
+        )
+    if tool_name == "tool_search":
+        return _block(
+            "Review workers use the fixed devflow control surface; describe "
+            "the exact allowed devflow tool instead of searching the broader catalog."
+        )
     if tool_name == "kanban_block":
         if _arg_str(args, "reason"):
             return None
