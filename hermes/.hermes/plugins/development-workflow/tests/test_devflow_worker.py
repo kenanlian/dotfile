@@ -232,6 +232,46 @@ def valid_execute_review(**overrides):
     return data
 
 
+def smoke_scenarios(verdict: str = "PASS"):
+    return [
+        {"name": "candidate-load", "verdict": verdict},
+        {"name": "primary-entry", "verdict": verdict},
+        {"name": "runtime-stability", "verdict": verdict},
+    ]
+
+
+def valid_ui_evidence_v3(**overrides):
+    data = valid_ui_evidence(
+        schema=contracts.UI_EVIDENCE_V3_SCHEMA_ID,
+        purpose="smoke",
+        producer_role="implement-worker",
+        review_round=None,
+        scenarios=smoke_scenarios(),
+    )
+    data.update(overrides)
+    return data
+
+
+def smoke_scenarios(verdict: str = "PASS"):
+    return [
+        {"name": "candidate-load", "verdict": verdict},
+        {"name": "primary-entry", "verdict": verdict},
+        {"name": "runtime-stability", "verdict": verdict},
+    ]
+
+
+def valid_ui_evidence_v3(**overrides):
+    data = valid_ui_evidence(
+        schema=contracts.UI_EVIDENCE_V3_SCHEMA_ID,
+        purpose="smoke",
+        producer_role="implement-worker",
+        review_round=None,
+        scenarios=smoke_scenarios(),
+    )
+    data.update(overrides)
+    return data
+
+
 class IsolatedWorkerHome(unittest.TestCase):
     """Fresh HERMES_HOME, git repo, guard script, and fake relay argv."""
 
@@ -297,6 +337,7 @@ class IsolatedWorkerHome(unittest.TestCase):
         self._final_message = None
         self._review_report = None
         self._review_candidate = None
+        self._structured_output = "auto"
         self._relay_overrides = {}
         self._relay_argvs: list[list[str]] = []
         self._orig_build_relay_argv = operations_worker.build_relay_argv
@@ -317,13 +358,11 @@ class IsolatedWorkerHome(unittest.TestCase):
             with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
                 os.kill(pid, signal.SIGKILL)
 
-    def _default_final_message(self, spec) -> str:
-        if self._final_message is not None:
-            return self._final_message
+    def _review_payload(self, spec) -> dict | None:
         if not getattr(spec, "review", False):
-            return "done"
+            return None
         if spec.skill == "review-plan":
-            report = {
+            payload = {
                 "verdict": "pass",
                 "summary": "Plan is ready to execute.",
                 "plan": {
@@ -333,7 +372,7 @@ class IsolatedWorkerHome(unittest.TestCase):
                 "required_revisions": [],
             }
         else:
-            report = {
+            payload = {
                 "candidate_commit": self._review_candidate or SHA1_A,
                 "accepted_plan": {
                     "path": str(self.plan_path),
@@ -344,8 +383,16 @@ class IsolatedWorkerHome(unittest.TestCase):
                 "overall": {"verdict": "pass"},
             }
         if self._review_report:
-            report.update(self._review_report)
-        return yaml.safe_dump(report, sort_keys=False)
+            payload.update(self._review_report)
+        return payload
+
+    def _default_final_message(self, spec) -> str:
+        if self._final_message is not None:
+            return self._final_message
+        if not getattr(spec, "review", False):
+            return "done"
+        payload = self._review_payload(spec) or {}
+        return yaml.safe_dump(payload, sort_keys=False)
 
     def _fake_argv(
         self,
@@ -359,6 +406,9 @@ class IsolatedWorkerHome(unittest.TestCase):
         resume_session,
         plan_path,
         model,
+        review_output=None,
+        output_recovery=False,
+        **_kwargs,
     ):
         captured = self._orig_build_relay_argv(
             spec,
@@ -370,6 +420,8 @@ class IsolatedWorkerHome(unittest.TestCase):
             resume_session=resume_session,
             plan_path=plan_path,
             model=model,
+            review_output=review_output,
+            output_recovery=output_recovery,
         )
         self._relay_argvs.append(list(captured))
         mode = "read-only" if spec.mode == "read" else "write"
@@ -386,6 +438,24 @@ class IsolatedWorkerHome(unittest.TestCase):
             "thinking": spec.thinking or "high",
             "finalMessage": self._default_final_message(spec),
         }
+        if getattr(spec, "review", False):
+            if self._structured_output == "auto":
+                tool = (
+                    "submit_plan_review"
+                    if spec.skill == "review-plan"
+                    else "submit_execute_review"
+                )
+                result["structuredOutput"] = {
+                    "tool": tool,
+                    "payload": self._review_payload(spec),
+                }
+                result["structuredOutputError"] = None
+            elif self._structured_output is None:
+                result["structuredOutput"] = None
+                result["structuredOutputError"] = "expected tool was not called"
+            else:
+                result["structuredOutput"] = self._structured_output
+                result["structuredOutputError"] = None
         if status == "unavailable":
             result["sourceStatus"] = self._relay_source_status or "pi_unavailable"
         if self._relay_error:
@@ -588,6 +658,71 @@ class IsolatedWorkerHome(unittest.TestCase):
         )
         evidence.write_json_atomic(path, data)
         return path
+
+    def _bound_v3_doc(
+        self,
+        task_id: str,
+        sha: str,
+        *,
+        purpose: str,
+        producer_role: str,
+        review_round,
+        verdict: str = "PASS",
+        lease: dict | None = None,
+        **overrides,
+    ) -> dict:
+        run_id = int(os.environ["HERMES_KANBAN_RUN_ID"])
+        state = self._guard(task_id).read_state() or {}
+        baseline = str((state.get("baseline") or {}).get("head") or ("c" * 40))
+        landings = state.get("landings") or []
+        attempt_number = 1
+        if landings and isinstance(landings[-1], dict):
+            attempt_number = int(landings[-1].get("attempt_number") or 1)
+        conn = self.adapter.connect()
+        try:
+            task = self.adapter.get_task(conn, task_id)
+            card = contracts.parse_stage_body(task.body)
+        finally:
+            self.adapter.close(conn)
+        accepted = None
+        if card.stage == "execute-plan" and isinstance(card.accepted_plan, dict):
+            accepted = {
+                "path": card.accepted_plan.get("path"),
+                "sha256": card.accepted_plan.get("sha256"),
+            }
+        lease_block = lease or {
+            "resource": "obsidian:acceptance",
+            "lease_id": "lease-1",
+            "holder_run_id": run_id,
+            "acquired_at": "2026-09-10T00:00:00Z",
+            "released_at": "2026-09-10T00:01:00Z",
+        }
+        scenarios = (
+            smoke_scenarios(verdict)
+            if purpose == "smoke"
+            else [{"name": "open the note and confirm the heading", "verdict": verdict}]
+        )
+        data = valid_ui_evidence_v3(
+            board=self.board,
+            card_id=task_id,
+            feature_id=card.feature_id,
+            stage=card.stage,
+            run_id=run_id,
+            attempt_number=attempt_number,
+            candidate_commit=sha,
+            diff_base=baseline,
+            diff_head=sha,
+            accepted_plan=accepted,
+            relay_session_id=None if producer_role == "review-worker" else self._relay_session,
+            lease=lease_block,
+            verdict=verdict,
+            scenarios=scenarios,
+            purpose=purpose,
+            producer_role=producer_role,
+            review_round=review_round,
+        )
+        data.update(overrides)
+        return data
 
     def _clear_worker_env(self) -> None:
         for var in (
@@ -1136,6 +1271,10 @@ class TestExecutePlanHandoff(IsolatedWorkerHome):
                 "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
                 "released_at": "2026-09-10T00:01:00Z",
             },
+            schema=contracts.UI_EVIDENCE_V3_SCHEMA_ID,
+            purpose="acceptance",
+            producer_role="implement-worker",
+            review_round=None,
         )
         done = self.payload(
             operations_worker.op_implement_handoff, summary="ui pass"
@@ -1205,6 +1344,10 @@ class TestReviewRelay(IsolatedWorkerHome):
         self.assertEqual(spawned.get("mode"), "read")
         self.assertEqual(spawned.get("skill"), "review-execute-candidate")
         self._track(spawned)
+        argv = self._relay_argvs[-1]
+        self.assertIn("--review-output", argv)
+        self.assertEqual(argv[argv.index("--review-output") + 1], "execute")
+        self.assertNotIn("--write", argv)
         relay_json = Path(spawned["out_dir"]) / "relay.json"
         self.assertTrue(relay_json.is_file())
         record = json.loads(relay_json.read_text(encoding="utf-8"))
@@ -1549,16 +1692,119 @@ class TestReviewVerdict(IsolatedWorkerHome):
         self.assertTrue(passed.get("ok"), passed)
         self.assertEqual(passed.get("status"), "done")
 
-    def test_execute_review_pass_binds_ui_evidence_to_implement_run(self) -> None:
-        """Review pass must bind UI evidence to the manifest's implement run.
+    def test_execute_review_pass_legacy_binds_ui_to_implement_run(self) -> None:
+        """Handoff without ui_protocol keeps C12 implement-run acceptance binding."""
+        feature_id = "verdict-exec-ui-legacy"
+        self._relay_sleep = 20
+        created = self.create_feature(route="two-stage", feature_id=feature_id)
+        wp_id = created["cards"][0]["task_id"]
+        ex_id = created["cards"][1]["task_id"]
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=wp_id,
+                body=v2_body(feature_id=feature_id, stage="write-plan"),
+            ).get("ok")
+        )
+        self._claim_implement(wp_id)
+        self._consume_relay(self._write_brief(wp_id))
+        plan_path, digest = self._write_plan(f"{feature_id}.md")
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_implement_handoff,
+                summary="plan ready",
+                plan_path=str(plan_path),
+            ).get("ok")
+        )
+        self._complete_in_review(wp_id, plan_path, digest)
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=ex_id,
+                body=v2_body(
+                    feature_id=feature_id,
+                    stage="execute-plan",
+                    ui_acceptance="required",
+                    accepted_plan=accepted_plan_yaml(
+                        card_id=wp_id, path=str(plan_path), sha256=digest
+                    ),
+                ),
+            ).get("ok")
+        )
+        implement = self._claim_implement(ex_id)
+        self._consume_relay(self._write_brief(ex_id))
+        sha = self._land(ex_id)
+        conn = self.adapter.connect()
+        try:
+            task = self.adapter.get_task(conn, ex_id)
+            stage = contracts.parse_stage_body(task.body)
+            state = self._guard(ex_id).read_state() or {}
+            operations_worker._write_manifest(
+                adapter=self.adapter,
+                board=self.board,
+                card_id=ex_id,
+                stage=stage,
+                candidate=sha,
+                baseline_head=str((state.get("baseline") or {}).get("head") or ""),
+                implement_run_id=int(implement.current_run_id),
+                attempt_number=1,
+            )
+            acquired = self.payload(
+                operations_worker.op_ui_lease,
+                action="acquire",
+                resource_id="obsidian:acceptance",
+            )
+            self.assertTrue(acquired.get("ok"), acquired)
+            lease = acquired.get("lease") or {}
+            self._write_bound_ui_evidence(
+                ex_id,
+                sha,
+                lease={
+                    "resource": "obsidian:acceptance",
+                    "lease_id": lease.get("lease_id"),
+                    "holder_run_id": implement.current_run_id,
+                    "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
+                    "released_at": "2026-09-10T00:01:00Z",
+                },
+            )
+            requested = self.adapter.request_review(
+                conn,
+                ex_id,
+                summary="legacy handoff",
+                metadata={
+                    "candidate": {"commit": sha, "attempt_number": 1},
+                    "accepted_plan_sha256": digest,
+                    "round": 1,
+                },
+                expected_run_id=implement.current_run_id,
+            )
+            self.assertTrue(requested)
+        finally:
+            self.adapter.close(conn)
+        review = self._claim_review(ex_id)
+        self.assertNotEqual(review.current_run_id, implement.current_run_id)
+        self._store_review_evidence(
+            ex_id,
+            valid_execute_review(
+                card_id=ex_id,
+                review_run_id=review.current_run_id,
+                round=1,
+                candidate_commit=sha,
+                accepted_plan_sha256=digest,
+            ),
+            run_id=review.current_run_id,
+            skill="review-execute-candidate",
+        )
+        passed = self.payload(
+            operations_worker.op_review_verdict,
+            verdict="pass",
+        )
+        self.assertTrue(passed.get("ok"), passed)
+        self.assertEqual(passed.get("status"), "done")
 
-        UI evidence is produced by the implement worker (policy §UI), so its
-        run_id is the implement run — never the review run evaluating it.
-        """
-        feature_id = "verdict-exec-ui"
-        # Keep the fake relay alive across the spawn call so _consume_relay
-        # observes the two-phase spawn->terminal flow (see _relay_sleep note
-        # in TestStartOrInspectWriteMode).
+    def test_execute_review_pass_new_protocol_review_owned_acceptance(self) -> None:
+        """Marker present: smoke at handoff, review lease after dual-gate, review acceptance."""
+        feature_id = "verdict-exec-ui-new"
         self._relay_sleep = 20
         created = self.create_feature(route="two-stage", feature_id=feature_id)
         wp_id = created["cards"][0]["task_id"]
@@ -1604,6 +1850,7 @@ class TestReviewVerdict(IsolatedWorkerHome):
             resource_id="obsidian:acceptance",
         )
         self.assertTrue(acquired.get("ok"), acquired)
+        self.assertEqual((acquired.get("lease") or {}).get("purpose"), "smoke")
         lease = acquired.get("lease") or {}
         self._write_bound_ui_evidence(
             ex_id,
@@ -1615,13 +1862,23 @@ class TestReviewVerdict(IsolatedWorkerHome):
                 "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
                 "released_at": "2026-09-10T00:01:00Z",
             },
+            schema=contracts.UI_EVIDENCE_V3_SCHEMA_ID,
+            purpose="smoke",
+            producer_role="implement-worker",
+            review_round=None,
+            scenarios=smoke_scenarios(),
         )
         handed = self.payload(
             operations_worker.op_implement_handoff, summary="candidate ready"
         )
         self.assertTrue(handed.get("ok"), handed)
         review = self._claim_review(ex_id)
-        self.assertNotEqual(review.current_run_id, implement.current_run_id)
+        refused = self.payload(
+            operations_worker.op_ui_lease,
+            action="acquire",
+            resource_id="obsidian:acceptance",
+        )
+        self.assertEqual(refused.get("code"), errors.REVIEW_GATE_INCOMPLETE)
         self._store_review_evidence(
             ex_id,
             valid_execute_review(
@@ -1634,6 +1891,34 @@ class TestReviewVerdict(IsolatedWorkerHome):
             run_id=review.current_run_id,
             skill="review-execute-candidate",
         )
+        acquired_r = self.payload(
+            operations_worker.op_ui_lease,
+            action="acquire",
+            resource_id="obsidian:review",
+        )
+        self.assertTrue(acquired_r.get("ok"), acquired_r)
+        self.assertEqual((acquired_r.get("lease") or {}).get("purpose"), "acceptance")
+        rlease = acquired_r.get("lease") or {}
+        recorded = self.payload(
+            operations_worker.op_ui_lease,
+            action="record_evidence",
+            resource_id="obsidian:review",
+            evidence=self._bound_v3_doc(
+                ex_id,
+                sha,
+                purpose="acceptance",
+                producer_role="review-worker",
+                review_round=1,
+                lease={
+                    "resource": "obsidian:review",
+                    "lease_id": rlease.get("lease_id"),
+                    "holder_run_id": review.current_run_id,
+                    "acquired_at": rlease.get("acquired_at") or "2026-09-10T00:00:00Z",
+                    "released_at": "2026-09-10T00:02:00Z",
+                },
+            ),
+        )
+        self.assertTrue(recorded.get("ok"), recorded)
         passed = self.payload(
             operations_worker.op_review_verdict,
             verdict="pass",
@@ -1815,7 +2100,9 @@ class TestUiLease(IsolatedWorkerHome):
         )
         self.assertTrue(acquired.get("ok"), acquired)
         lease = acquired.get("lease") or {}
-        self.assertEqual(lease.get("schema"), "development-ui-lease.v1")
+        self.assertEqual(lease.get("schema"), "development-ui-lease.v2")
+        self.assertEqual(lease.get("purpose"), "acceptance")
+        self.assertEqual(lease.get("holder_role"), "implement-worker")
         self.assertTrue(acquired.get("lease_id") or lease.get("lease_id"))
         lease_path = (
             self.home
@@ -1885,6 +2172,7 @@ class TestWorkerToolsSurface(IsolatedWorkerHome):
                 "devflow_ui_lease",
                 "devflow_implement_handoff",
                 "devflow_review_verdict",
+                "devflow_publish_candidate",
             ],
         )
         for item in tools_worker.TOOLS:
@@ -2257,6 +2545,7 @@ class TestReviewEnvelopeAndVerdict(IsolatedWorkerHome):
         self.assertEqual(evidence_path.read_text(encoding="utf-8"), first)
 
         self._final_message = ""
+        self._structured_output = None
         run_dir = Path(spawned["out_dir"])
         (run_dir / "relay.json").unlink()
         self._claim_review(wp_id) if False else None
@@ -2278,7 +2567,7 @@ class TestReviewEnvelopeAndVerdict(IsolatedWorkerHome):
                 brief_path=str(brief),
                 repo=str(self.repo),
             )
-        self.assertEqual(malformed.get("code"), errors.RELAY_ATTEMPT_UNCERTAIN)
+        self.assertEqual(malformed.get("code"), errors.REVIEW_STRUCTURED_OUTPUT_MISSING)
 
         created = self.create_feature(route="two-stage", feature_id="rev-bad")
         wp_id = created["cards"][0]["task_id"]
@@ -2292,6 +2581,7 @@ class TestReviewEnvelopeAndVerdict(IsolatedWorkerHome):
         self._claim_implement(wp_id)
         brief = self._write_brief(wp_id)
         self._final_message = None
+        self._structured_output = "auto"
         self._relay_status = "completed"
         self._consume_relay(brief)
         plan_path, digest = self._write_plan("rev-bad.md")
@@ -2874,6 +3164,637 @@ class TestManifestUiAndContractGates(IsolatedWorkerHome):
         self.assertEqual(spawned.get("outcome"), "spawned")
         self._track(spawned)
         self._kill(spawned["pid"])
+
+
+class TestWp04WorkerContracts(IsolatedWorkerHome):
+    def _two_stage_execute(
+        self, feature_id: str, *, ui_acceptance: str = "required", manual: str = "[]"
+    ):
+        created = self.create_feature(route="two-stage", feature_id=feature_id)
+        wp_id = created["cards"][0]["task_id"]
+        ex_id = created["cards"][1]["task_id"]
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=wp_id,
+                body=v2_body(feature_id=feature_id, stage="write-plan"),
+            ).get("ok")
+        )
+        self._claim_implement(wp_id)
+        self._consume_relay(self._write_brief(wp_id))
+        plan_path, digest = self._write_plan(f"{feature_id}.md")
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_implement_handoff,
+                summary="plan ready",
+                plan_path=str(plan_path),
+            ).get("ok")
+        )
+        self._complete_in_review(wp_id, plan_path, digest)
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=ex_id,
+                body=v2_body(
+                    feature_id=feature_id,
+                    stage="execute-plan",
+                    ui_acceptance=ui_acceptance,
+                    manual_acceptance=manual,
+                    accepted_plan=accepted_plan_yaml(
+                        card_id=wp_id, path=str(plan_path), sha256=digest
+                    ),
+                ),
+            ).get("ok")
+        )
+        return ex_id, plan_path, digest
+
+    def _smoke_and_handoff(self, ex_id: str):
+        implement = self._claim_implement(ex_id)
+        self._consume_relay(self._write_brief(ex_id))
+        sha = self._land(ex_id)
+        acquired = self.payload(
+            operations_worker.op_ui_lease,
+            action="acquire",
+            resource_id="obsidian:acceptance",
+        )
+        self.assertTrue(acquired.get("ok"), acquired)
+        lease = acquired.get("lease") or {}
+        self._write_bound_ui_evidence(
+            ex_id,
+            sha,
+            lease={
+                "resource": "obsidian:acceptance",
+                "lease_id": lease.get("lease_id"),
+                "holder_run_id": implement.current_run_id,
+                "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
+                "released_at": "2026-09-10T00:01:00Z",
+            },
+            schema=contracts.UI_EVIDENCE_V3_SCHEMA_ID,
+            purpose="smoke",
+            producer_role="implement-worker",
+            review_round=None,
+            scenarios=smoke_scenarios(),
+        )
+        handed = self.payload(
+            operations_worker.op_implement_handoff, summary="candidate ready"
+        )
+        self.assertTrue(handed.get("ok"), handed)
+        return sha, implement
+
+    def _store_pass_review(self, ex_id: str, sha: str, digest: str, review):
+        self._store_review_evidence(
+            ex_id,
+            valid_execute_review(
+                card_id=ex_id,
+                review_run_id=review.current_run_id,
+                round=1,
+                candidate_commit=sha,
+                accepted_plan_sha256=digest,
+            ),
+            run_id=review.current_run_id,
+            skill="review-execute-candidate",
+        )
+
+    def test_execute_handoff_smoke_missing_and_wrong_scenarios(self) -> None:
+        ex_id, _plan, _digest = self._two_stage_execute("smoke-miss")
+        self._claim_implement(ex_id)
+        self._consume_relay(self._write_brief(ex_id))
+        sha = self._land(ex_id)
+        missing = self.payload(
+            operations_worker.op_implement_handoff, summary="needs smoke"
+        )
+        self.assertEqual(missing.get("code"), errors.UI_SMOKE_INCOMPLETE)
+        acquired = self.payload(
+            operations_worker.op_ui_lease,
+            action="acquire",
+            resource_id="obsidian:acceptance",
+        )
+        lease = acquired.get("lease") or {}
+        self._write_bound_ui_evidence(
+            ex_id,
+            sha,
+            lease={
+                "resource": "obsidian:acceptance",
+                "lease_id": lease.get("lease_id"),
+                "holder_run_id": int(os.environ["HERMES_KANBAN_RUN_ID"]),
+                "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
+                "released_at": "2026-09-10T00:01:00Z",
+            },
+            schema=contracts.UI_EVIDENCE_V3_SCHEMA_ID,
+            purpose="smoke",
+            producer_role="implement-worker",
+            review_round=None,
+            scenarios=[{"name": "open the note", "verdict": "PASS"}],
+        )
+        wrong = self.payload(
+            operations_worker.op_implement_handoff, summary="bad scenarios"
+        )
+        self.assertEqual(wrong.get("code"), errors.UI_SMOKE_INCOMPLETE)
+
+    def test_implement_acceptance_rejected_at_new_protocol_verdict(self) -> None:
+        ex_id, _plan, digest = self._two_stage_execute("impl-acc-reject")
+        sha, implement = self._smoke_and_handoff(ex_id)
+        self._write_bound_ui_evidence(
+            ex_id,
+            sha,
+            schema=contracts.UI_EVIDENCE_V3_SCHEMA_ID,
+            purpose="acceptance",
+            producer_role="implement-worker",
+            review_round=None,
+        )
+        review = self._claim_review(ex_id)
+        self._store_pass_review(ex_id, sha, digest, review)
+        refused = self.payload(
+            operations_worker.op_review_verdict, verdict="pass"
+        )
+        self.assertIn(
+            refused.get("code"),
+            {errors.UI_ACCEPTANCE_INCOMPLETE, errors.EVIDENCE_IDENTITY_MISMATCH},
+        )
+
+    def test_acceptance_fail_revises_with_findings_ref(self) -> None:
+        ex_id, _plan, digest = self._two_stage_execute("ui-fail-revise")
+        sha, _impl = self._smoke_and_handoff(ex_id)
+        review = self._claim_review(ex_id)
+        self._store_pass_review(ex_id, sha, digest, review)
+        acquired = self.payload(
+            operations_worker.op_ui_lease,
+            action="acquire",
+            resource_id="obsidian:review",
+        )
+        self.assertTrue(acquired.get("ok"), acquired)
+        lease = acquired.get("lease") or {}
+        recorded = self.payload(
+            operations_worker.op_ui_lease,
+            action="record_evidence",
+            resource_id="obsidian:review",
+            evidence=self._bound_v3_doc(
+                ex_id,
+                sha,
+                purpose="acceptance",
+                producer_role="review-worker",
+                review_round=1,
+                verdict="FAIL",
+                lease={
+                    "resource": "obsidian:review",
+                    "lease_id": lease.get("lease_id"),
+                    "holder_run_id": review.current_run_id,
+                    "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
+                    "released_at": "2026-09-10T00:02:00Z",
+                },
+            ),
+        )
+        self.assertTrue(recorded.get("ok"), recorded)
+        revised = self.payload(
+            operations_worker.op_review_verdict,
+            verdict="revise",
+            findings_ref="ui/acceptance-fail",
+        )
+        self.assertTrue(revised.get("ok"), revised)
+        self.assertEqual(revised.get("verdict"), "revise")
+
+    def test_needs_input_block_resumes_in_review_lane(self) -> None:
+        ex_id, _plan, digest = self._two_stage_execute("needs-input-resume")
+        sha, _impl = self._smoke_and_handoff(ex_id)
+        review = self._claim_review(ex_id)
+        blocked = self.payload(
+            operations_worker.op_review_verdict,
+            verdict="blocked",
+            block_kind="needs_input",
+            reason="manual acceptance pending",
+        )
+        self.assertTrue(blocked.get("ok"), blocked)
+        with self._as_origin():
+            conn = self.adapter.connect()
+            try:
+                self.assertTrue(self.adapter.unblock_task(conn, ex_id))
+            finally:
+                self.adapter.close(conn)
+        claimed = self._claim_review(ex_id)
+        ctx = operations_worker._prologue(self.adapter)
+        self.assertEqual(ctx.role, "review-worker")
+        self.assertEqual(ctx.source_status, "review")
+        self._store_pass_review(ex_id, sha, digest, claimed)
+
+    def test_record_evidence_lease_and_identity_gates(self) -> None:
+        created = self.create_feature(feature_id="record-ev")
+        task_id = created["cards"][0]["task_id"]
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=task_id,
+                body=v2_body(
+                    feature_id="record-ev",
+                    stage="direct",
+                    ui_acceptance="required",
+                    manual_acceptance="[]",
+                ),
+            ).get("ok")
+        )
+        claimed = self._claim_implement(task_id)
+        self._consume_relay(self._write_brief(task_id))
+        sha = self._land(task_id)
+        missing_lease = self.payload(
+            operations_worker.op_ui_lease,
+            action="record_evidence",
+            resource_id="obsidian:acceptance",
+            evidence=self._bound_v3_doc(
+                task_id,
+                sha,
+                purpose="acceptance",
+                producer_role="implement-worker",
+                review_round=None,
+            ),
+        )
+        self.assertEqual(missing_lease.get("code"), errors.UI_RESOURCE_BUSY)
+        acquired = self.payload(
+            operations_worker.op_ui_lease,
+            action="acquire",
+            resource_id="obsidian:acceptance",
+        )
+        self.assertTrue(acquired.get("ok"), acquired)
+        lease = acquired.get("lease") or {}
+        lease_block = {
+            "resource": "obsidian:acceptance",
+            "lease_id": lease.get("lease_id"),
+            "holder_run_id": claimed.current_run_id,
+            "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
+            "released_at": "2026-09-10T00:01:00Z",
+        }
+        bad_run = self.payload(
+            operations_worker.op_ui_lease,
+            action="record_evidence",
+            resource_id="obsidian:acceptance",
+            evidence=self._bound_v3_doc(
+                task_id,
+                sha,
+                purpose="acceptance",
+                producer_role="implement-worker",
+                review_round=None,
+                lease=lease_block,
+                run_id=999,
+            ),
+        )
+        self.assertEqual(bad_run.get("code"), errors.EVIDENCE_IDENTITY_MISMATCH)
+        ok = self.payload(
+            operations_worker.op_ui_lease,
+            action="record_evidence",
+            resource_id="obsidian:acceptance",
+            evidence=self._bound_v3_doc(
+                task_id,
+                sha,
+                purpose="acceptance",
+                producer_role="implement-worker",
+                review_round=None,
+                lease=lease_block,
+            ),
+        )
+        self.assertTrue(ok.get("ok"), ok)
+        (self.repo / "dirty.txt").write_text("dirty\n")
+        dirty = self.payload(
+            operations_worker.op_ui_lease,
+            action="release",
+            resource_id="obsidian:acceptance",
+        )
+        self.assertEqual(dirty.get("code"), errors.CANDIDATE_CHANGED)
+
+    def test_review_produced_acceptance_fail_forces_rework(self) -> None:
+        ex_id, _plan, digest = self._two_stage_execute("ui-fail-rework-review")
+        sha, _impl = self._smoke_and_handoff(ex_id)
+        review = self._claim_review(ex_id)
+        self._store_pass_review(ex_id, sha, digest, review)
+        acquired = self.payload(
+            operations_worker.op_ui_lease,
+            action="acquire",
+            resource_id="obsidian:review",
+        )
+        lease = acquired.get("lease") or {}
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_ui_lease,
+                action="record_evidence",
+                resource_id="obsidian:review",
+                evidence=self._bound_v3_doc(
+                    ex_id,
+                    sha,
+                    purpose="acceptance",
+                    producer_role="review-worker",
+                    review_round=1,
+                    verdict="FAIL",
+                    lease={
+                        "resource": "obsidian:review",
+                        "lease_id": lease.get("lease_id"),
+                        "holder_run_id": review.current_run_id,
+                        "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
+                        "released_at": "2026-09-10T00:02:00Z",
+                    },
+                ),
+            ).get("ok")
+        )
+        conn = self.adapter.connect()
+        try:
+            ok, _info = self.adapter.request_changes(
+                conn,
+                ex_id,
+                reason="ui fail",
+                expected_run_id=review.current_run_id,
+            )
+            self.assertTrue(ok)
+        finally:
+            self.adapter.close(conn)
+        self._claim_implement(ex_id)
+        spawned = self.payload(
+            operations_worker.op_start_or_inspect_relay,
+            brief_path=str(self._write_brief(ex_id)),
+            repo=str(self.repo),
+            wait_seconds=0,
+        )
+        self.assertEqual(spawned.get("operation"), "rework", spawned)
+        self._track(spawned)
+        self._kill(spawned["pid"])
+
+    def test_unknown_ui_protocol_marker_is_contract_invalid(self) -> None:
+        ex_id, _plan, digest = self._two_stage_execute("bad-marker")
+        implement = self._claim_implement(ex_id)
+        self._consume_relay(self._write_brief(ex_id))
+        sha = self._land(ex_id)
+        conn = self.adapter.connect()
+        try:
+            task = self.adapter.get_task(conn, ex_id)
+            stage = contracts.parse_stage_body(task.body)
+            state = self._guard(ex_id).read_state() or {}
+            operations_worker._write_manifest(
+                adapter=self.adapter,
+                board=self.board,
+                card_id=ex_id,
+                stage=stage,
+                candidate=sha,
+                baseline_head=str((state.get("baseline") or {}).get("head") or ""),
+                implement_run_id=int(implement.current_run_id),
+                attempt_number=1,
+            )
+            self.adapter.request_review(
+                conn,
+                ex_id,
+                summary="bad marker",
+                metadata={"ui_protocol": "not-a-protocol", "candidate": {"commit": sha}},
+                expected_run_id=implement.current_run_id,
+            )
+        finally:
+            self.adapter.close(conn)
+        review = self._claim_review(ex_id)
+        self._store_pass_review(ex_id, sha, digest, review)
+        refused = self.payload(
+            operations_worker.op_review_verdict, verdict="pass"
+        )
+        self.assertEqual(refused.get("code"), errors.CARD_CONTRACT_INVALID)
+
+    def _add_upstream(self) -> tuple[Path, str]:
+        bare = self.root / "pub-remote.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-q", str(bare)],
+            check=True,
+            capture_output=True,
+        )
+        branch = self.git("rev-parse", "--abbrev-ref", "HEAD").strip()
+        self.git("remote", "add", "origin", str(bare))
+        self.git("push", "-u", "origin", branch)
+        return bare, branch
+
+    def test_publication_exact_sha_and_gates(self) -> None:
+        ex_id, _plan, digest = self._two_stage_execute("pub-sha")
+        sha, _impl = self._smoke_and_handoff(ex_id)
+        review = self._claim_review(ex_id)
+        self._store_pass_review(ex_id, sha, digest, review)
+        before = self.payload(
+            operations_worker.op_publish_candidate,
+            expected_candidate_commit=sha,
+            authority_ref="card:authority-boundaries",
+        )
+        self.assertEqual(before.get("code"), errors.UI_ACCEPTANCE_INCOMPLETE)
+        acquired = self.payload(
+            operations_worker.op_ui_lease,
+            action="acquire",
+            resource_id="obsidian:review",
+        )
+        lease = acquired.get("lease") or {}
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_ui_lease,
+                action="record_evidence",
+                resource_id="obsidian:review",
+                evidence=self._bound_v3_doc(
+                    ex_id,
+                    sha,
+                    purpose="acceptance",
+                    producer_role="review-worker",
+                    review_round=1,
+                    lease={
+                        "resource": "obsidian:review",
+                        "lease_id": lease.get("lease_id"),
+                        "holder_run_id": review.current_run_id,
+                        "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
+                        "released_at": "2026-09-10T00:02:00Z",
+                    },
+                ),
+            ).get("ok")
+        )
+        self._add_upstream()
+        published = self.payload(
+            operations_worker.op_publish_candidate,
+            expected_candidate_commit=sha,
+            authority_ref="card:authority-boundaries",
+        )
+        self.assertTrue(published.get("ok"), published)
+        dest = (
+            evidence.task_dir(self.adapter.artifacts_root, self.board, ex_id)
+            / "candidates"
+            / sha
+            / "publication.json"
+        )
+        self.assertTrue(dest.is_file())
+        with patch.object(
+            operations_worker, "_ls_remote_sha", return_value="0" * 40
+        ):
+            mismatch = self.payload(
+                operations_worker.op_publish_candidate,
+                expected_candidate_commit=sha,
+                authority_ref="card:authority-boundaries",
+            )
+        self.assertEqual(mismatch.get("code"), errors.PUBLICATION_VERIFICATION_FAILED)
+
+    def test_verdict_pass_requires_publication_when_upstream_configured(self) -> None:
+        ex_id, _plan, digest = self._two_stage_execute("pub-required")
+        sha, _impl = self._smoke_and_handoff(ex_id)
+        review = self._claim_review(ex_id)
+        self._store_pass_review(ex_id, sha, digest, review)
+        acquired = self.payload(
+            operations_worker.op_ui_lease,
+            action="acquire",
+            resource_id="obsidian:review",
+        )
+        lease = acquired.get("lease") or {}
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_ui_lease,
+                action="record_evidence",
+                resource_id="obsidian:review",
+                evidence=self._bound_v3_doc(
+                    ex_id,
+                    sha,
+                    purpose="acceptance",
+                    producer_role="review-worker",
+                    review_round=1,
+                    lease={
+                        "resource": "obsidian:review",
+                        "lease_id": lease.get("lease_id"),
+                        "holder_run_id": review.current_run_id,
+                        "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
+                        "released_at": "2026-09-10T00:02:00Z",
+                    },
+                ),
+            ).get("ok")
+        )
+        self._add_upstream()
+        missing = self.payload(
+            operations_worker.op_review_verdict, verdict="pass"
+        )
+        self.assertEqual(missing.get("code"), errors.PUBLICATION_REQUIRED)
+
+    def test_publication_refused_without_manual_verdict(self) -> None:
+        ex_id, _plan, digest = self._two_stage_execute(
+            "pub-manual", manual='["human-walkthrough"]'
+        )
+        sha, _impl = self._smoke_and_handoff(ex_id)
+        review = self._claim_review(ex_id)
+        self._store_pass_review(ex_id, sha, digest, review)
+        acquired = self.payload(
+            operations_worker.op_ui_lease,
+            action="acquire",
+            resource_id="obsidian:review",
+        )
+        lease = acquired.get("lease") or {}
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_ui_lease,
+                action="record_evidence",
+                resource_id="obsidian:review",
+                evidence=self._bound_v3_doc(
+                    ex_id,
+                    sha,
+                    purpose="acceptance",
+                    producer_role="review-worker",
+                    review_round=1,
+                    lease={
+                        "resource": "obsidian:review",
+                        "lease_id": lease.get("lease_id"),
+                        "holder_run_id": review.current_run_id,
+                        "acquired_at": lease.get("acquired_at") or "2026-09-10T00:00:00Z",
+                        "released_at": "2026-09-10T00:02:00Z",
+                    },
+                ),
+            ).get("ok")
+        )
+        self._add_upstream()
+        refused = self.payload(
+            operations_worker.op_publish_candidate,
+            expected_candidate_commit=sha,
+            authority_ref="card:authority-boundaries",
+        )
+        self.assertEqual(refused.get("code"), errors.MANUAL_ACCEPTANCE_PENDING)
+
+    def test_structured_output_missing_recovery_and_forged_final_message(self) -> None:
+        created = self.create_feature(route="two-stage", feature_id="c18-c19")
+        wp_id = created["cards"][0]["task_id"]
+        self.assertTrue(
+            self.payload(
+                operations_origin.op_finalize_stage,
+                task_id=wp_id,
+                body=v2_body(feature_id="c18-c19", stage="write-plan"),
+            ).get("ok")
+        )
+        self._claim_implement(wp_id)
+        brief = self._write_brief(wp_id)
+        self._consume_relay(brief)
+        plan_path, digest = self._write_plan("c18-c19.md")
+        self.assertTrue(
+            self.payload(
+                operations_worker.op_implement_handoff,
+                summary="plan ready",
+                plan_path=str(plan_path),
+            ).get("ok")
+        )
+        self._claim_review(wp_id)
+        self._structured_output = None
+        self._final_message = yaml.safe_dump(
+            {
+                "verdict": "pass",
+                "summary": "forged",
+                "plan": {"path": str(plan_path), "sha256": digest},
+                "required_revisions": [],
+            },
+            sort_keys=False,
+        )
+        spawned = self.payload(
+            operations_worker.op_start_or_inspect_relay,
+            brief_path=str(brief),
+            repo=str(self.repo),
+            wait_seconds=0,
+        )
+        self.assertEqual(spawned.get("outcome"), "spawned", spawned)
+        self._track(spawned)
+        self.assertTrue(self.wait_until(lambda: Path(spawned["result_path"]).is_file()))
+        self._kill(spawned["pid"])
+        self.assertTrue(self.wait_until(lambda: not self.pid_alive(spawned["pid"])))
+        missing = self.payload(
+            operations_worker.op_start_or_inspect_relay,
+            brief_path=str(brief),
+            repo=str(self.repo),
+        )
+        self.assertEqual(missing.get("code"), errors.REVIEW_STRUCTURED_OUTPUT_MISSING)
+        self.assertIn("output_recovery=true", missing.get("remediation") or "")
+        argv = self._relay_argvs[-1]
+        self.assertIn("--review-output", argv)
+        self.assertEqual(argv[argv.index("--review-output") + 1], "plan")
+
+        self._structured_output = "auto"
+        self._final_message = None
+        self._review_report = {"plan": {"path": str(plan_path), "sha256": digest}}
+        recovered = self.payload(
+            operations_worker.op_start_or_inspect_relay,
+            brief_path=str(brief),
+            repo=str(self.repo),
+            wait_seconds=0,
+            output_recovery=True,
+        )
+        self.assertEqual(recovered.get("outcome"), "spawned", recovered)
+        self._track(recovered)
+        rec_argv = self._relay_argvs[-1]
+        self.assertIn("--review-output-recovery", rec_argv)
+        self.assertIn("--session", rec_argv)
+        record = json.loads(
+            (Path(recovered["out_dir"]) / "relay.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(record.get("output_recovery_used"))
+        self.assertTrue(self.wait_until(lambda: Path(recovered["result_path"]).is_file()))
+        self._kill(recovered["pid"])
+        self.assertTrue(self.wait_until(lambda: not self.pid_alive(recovered["pid"])))
+        consumed = self.payload(
+            operations_worker.op_start_or_inspect_relay,
+            brief_path=str(brief),
+            repo=str(self.repo),
+        )
+        self.assertEqual(consumed.get("outcome"), "terminal", consumed)
+        self.assertTrue(Path(consumed["review_evidence_path"]).is_file())
+
+        second = self.payload(
+            operations_worker.op_start_or_inspect_relay,
+            brief_path=str(brief),
+            repo=str(self.repo),
+            output_recovery=True,
+        )
+        self.assertEqual(second.get("code"), errors.REVIEW_STRUCTURED_OUTPUT_MISSING)
+        self.assertIn("capability", second.get("remediation") or "")
 
 
 if __name__ == "__main__":

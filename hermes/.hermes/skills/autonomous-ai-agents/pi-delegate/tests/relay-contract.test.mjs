@@ -51,6 +51,58 @@ test('relay never commits', () => {
   assert.ok(!/\bgit\s+(commit|push)/.test(source), 'relay must not run git commit/push');
 });
 
+test('review-output flags and structuredOutput fields are additive on result v1', () => {
+  assert.match(source, /--review-output/);
+  assert.match(source, /--review-output-recovery/);
+  assert.match(source, /structuredOutput/);
+  assert.match(source, /structuredOutputError/);
+  assert.match(source, /submit_plan_review/);
+  assert.match(source, /submit_execute_review/);
+  assert.match(source, /delegate-relay\.result\.v1/);
+  assert.match(source, /if \(reviewSubmit\) argv\.push\("-e", reviewSubmit\)/);
+  assert.match(source, /if \(opts\.reviewOutputRecovery && !opts\.session\)/);
+  assert.match(source, /if \(opts\.reviewOutput !== null && opts\.write\)/);
+});
+
+test('review-submit schema field lists match harness contracts.py key sets', async () => {
+  const keysMod = await import(new URL('../extensions/review-submit/keys.mjs', import.meta.url));
+  // Explicit expected literals: equal to contracts.py PLAN_REVIEW_KEYS / EXECUTE_REVIEW_KEYS.
+  const expectedPlan = [
+    'schema',
+    'board',
+    'card_id',
+    'feature_id',
+    'review_run_id',
+    'round',
+    'plan',
+    'verdict',
+    'summary',
+    'required_revisions',
+  ];
+  const expectedExecute = [
+    'schema',
+    'card_id',
+    'review_run_id',
+    'round',
+    'candidate_commit',
+    'accepted_plan_sha256',
+    'patch_gate',
+    'plan_conformance_gate',
+    'overall',
+  ];
+  assert.deepEqual([...keysMod.PLAN_REVIEW_FIELD_KEYS], expectedPlan);
+  assert.deepEqual([...keysMod.EXECUTE_REVIEW_FIELD_KEYS], expectedExecute);
+  assert.equal(keysMod.SUBMIT_PLAN_REVIEW, 'submit_plan_review');
+  assert.equal(keysMod.SUBMIT_EXECUTE_REVIEW, 'submit_execute_review');
+  assert.ok(!expectedExecute.includes('ui_evidence'));
+  const extSource = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'extensions', 'review-submit', 'index.ts'),
+    'utf8',
+  );
+  assert.doesNotMatch(extSource, /ui_evidence/);
+  assert.match(extSource, /terminate:\s*true/);
+});
+
 test('prompt rides the child stdin, not argv text', () => {
   assert.ok(!source.includes('prompt-attachment.tmp'), 'no temp prompt attachment');
   assert.ok(!/@\$\{promptFile\}/.test(source), 'no @file attachment syntax');

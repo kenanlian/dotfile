@@ -25,7 +25,10 @@ from .errors import (
 )
 from .evidence import load_json, write_json_atomic
 
-LEASE_SCHEMA = "development-ui-lease.v1"
+LEASE_SCHEMA = "development-ui-lease.v2"
+LEASE_SCHEMA_V1 = "development-ui-lease.v1"
+_LEASE_SCHEMAS = (LEASE_SCHEMA_V1, LEASE_SCHEMA)
+_IMPLICIT_V1_HOLDER_ROLE = "implement-worker"
 _RESOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 _RELEASED_FILENAME = "released.jsonl"
 
@@ -44,8 +47,8 @@ class UiLeaseManager:
     def inspect(self, resource_id: str) -> dict | None:
         path = self.lease_path(resource_id)
         with _lease_lock(path):
-            lease = load_json(path)
-            if not isinstance(lease, dict):
+            lease = _coerce_lease(load_json(path))
+            if lease is None:
                 return None
             return {
                 "lease": lease,
@@ -60,6 +63,8 @@ class UiLeaseManager:
         card_id,
         run_id,
         candidate_commit,
+        purpose,
+        holder_role,
         holder_run_is_current=None,
     ) -> dict:
         resource = _normalize_resource_id(resource_id)
@@ -98,6 +103,8 @@ class UiLeaseManager:
                 card_id=card_id,
                 run_id=run_id,
                 candidate_commit=candidate_commit,
+                purpose=purpose,
+                holder_role=holder_role,
             )
             write_json_atomic(path, lease)
             return lease
@@ -133,8 +140,12 @@ class UiLeaseManager:
                 "resource": resource,
                 "lease_id": holder.get("lease_id"),
                 "holder_run_id": run_id,
+                "holder_role": holder.get("holder_role")
+                if "holder_role" in holder
+                else _IMPLICIT_V1_HOLDER_ROLE,
                 "card_id": holder.get("card_id"),
                 "candidate_commit": file_commit,
+                "purpose": holder.get("purpose") if "purpose" in holder else None,
                 "acquired_at": holder.get("acquired_at"),
                 "released_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -177,7 +188,7 @@ def load_release_history(hermes_home) -> list[dict]:
         except json.JSONDecodeError:
             continue
         if isinstance(data, dict):
-            records.append(data)
+            records.append(_annotate_legacy_lease_fields(data))
     return records
 
 
@@ -187,8 +198,8 @@ def active_leases(hermes_home) -> list[dict]:
         return []
     found: list[dict] = []
     for path in sorted(root.glob("*.json")):
-        data = load_json(path)
-        if isinstance(data, dict) and data.get("schema") == LEASE_SCHEMA:
+        data = _coerce_lease(load_json(path))
+        if data is not None:
             found.append(data)
     return found
 
@@ -238,6 +249,8 @@ def _new_lease(
     card_id,
     run_id,
     candidate_commit,
+    purpose,
+    holder_role,
 ) -> dict[str, Any]:
     pid = os.getpid()
     return {
@@ -250,8 +263,27 @@ def _new_lease(
         "pid": pid,
         "process_start": _ps_lstart(pid),
         "candidate_commit": candidate_commit,
+        "purpose": purpose,
+        "holder_role": holder_role,
         "acquired_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _annotate_legacy_lease_fields(data: dict) -> dict:
+    item = dict(data)
+    if "purpose" not in item:
+        item["purpose"] = None
+    if "holder_role" not in item:
+        item["holder_role"] = _IMPLICIT_V1_HOLDER_ROLE
+    return item
+
+
+def _coerce_lease(data) -> dict | None:
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema") not in _LEASE_SCHEMAS:
+        return None
+    return _annotate_legacy_lease_fields(data)
 
 
 def _pid_alive(pid: Any) -> bool:

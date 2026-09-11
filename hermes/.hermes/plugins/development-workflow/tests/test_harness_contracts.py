@@ -199,6 +199,17 @@ def valid_ui_evidence(**overrides):
     return data
 
 
+def valid_ui_evidence_v3(**overrides):
+    data = valid_ui_evidence(
+        schema=contracts.UI_EVIDENCE_V3_SCHEMA_ID,
+        purpose="smoke",
+        producer_role="implement-worker",
+        review_round=None,
+    )
+    data.update(overrides)
+    return data
+
+
 def valid_plan_review(**overrides):
     data = {
         "schema": contracts.PLAN_REVIEW_SCHEMA_ID,
@@ -601,6 +612,77 @@ class TestExecuteReviewAndUiEvidence(unittest.TestCase):
             any("verdict" in item for item in contracts.validate_ui_evidence(bad_scenario))
         )
 
+    def test_ui_evidence_v3_constants_and_valid_cases(self) -> None:
+        self.assertEqual(
+            contracts.UI_EVIDENCE_V3_SCHEMA_ID, "development-ui-evidence.v3"
+        )
+        self.assertEqual(
+            set(contracts.UI_EVIDENCE_V3_KEYS),
+            set(contracts.UI_EVIDENCE_KEYS)
+            | {"purpose", "producer_role", "review_round"},
+        )
+        self.assertEqual(contracts.UI_PURPOSES, ("smoke", "acceptance"))
+        self.assertEqual(
+            contracts.UI_PRODUCER_ROLES, ("implement-worker", "review-worker")
+        )
+        self.assertEqual(
+            contracts.UI_PROTOCOL_REVIEW_ACCEPTANCE, "review-acceptance.v1"
+        )
+        self.assertEqual(contracts.UI_EVIDENCE_SCHEMA_ID, "development-ui-evidence.v2")
+        self.assertEqual(contracts.validate_ui_evidence(valid_ui_evidence_v3()), [])
+        implement_acceptance = valid_ui_evidence_v3(
+            purpose="acceptance",
+            producer_role="implement-worker",
+            review_round=None,
+        )
+        self.assertEqual(contracts.validate_ui_evidence(implement_acceptance), [])
+        review_acceptance = valid_ui_evidence_v3(
+            purpose="acceptance",
+            producer_role="review-worker",
+            review_round=1,
+        )
+        self.assertEqual(contracts.validate_ui_evidence(review_acceptance), [])
+
+    def test_ui_evidence_v3_rejects_round_and_purpose_violations(self) -> None:
+        review_without_round = valid_ui_evidence_v3(
+            purpose="acceptance",
+            producer_role="review-worker",
+            review_round=None,
+        )
+        review_without = contracts.validate_ui_evidence(review_without_round)
+        self.assertTrue(any("review_round" in item for item in review_without))
+        smoke_with_round = valid_ui_evidence_v3(review_round=1)
+        smoke_round = contracts.validate_ui_evidence(smoke_with_round)
+        self.assertTrue(any("review_round" in item for item in smoke_round))
+        unknown_purpose = valid_ui_evidence_v3(purpose="formal")
+        purpose_violations = contracts.validate_ui_evidence(unknown_purpose)
+        self.assertTrue(any("purpose" in item for item in purpose_violations))
+        v4 = valid_ui_evidence_v3(schema="development-ui-evidence.v4")
+        v4_violations = contracts.validate_ui_evidence(v4)
+        self.assertTrue(v4_violations)
+        self.assertTrue(any("schema" in item for item in v4_violations))
+        v2_with_v3_keys = valid_ui_evidence(
+            purpose="acceptance",
+            producer_role="implement-worker",
+            review_round=None,
+        )
+        extra_keys = contracts.validate_ui_evidence(v2_with_v3_keys)
+        joined = " ".join(extra_keys)
+        self.assertIn("purpose", joined)
+        self.assertTrue(any("unknown" in item for item in extra_keys))
+
+    def test_new_error_codes_exported(self) -> None:
+        self.assertEqual(errors.UI_SMOKE_INCOMPLETE, "UI_SMOKE_INCOMPLETE")
+        self.assertEqual(
+            errors.PUBLICATION_VERIFICATION_FAILED,
+            "PUBLICATION_VERIFICATION_FAILED",
+        )
+        self.assertEqual(errors.PUBLICATION_REQUIRED, "PUBLICATION_REQUIRED")
+        self.assertEqual(
+            errors.REVIEW_STRUCTURED_OUTPUT_MISSING,
+            "REVIEW_STRUCTURED_OUTPUT_MISSING",
+        )
+
 
 class TestPolicyRegistry(unittest.TestCase):
     def test_table_matches_stage_rows(self) -> None:
@@ -608,7 +690,8 @@ class TestPolicyRegistry(unittest.TestCase):
         self.assertEqual(direct.implement_skill, "delegate-work")
         self.assertIsNone(direct.review_skill)
         self.assertFalse(direct.review_lane)
-        self.assertEqual(direct.ui_execution, "implement")
+        self.assertEqual(direct.ui_smoke_owner, "none")
+        self.assertEqual(direct.ui_acceptance_owner, "implement")
         self.assertFalse(direct.auto_handoff)
         self.assertEqual(direct.completion_owner, "implement")
         self.assertEqual(direct.max_review_rounds, 3)
@@ -617,7 +700,8 @@ class TestPolicyRegistry(unittest.TestCase):
         self.assertEqual(write.implement_skill, "write-plan")
         self.assertEqual(write.review_skill, "review-plan")
         self.assertTrue(write.review_lane)
-        self.assertEqual(write.ui_execution, "none")
+        self.assertEqual(write.ui_smoke_owner, "none")
+        self.assertEqual(write.ui_acceptance_owner, "none")
         self.assertFalse(write.auto_handoff)
         self.assertEqual(write.completion_owner, "review")
 
@@ -625,7 +709,8 @@ class TestPolicyRegistry(unittest.TestCase):
         self.assertEqual(execute.implement_skill, "execute-plan")
         self.assertEqual(execute.review_skill, "review-execute-candidate")
         self.assertTrue(execute.review_lane)
-        self.assertEqual(execute.ui_execution, "implement")
+        self.assertEqual(execute.ui_smoke_owner, "implement")
+        self.assertEqual(execute.ui_acceptance_owner, "review")
         self.assertTrue(execute.auto_handoff)
         self.assertEqual(execute.completion_owner, "review")
         self.assertEqual(policy.MAX_REVIEW_ROUNDS, 3)

@@ -23,6 +23,7 @@ from .hermes_adapter import HermesAdapter
 from .operations_worker import (
     BLOCK_KINDS,
     op_implement_handoff,
+    op_publish_candidate,
     op_review_verdict,
     op_start_or_inspect_relay,
     op_ui_lease,
@@ -126,6 +127,16 @@ DEVFLOW_START_OR_INSPECT_RELAY_SCHEMA = {
                     "diagnostic inspection."
                 ),
             },
+            "output_recovery": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Review lane only. Resume the exact same Pi session in "
+                    "--review-output-recovery mode after "
+                    "REVIEW_STRUCTURED_OUTPUT_MISSING. At most one recovery "
+                    "turn per review run."
+                ),
+            },
         },
         "required": [],
     },
@@ -134,21 +145,31 @@ DEVFLOW_START_OR_INSPECT_RELAY_SCHEMA = {
 DEVFLOW_UI_LEASE_SCHEMA = {
     "name": "devflow_ui_lease",
     "description": (
-        "Implement-worker-only. Acquire, release, or inspect a named UI "
-        "acceptance resource (for example obsidian:<vault>). Acquire requires "
-        "ui_acceptance=required and a frozen candidate landing."
+        "Implement or review worker. Acquire, release, inspect, or record "
+        "UI evidence on a named resource (for example obsidian:<vault>). "
+        "Acquire is purpose-aware: implement smoke (execute-plan) or "
+        "acceptance (direct); review acceptance after dual-gate PASS on "
+        "the review-acceptance.v1 protocol. record_evidence is the only "
+        "write path for v3 UI evidence."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["acquire", "release", "inspect"],
+                "enum": ["acquire", "release", "inspect", "record_evidence"],
                 "description": "Lease action.",
             },
             "resource_id": {
                 "type": "string",
                 "description": "Named resource id, for example obsidian:acceptance.",
+            },
+            "evidence": {
+                "type": "object",
+                "description": (
+                    "Required for record_evidence: a development-ui-evidence.v3 "
+                    "document. The live lease purpose must match evidence.purpose."
+                ),
             },
         },
         "required": ["action", "resource_id"],
@@ -216,6 +237,44 @@ DEVFLOW_REVIEW_VERDICT_SCHEMA = {
     },
 }
 
+DEVFLOW_PUBLISH_CANDIDATE_SCHEMA = {
+    "name": "devflow_publish_candidate",
+    "description": (
+        "Exact-SHA publication of the frozen candidate. Review-worker for "
+        "execute-plan (review-acceptance.v1 only); implement-worker for "
+        "direct. Pushes <expected_candidate_commit>:<branch> and verifies "
+        "the remote ref before writing candidates/<sha>/publication.json."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "expected_candidate_commit": {
+                "type": "string",
+                "description": (
+                    "Required 40-hex SHA that must equal the frozen "
+                    "candidate manifest commit."
+                ),
+            },
+            "authority_ref": {
+                "type": "string",
+                "description": (
+                    "Required non-empty authorization source, recorded "
+                    "for audit (for example a Card authority-boundaries "
+                    "line or decision-comment reference)."
+                ),
+            },
+            "remote": {
+                "type": "string",
+                "description": (
+                    "Optional remote name or URL. Defaults to the "
+                    "current branch upstream remote."
+                ),
+            },
+        },
+        "required": ["expected_candidate_commit", "authority_ref"],
+    },
+}
+
 
 def handle_start_or_inspect_relay(args: dict, **_kw: Any) -> str:
     args = args or {}
@@ -225,15 +284,18 @@ def handle_start_or_inspect_relay(args: dict, **_kw: Any) -> str:
         brief_content=args.get("brief_content"),
         repo=_opt_str(args.get("repo")),
         wait_seconds=args.get("wait_seconds"),
+        output_recovery=args.get("output_recovery") is True,
     )
 
 
 def handle_ui_lease(args: dict, **_kw: Any) -> str:
     args = args or {}
+    evidence = args.get("evidence")
     return _dispatch(
         op_ui_lease,
         action=str(args.get("action") or "").strip(),
         resource_id=str(args.get("resource_id") or "").strip(),
+        evidence=evidence if isinstance(evidence, dict) else evidence,
     )
 
 
@@ -275,6 +337,18 @@ def handle_review_verdict(args: dict, **_kw: Any) -> str:
     )
 
 
+def handle_publish_candidate(args: dict, **_kw: Any) -> str:
+    args = args or {}
+    return _dispatch(
+        op_publish_candidate,
+        expected_candidate_commit=str(
+            args.get("expected_candidate_commit") or ""
+        ).strip(),
+        authority_ref=str(args.get("authority_ref") or "").strip(),
+        remote=_opt_str(args.get("remote")),
+    )
+
+
 TOOLS: list[dict] = [
     {
         "name": "devflow_start_or_inspect_relay",
@@ -306,6 +380,14 @@ TOOLS: list[dict] = [
         "handler": handle_review_verdict,
         "check_fn": check_worker_tools_available,
         "emoji": "⚖️",
+        "toolset": "kanban",
+    },
+    {
+        "name": "devflow_publish_candidate",
+        "schema": DEVFLOW_PUBLISH_CANDIDATE_SCHEMA,
+        "handler": handle_publish_candidate,
+        "check_fn": check_worker_tools_available,
+        "emoji": "🚀",
         "toolset": "kanban",
     },
 ]

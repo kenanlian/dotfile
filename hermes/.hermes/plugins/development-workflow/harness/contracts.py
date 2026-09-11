@@ -141,6 +141,15 @@ UI_EVIDENCE_KEYS = (
     "cleanup",
     "created_at",
 )
+UI_EVIDENCE_V3_SCHEMA_ID = "development-ui-evidence.v3"
+UI_EVIDENCE_V3_KEYS = UI_EVIDENCE_KEYS + (
+    "purpose",
+    "producer_role",
+    "review_round",
+)
+UI_PURPOSES = ("smoke", "acceptance")
+UI_PRODUCER_ROLES = ("implement-worker", "review-worker")
+UI_PROTOCOL_REVIEW_ACCEPTANCE = "review-acceptance.v1"
 UI_EVIDENCE_STAGES = ("direct", "execute-plan")
 UI_VERDICTS = ("PASS", "FAIL", "BLOCKED")
 _UI_LEASE_KEYS = (
@@ -859,16 +868,9 @@ def validate_plan_review(data: Any) -> list[str]:
     return violations
 
 
-def validate_ui_evidence(data: Any) -> list[str]:
-    """Validate a ``development-ui-evidence.v2`` mapping (design §17.3)."""
-    if not isinstance(data, dict):
-        return [f"ui evidence must be a mapping (got {type(data).__name__})"]
-    violations = _exact_keys(data, UI_EVIDENCE_KEYS, label="ui-evidence")
-    schema = data.get("schema")
-    if "schema" in data and schema != UI_EVIDENCE_SCHEMA_ID:
-        violations.append(
-            f"schema must be {UI_EVIDENCE_SCHEMA_ID!r} (got {schema!r})"
-        )
+def _validate_ui_evidence_fields(data: dict[str, Any]) -> list[str]:
+    """Shared v2/v3 UI evidence field rules (identity, lease, scenarios)."""
+    violations: list[str] = []
     for field in ("board", "card_id", "feature_id", "created_at"):
         value = data.get(field)
         if field in data and (not isinstance(value, str) or not value.strip()):
@@ -993,4 +995,58 @@ def validate_ui_evidence(data: Any) -> list[str]:
             violations.append(
                 f"{field} must be a non-empty string (got {value!r})"
             )
+    return violations
+
+
+def _validate_ui_evidence_v3_fields(data: dict[str, Any]) -> list[str]:
+    """v3-only purpose / producer_role / review_round rules (C4)."""
+    violations: list[str] = []
+    purpose = data.get("purpose")
+    if "purpose" in data and purpose not in UI_PURPOSES:
+        violations.append(
+            f"purpose must be one of {list(UI_PURPOSES)} (got {purpose!r})"
+        )
+    producer_role = data.get("producer_role")
+    if "producer_role" in data and producer_role not in UI_PRODUCER_ROLES:
+        violations.append(
+            f"producer_role must be one of {list(UI_PRODUCER_ROLES)} "
+            f"(got {producer_role!r})"
+        )
+    review_round = data.get("review_round")
+    if "review_round" in data:
+        if producer_role == "review-worker":
+            if not (_is_int(review_round) and review_round >= 1):
+                violations.append(
+                    "review_round must be an int >= 1 when producer_role is "
+                    f"'review-worker' (got {review_round!r})"
+                )
+        elif review_round is not None:
+            violations.append(
+                "review_round must be null when producer_role is not "
+                f"'review-worker' (got {review_round!r})"
+            )
+    return violations
+
+
+def validate_ui_evidence(data: Any) -> list[str]:
+    """Validate ``development-ui-evidence.v2`` or ``.v3`` (design §17.3).
+
+    Dispatches on ``schema``: v2 uses the legacy exact-key rules; v3 uses the
+    v2 field rules plus ``purpose`` / ``producer_role`` / ``review_round``.
+    Any other schema version is rejected (loaders skip unknown versions).
+    """
+    if not isinstance(data, dict):
+        return [f"ui evidence must be a mapping (got {type(data).__name__})"]
+    schema = data.get("schema")
+    if schema == UI_EVIDENCE_V3_SCHEMA_ID:
+        violations = _exact_keys(data, UI_EVIDENCE_V3_KEYS, label="ui-evidence")
+        violations.extend(_validate_ui_evidence_fields(data))
+        violations.extend(_validate_ui_evidence_v3_fields(data))
+        return violations
+    violations = _exact_keys(data, UI_EVIDENCE_KEYS, label="ui-evidence")
+    if "schema" in data and schema != UI_EVIDENCE_SCHEMA_ID:
+        violations.append(
+            f"schema must be {UI_EVIDENCE_SCHEMA_ID!r} (got {schema!r})"
+        )
+    violations.extend(_validate_ui_evidence_fields(data))
     return violations

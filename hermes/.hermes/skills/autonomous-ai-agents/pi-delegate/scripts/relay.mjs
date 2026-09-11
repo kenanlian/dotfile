@@ -16,7 +16,9 @@
  * explicit `-e` pointing at the delegate-agent extension root, so `delegate_agent`
  * exists and nothing implicit loads. Under `--auto-handoff-plan`, one additional
  * `-e` loads the auto-handoff extension and two scoped env vars configure it;
- * delegated children are unaffected. Global Skills discovery is NOT disabled:
+ * delegated children are unaffected. Under `--review-output plan|execute`, one
+ * additional `-e` loads the review-submit extension and the stage submit tool is
+ * added to the read-only allowlist. Global Skills discovery is NOT disabled:
  * Skills come from the single global root via the user's own Pi configuration;
  * the relay never copies or mirrors Skills.
  *
@@ -52,13 +54,21 @@
  *   --timeout <dur>      Optional relay-side watchdog (default: off; h/m/s strings).
  *   --out-dir <dir>      Where to write run artifacts (default: fresh temp dir).
  *   --auto-handoff-plan <file>  Enable top-level Auto Handoff scoped to this run.
+ *   --review-output plan|execute  Review relays only (never with --write): load
+ *                        the review-submit extension, enable the stage submit
+ *                        tool, and capture exactly one successful expected-tool
+ *                        result into structuredOutput.
+ *   --review-output-recovery  Single C19 recovery turn: requires --session and
+ *                        --review-output; child allowlist is only the stage
+ *                        submit tool plus an output-only instruction.
  *   -h, --help           Show this help.
  *
  * Result: written to <out-dir>/result.json —
  *   schema delegate-relay.result.v1, tool "pi", status, exitCode, signal,
  *   piVersion, sessionId, cwd, mode, requestedModel, resolvedModel, thinking,
- *   resumed, startedAt, finishedAt, finalMessage, touchedFiles (git porcelain
- *   under --cd), usage, autoHandoff, briefPath/finalPath/eventsPath/stderrPath, and
+ *   resumed, startedAt, finishedAt, finalMessage, structuredOutput,
+ *   structuredOutputError, touchedFiles (git porcelain under --cd), usage,
+ *   autoHandoff, briefPath/finalPath/eventsPath/stderrPath, and
  *   error/stderrTail on failure.
  *
  * Completion requires: process exit + exit code 0 + Pi agent_settled observed
@@ -89,6 +99,19 @@ const SAFE_SESSION = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "delegate_agent"];
 const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write", "delegate_agent"];
+const REVIEW_SUBMIT_TOOLS = Object.freeze({
+  plan: "submit_plan_review",
+  execute: "submit_execute_review",
+});
+const REVIEW_OUTPUT_STAGES = new Set(Object.keys(REVIEW_SUBMIT_TOOLS));
+
+function outputOnlyInstruction(tool) {
+  return (
+    `Output-only recovery turn: call only ${tool} with the completed typed `
+    + "review payload. Do not read, search, edit, write, or delegate. "
+    + `After ${tool} returns, stop.`
+  );
+}
 
 /** The delegate-agent extension root: `-e` takes a directory, not a module file. */
 function delegateAgentRoot() {
@@ -122,6 +145,29 @@ function autoHandoffRoot() {
   return null;
 }
 
+/** The review-submit extension root: `-e` takes a directory, not a module file. */
+function reviewSubmitRoot() {
+  const self = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(self, "..", "extensions", "review-submit"),
+    process.env.PI_REVIEW_SUBMIT_ROOT || "",
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, "index.ts")) || existsSync(join(candidate, "index.js"))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function childTools(opts) {
+  const submit = opts.reviewOutput ? REVIEW_SUBMIT_TOOLS[opts.reviewOutput] : null;
+  if (opts.reviewOutputRecovery) return [submit];
+  if (opts.write) return WRITE_TOOLS;
+  if (submit) return [...READ_ONLY_TOOLS, submit];
+  return READ_ONLY_TOOLS;
+}
+
 function fail(message, code = 2) {
   process.stderr.write(`relay: ${message}\n`);
   process.exit(code);
@@ -149,6 +195,8 @@ function parseArgs(argv) {
     timeout: null,
     outDir: null,
     autoHandoffPlan: null,
+    reviewOutput: null,
+    reviewOutputRecovery: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -174,6 +222,8 @@ function parseArgs(argv) {
       case "--timeout": opts.timeout = next(); break;
       case "--out-dir": opts.outDir = resolve(next()); break;
       case "--auto-handoff-plan": opts.autoHandoffPlan = next(); break;
+      case "--review-output": opts.reviewOutput = next(); break;
+      case "--review-output-recovery": opts.reviewOutputRecovery = true; break;
       default:
         fail(`unknown option: ${arg}`);
     }
@@ -215,6 +265,18 @@ function parseArgs(argv) {
     if (!(st.size > 0)) {
       fail(`--auto-handoff-plan is empty: ${plan}`);
     }
+  }
+  if (opts.reviewOutput !== null && !REVIEW_OUTPUT_STAGES.has(opts.reviewOutput)) {
+    fail(`--review-output "${opts.reviewOutput}" is invalid; expected plan or execute`);
+  }
+  if (opts.reviewOutputRecovery && opts.reviewOutput === null) {
+    fail(`--review-output-recovery requires --review-output plan|execute`);
+  }
+  if (opts.reviewOutputRecovery && !opts.session) {
+    fail(`--review-output-recovery requires --session`);
+  }
+  if (opts.reviewOutput !== null && opts.write) {
+    fail(`--review-output is not valid with --write`);
   }
   return opts;
 }
@@ -286,13 +348,14 @@ function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
-function buildArgv(opts, extensionRoot, autoHandoff) {
+function buildArgv(opts, extensionRoot, autoHandoff, reviewSubmit) {
   // Deterministic extension loading: -ne disables implicit discovery; the
   // explicit -e still loads under it. Skills discovery is left enabled.
   const argv = ["--mode", "json", "-p", "--no-extensions"];
   if (extensionRoot) argv.push("-e", extensionRoot);
   if (autoHandoff?.enabled) argv.push("-e", autoHandoff.extensionRoot);
-  argv.push("--tools", (opts.write ? WRITE_TOOLS : READ_ONLY_TOOLS).join(","));
+  if (reviewSubmit) argv.push("-e", reviewSubmit);
+  argv.push("--tools", childTools(opts).join(","));
   if (opts.model) argv.push("--model", opts.model);
   argv.push("--thinking", opts.thinking);
   if (opts.session) {
@@ -303,6 +366,9 @@ function buildArgv(opts, extensionRoot, autoHandoff) {
   } else {
     // Fresh logical session ids are the caller's choice; without one Pi mints
     // its own, which the relay reports from the session event.
+  }
+  if (opts.reviewOutputRecovery) {
+    argv.push("--append-system-prompt", outputOnlyInstruction(REVIEW_SUBMIT_TOOLS[opts.reviewOutput]));
   }
   // The brief rides the child's stdin: pi consumes piped stdin as the initial
   // prompt with NO positional argument (unlike Codex, pi has no "-" positional
@@ -393,6 +459,8 @@ function makeResultWriter(opts, version, run) {
       eventsPath: run.eventsPath,
       stderrPath: run.stderrPath,
       autoHandoff: run.autoHandoff,
+      structuredOutput: extra.structuredOutput !== undefined ? extra.structuredOutput : null,
+      structuredOutputError: extra.structuredOutputError !== undefined ? extra.structuredOutputError : null,
       ...extra,
     };
     const temporary = `${run.resultPath}.${process.pid}.tmp`;
@@ -411,7 +479,7 @@ function makeResultWriter(opts, version, run) {
  *  - settled    (agent_settled seen)
  *  - stopReason (last observed stopReason)
  */
-function makePiEventScanner() {
+function makePiEventScanner(expectedTool = null) {
   let buf = "";
   const state = {
     sessionId: null,
@@ -423,6 +491,7 @@ function makePiEventScanner() {
     settled: false,
     stopReason: null,
     retryCount: 0,
+    expectedToolEnds: [],
   };
   const handle = (event) => {
     if (!event || typeof event !== "object") return;
@@ -454,6 +523,18 @@ function makePiEventScanner() {
         }
         break;
       }
+      case "tool_execution_end":
+        if (expectedTool && event.toolName === expectedTool) {
+          const result = event.result && typeof event.result === "object" ? event.result : null;
+          state.expectedToolEnds.push({
+            toolName: event.toolName,
+            isError: Boolean(event.isError),
+            details: result && Object.prototype.hasOwnProperty.call(result, "details")
+              ? result.details
+              : undefined,
+          });
+        }
+        break;
       case "auto_retry_start":
         state.retryCount += 1;
         break;
@@ -464,6 +545,14 @@ function makePiEventScanner() {
         break;
     }
   };
+  const consumeLine = (line) => {
+    if (!line) return;
+    try {
+      handle(JSON.parse(line));
+    } catch {
+      /* skip malformed line */
+    }
+  };
   return {
     state,
     push(chunk) {
@@ -472,14 +561,55 @@ function makePiEventScanner() {
       while ((index = buf.indexOf("\n")) !== -1) {
         const line = buf.slice(0, index).trim();
         buf = buf.slice(index + 1);
-        if (!line) continue;
-        try {
-          handle(JSON.parse(line));
-        } catch {
-          /* skip malformed line */
-        }
+        consumeLine(line);
       }
     },
+    flush() {
+      const line = buf.trim();
+      buf = "";
+      consumeLine(line);
+    },
+  };
+}
+
+function resolveStructuredOutput(expectedTool, ends) {
+  if (!expectedTool) {
+    return { structuredOutput: null, structuredOutputError: null };
+  }
+  const errors = ends.filter((item) => item.isError);
+  const successes = ends.filter((item) => !item.isError);
+  if (errors.length) {
+    return {
+      structuredOutput: null,
+      structuredOutputError:
+        `expected tool ${expectedTool} returned an error result`,
+    };
+  }
+  if (successes.length === 0) {
+    return {
+      structuredOutput: null,
+      structuredOutputError:
+        `expected tool ${expectedTool} was not called`,
+    };
+  }
+  if (successes.length > 1) {
+    return {
+      structuredOutput: null,
+      structuredOutputError:
+        `expected tool ${expectedTool} succeeded ${successes.length} times; need exactly one`,
+    };
+  }
+  const payload = successes[0].details;
+  if (payload === undefined || payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return {
+      structuredOutput: null,
+      structuredOutputError:
+        `expected tool ${expectedTool} succeeded without a details payload`,
+    };
+  }
+  return {
+    structuredOutput: { tool: expectedTool, payload },
+    structuredOutputError: null,
   };
 }
 
@@ -508,6 +638,11 @@ function printSummary(result, resultPath) {
   lines.push(`mode: ${result.mode} (tools ${result.mode === "write" ? "read,grep,find,ls,bash,edit,write,delegate_agent" : "read,grep,find,ls,delegate_agent"})`);
   if (result.autoHandoff?.enabled) {
     lines.push(`auto handoff: enabled · plan ${result.autoHandoff.planFile} · handoff ${result.autoHandoff.handoffDir}`);
+  }
+  if (result.structuredOutput?.tool) {
+    lines.push(`structured output: ${result.structuredOutput.tool}`);
+  } else if (result.structuredOutputError) {
+    lines.push(`structured output error: ${result.structuredOutputError}`);
   }
   if (result.resolvedModel) {
     lines.push(`model: ${result.resolvedModel}  ·  thinking: ${result.thinking}`);
@@ -567,12 +702,28 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
     process.exit(1);
   }
 
+  const reviewSubmit = opts.reviewOutput ? reviewSubmitRoot() : null;
+  if (opts.reviewOutput && !reviewSubmit) {
+    const result = writeResult({
+      status: "failed",
+      exitCode: 1,
+      signal: null,
+      sessionId: opts.session,
+      resolvedModel: null,
+      finalMessage: "",
+      touchedFiles: gitTouchedFiles(opts.cd),
+      error: "review-submit extension root not found (expected <pi-delegate>/extensions/review-submit or PI_REVIEW_SUBMIT_ROOT)",
+    });
+    printSummary(result, run.resultPath);
+    process.exit(1);
+  }
+
   // The brief rides the child's stdin: argv carries only fixed flags plus the
   // trailing "-" positional (see buildArgv). Pi's readPipedStdin waits for
   // stdin END before it starts, so the relay must write the whole brief and
   // close the pipe promptly. EPIPE here only means the child died before
   // consuming stdin; the close handler records the real exit status.
-  const argv = buildArgv(opts, extensionRoot, run.autoHandoff);
+  const argv = buildArgv(opts, extensionRoot, run.autoHandoff, reviewSubmit);
   const spawnOpts = { cwd: opts.cd, stdio: ["pipe", "pipe", "pipe"], detached: true };
   if (run.autoHandoff.enabled) {
     spawnOpts.env = {
@@ -585,7 +736,8 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
   child.stdin.on("error", () => { /* EPIPE: child exited before reading stdin */ });
   child.stdin.end(brief, "utf8");
 
-  const scanner = makePiEventScanner();
+  const expectedTool = opts.reviewOutput ? REVIEW_SUBMIT_TOOLS[opts.reviewOutput] : null;
+  const scanner = makePiEventScanner(expectedTool);
   const stderrTail = [];
   const stderrDecoder = new StringDecoder("utf8");
   const stdoutDecoder = new StringDecoder("utf8");
@@ -608,6 +760,15 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
     const message = assembleFinalText(scanner.state);
     if (message) writeFileSync(run.finalPath, message, "utf8");
     return message;
+  };
+
+  let capture = null;
+  const assembleCapture = () => {
+    if (capture) return capture;
+    scanner.push(stdoutDecoder.end());
+    scanner.flush();
+    capture = resolveStructuredOutput(expectedTool, scanner.state.expectedToolEnds);
+    return capture;
   };
 
   let settled = false;
@@ -644,6 +805,7 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
         touchedFiles: gitTouchedFiles(opts.cd),
         stderrTail: stderrTail.slice(-20),
         error: `the relay was killed by ${sig}; pi was terminated with it — inspect the working tree before re-dispatching`,
+        ...assembleCapture(),
       };
       const result = writeResult(abortedFields);
       printSummary(result, run.resultPath);
@@ -673,6 +835,7 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
       touchedFiles: gitTouchedFiles(opts.cd),
       stderrTail: stderrTail.slice(-20),
       error: String(err && err.message ? err.message : err),
+      ...assembleCapture(),
     });
     printSummary(result, run.resultPath);
     process.exit(1);
@@ -735,6 +898,7 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
       usage: state.usage,
       stopReason: state.stopReason || null,
       autoRetryCount: state.retryCount,
+      ...assembleCapture(),
       ...(succeeded ? {} : { stderrTail: stderrTail.slice(-20) }),
       ...(error ? { error } : {}),
     });

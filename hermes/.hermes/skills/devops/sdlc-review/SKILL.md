@@ -62,13 +62,20 @@ code-review procedure below:
    of polling event/result files. Use `wait_seconds=0` only for an immediate diagnostic
    inspection. Never use the write-mode guard, resume an implement Session, or launch
    the adapter directly.
-3. The reviewer and every delegated child remain source/worktree read-only. Do not edit,
-   run state-changing commands, invoke a write-access child, or rerun project tests. The
-   Pi review Relay performs source review; this Hermes Worker validates its terminal
-   result, identity, and completeness.
-4. For execute review, verify both sub-gates, exact candidate/diff/accepted-Plan identity,
-   current run/round, and current candidate-bound UI/manual PASS evidence when required.
-   Do not drive the renderer again.
+3. The Pi review Relay and every delegated child remain source/worktree read-only. Do not
+   edit, run state-changing commands, invoke a write-access child, or rerun project tests
+   from that Relay. The Relay performs source review only; this Hermes Worker validates its
+   terminal `structuredOutput`, identity, and completeness, then (for execute-plan after
+   both gates PASS) performs formal UI acceptance under the lease-gated surface.
+4. For execute review: consume the Relay's `submit_execute_review` `structuredOutput`; require both
+   sub-gates, exact candidate/diff/accepted-Plan identity, and current run/round. After both gates
+   PASS, acquire the post-dual-gate acceptance lease, perform formal UI acceptance, record v3
+   evidence, and publish the exact candidate SHA when an upstream is configured. Verdict and
+   acceptance evidence are run-scoped and never carry across runs: after a review-lane
+   `needs_input` unblock, the fresh Review Worker in the same round still re-runs the full
+   pipeline (merged Relay, lease, formal acceptance, publication). Do not rerun formal
+   acceptance after a recorded PASS verdict already exists for this same review run, candidate,
+   and round.
 5. Submit exactly one terminal action through
    `devflow_review_verdict(pass|revise|blocked)`. Do not directly call
    `kanban_complete`, `kanban_request_changes`, or lifecycle `kanban_block` for a managed

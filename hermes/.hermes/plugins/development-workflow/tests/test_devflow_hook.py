@@ -64,8 +64,10 @@ _plugin = _load_plugin_package()
 hermes_adapter = importlib.import_module(_MODULE_NAME + ".harness.hermes_adapter")
 contracts = importlib.import_module(_MODULE_NAME + ".harness.contracts")
 hook = importlib.import_module(_MODULE_NAME + ".harness.hook")
+ui_lease = importlib.import_module(_MODULE_NAME + ".harness.ui_lease")
 
 HermesAdapter = hermes_adapter.HermesAdapter
+UiLeaseManager = ui_lease.UiLeaseManager
 
 _SCRUB_ENV_VARS = (
     "HERMES_KANBAN_DB",
@@ -235,6 +237,19 @@ class TestNameMatching(unittest.TestCase):
         self.assertFalse(hook._is_browser_mutator("browser_back"))
         self.assertFalse(hook._is_browser_mutator("browser_get_images"))
         self.assertFalse(hook._is_browser_mutator("write_file"))
+
+    def test_ui_acceptance_surface(self) -> None:
+        for name in (
+            "computer_use",
+            "desktop_project",
+            "annotate_preview",
+            "apply_layout",
+            "browser_click",
+        ):
+            self.assertTrue(hook._is_ui_acceptance_surface(name), name)
+        self.assertFalse(hook._is_ui_acceptance_surface("browser_snapshot"))
+        self.assertFalse(hook._is_ui_acceptance_surface("terminal"))
+        self.assertFalse(hook._is_ui_acceptance_surface("write_file"))
 
     def test_mcp_prefix(self) -> None:
         self.assertTrue(hook._is_mcp_name("mcp_fs_write"))
@@ -610,6 +625,8 @@ class TestReviewMutationSurface(IsolatedHookHome):
                     "devflow_inspect",
                     "devflow_start_or_inspect_relay",
                     "devflow_review_verdict",
+                    "devflow_ui_lease",
+                    "devflow_publish_candidate",
                 ]
             },
         )
@@ -620,6 +637,8 @@ class TestReviewMutationSurface(IsolatedHookHome):
             args={"names": ["devflow_review_verdict", "process_manage"]},
         )
         self.assertTrue(_is_block(mixed), mixed)
+        self.assertIn("devflow_ui_lease", mixed["message"])
+        self.assertIn("devflow_publish_candidate", mixed["message"])
         searched = hook.pre_tool_call(
             tool_name="tool_search", args={"queries": ["wait for relay"]}
         )
@@ -632,6 +651,107 @@ class TestReviewMutationSurface(IsolatedHookHome):
             args={"path": "/tmp/x", "content": "hi"},
         )
         self.assertIsNone(implement)
+
+
+class TestReviewLeaseGatedUiSurface(IsolatedHookHome):
+    def _acquire_acceptance(self, task, *, run_id=None, resource="obsidian", purpose="acceptance"):
+        manager = UiLeaseManager(hermes_home=self.home)
+        manager.acquire(
+            resource,
+            board="default",
+            card_id=task.id,
+            run_id=task.current_run_id if run_id is None else run_id,
+            candidate_commit="a" * 40,
+            purpose=purpose,
+            holder_role="review-worker",
+        )
+        return manager
+
+    def test_ui_surface_blocked_without_lease(self) -> None:
+        self._bind_managed_review_worker()
+        for name in (
+            "computer_use",
+            "desktop_project",
+            "annotate_preview",
+            "apply_layout",
+            "browser_click",
+        ):
+            result = hook.pre_tool_call(tool_name=name, args={"x": "1"})
+            self.assertTrue(_is_block(result), f"{name}: {result}")
+            self.assertIn("lease-gated UI acceptance", result["message"])
+        self.assertIsNone(
+            hook.pre_tool_call(
+                tool_name="devflow_ui_lease", args={"action": "inspect"}
+            )
+        )
+        self.assertIsNone(
+            hook.pre_tool_call(
+                tool_name="devflow_publish_candidate",
+                args={"expected_candidate_commit": "a" * 40},
+            )
+        )
+
+    def test_ui_surface_allowed_with_own_acceptance_lease_then_blocked_after_release(
+        self,
+    ) -> None:
+        reviewed = self._bind_managed_review_worker()
+        manager = self._acquire_acceptance(reviewed)
+        for name in (
+            "computer_use",
+            "desktop_project",
+            "annotate_preview",
+            "apply_layout",
+            "browser_click",
+        ):
+            self.assertIsNone(
+                hook.pre_tool_call(tool_name=name, args={"x": "1"}),
+                name,
+            )
+        terminal = hook.pre_tool_call(
+            tool_name="terminal", args={"command": "echo no"}
+        )
+        self.assertTrue(_is_block(terminal), terminal)
+        write = hook.pre_tool_call(
+            tool_name="write_file",
+            args={"path": "/tmp/x", "content": "hi"},
+        )
+        self.assertTrue(_is_block(write), write)
+        manager.release("obsidian", run_id=reviewed.current_run_id)
+        blocked = hook.pre_tool_call(tool_name="computer_use", args={"x": "1"})
+        self.assertTrue(_is_block(blocked), blocked)
+        click = hook.pre_tool_call(tool_name="browser_click", args={"x": "1"})
+        self.assertTrue(_is_block(click), click)
+
+    def test_other_run_lease_does_not_open_surface(self) -> None:
+        reviewed = self._bind_managed_review_worker()
+        other_run = int(reviewed.current_run_id) + 99
+        self._acquire_acceptance(reviewed, run_id=other_run)
+        blocked = hook.pre_tool_call(tool_name="computer_use", args={"x": "1"})
+        self.assertTrue(_is_block(blocked), blocked)
+        click = hook.pre_tool_call(tool_name="browser_click", args={"x": "1"})
+        self.assertTrue(_is_block(click), click)
+
+    def test_lease_lookup_exception_fails_closed(self) -> None:
+        reviewed = self._bind_managed_review_worker()
+        self._acquire_acceptance(reviewed)
+        with patch.object(hook, "active_leases", side_effect=RuntimeError("lease boom")):
+            blocked = hook.pre_tool_call(tool_name="computer_use", args={"x": "1"})
+        self.assertTrue(_is_block(blocked), blocked)
+
+    def test_read_only_fast_path_preserved_under_lease(self) -> None:
+        reviewed = self._bind_managed_review_worker()
+        self._acquire_acceptance(reviewed)
+
+        def boom(*_a, **_k):
+            raise AssertionError("HermesAdapter must not be constructed")
+
+        with patch.object(hook, "HermesAdapter", boom):
+            self.assertIsNone(
+                hook.pre_tool_call(tool_name="read_file", args={"path": "/tmp/x"})
+            )
+            self.assertIsNone(
+                hook.pre_tool_call(tool_name="browser_snapshot", args={})
+            )
 
 
 class TestFailClose(IsolatedHookHome):

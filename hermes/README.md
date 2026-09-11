@@ -38,9 +38,12 @@ v1 migrates losslessly on the first exclusive managed write. Ambiguous state
 There is no Goal Mode, auto-decompose, per-Card Cron, monitor, generic workflow
 DSL, duplicate phase database, or Hermes Core patch. Execute review is one fresh
 read-only `review-execute-candidate` Relay with separate Patch and Plan
-Conformance gates. Required UI acceptance is performed once by the Implement
-Worker against the frozen candidate under a run-bound UI lease; review validates
-the evidence instead of driving the renderer again. Policy lives in
+Conformance gates; review relays finish via `submit_plan_review` /
+`submit_execute_review` captured into `delegate-relay.result.v1`
+`structuredOutput`. Execute-plan required UI is Implement-owned candidate-bound
+critical smoke, then Review-owned formal acceptance under a post-dual-gate
+lease, then authorized exact-SHA publication. Direct keeps Implement-owned
+formal acceptance. The plugin surface is ten `devflow_*` tools. Policy lives in
 `development-orchestrator`; mechanics live in `hermes-kanban-workflows`.
 
 ## User plugin compatibility

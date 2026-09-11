@@ -84,12 +84,13 @@ class FakeCtx:
 
 
 class TestPluginRegistration(unittest.TestCase):
-    def test_register_wires_nine_tools_and_hook(self) -> None:
+    def test_register_wires_ten_tools_and_hook(self) -> None:
         ctx = FakeCtx()
         _plugin.register(ctx)
-        self.assertEqual(len(ctx.tools), 9)
+        self.assertEqual(len(ctx.tools), 10)
         names = [entry["name"] for entry in ctx.tools]
-        self.assertEqual(len(set(names)), 9)
+        self.assertEqual(len(set(names)), 10)
+        self.assertIn("devflow_publish_candidate", names)
         for entry in ctx.tools:
             self.assertEqual(entry.get("toolset"), "kanban")
             self.assertRegex(entry["name"], _NAME_RE)

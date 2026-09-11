@@ -1,6 +1,6 @@
 # Managed Development Handoff Integrity
 
-Use when a managed development stage submits a Plan, candidate, Review verdict, UI/manual evidence, or terminal Coding Agent result. The Harness validates identity and calls the native Kanban transition in the same `devflow_implement_handoff` or `devflow_review_verdict` operation.
+Use when a managed development stage submits a Plan, candidate, Review verdict, UI/manual evidence, or terminal Coding Agent result. The Harness validates identity and calls the native Kanban transition in the same `devflow_implement_handoff` or `devflow_review_verdict` operation. Execute-plan publication, when required, is a separate `devflow_publish_candidate` exact-SHA action after formal acceptance and before a PASS verdict.
 
 ## Terminal Relay truth
 
@@ -49,9 +49,9 @@ Either execute sub-gate failure forces REVISE. `overall: pass` is insufficient w
 
 ## UI/manual evidence
 
-When UI is required, PASS evidence must bind the same candidate/diff/accepted Plan and producing implement run, and must prove it was created during a valid named UI lease with cleanup recorded. Review validates it but does not rerun the renderer.
+When UI is required, execute-plan implement handoff needs smoke PASS bound to the frozen candidate and implement run (`purpose=smoke`; exactly `candidate-load`, `primary-entry`, `runtime-stability`). Formal acceptance PASS (`purpose=acceptance`) binds the producing worker: the current review run and `review_round` for execute-plan, or the implement run for direct. Evidence must prove it was created during a valid named UI lease whose purpose matches, with cleanup recorded. The read-only Relay does not consume UI evidence. Formal acceptance is the outer Review Worker's post-dual-gate step.
 
-Manual verdict is an Origin-authored append-only decision bound to the current candidate and accepted Plan. Pending, FAIL, or stale identity cannot pass.
+Manual verdict is an Origin-authored append-only decision bound to the current candidate and accepted Plan. Pending, FAIL, or stale identity cannot pass. For execute-plan, pending manual items are a review-source `needs_input` block; after unblock a fresh Review Worker re-runs the full pipeline because verdict and acceptance evidence are run-scoped.
 
 Any new candidate commit, Plan SHA, feature/stage, or producing run invalidates old completion eligibility without deleting history.
 
@@ -66,7 +66,7 @@ The managed wrapper prepares compact native handoff metadata; callers do not man
 - [ ] Plan or candidate identity matches current bytes/Git.
 - [ ] Candidate trailer, diff range, Guard attempt, and landing agree.
 - [ ] Review round/run and every gate belong to this candidate/Plan.
-- [ ] Required UI/manual evidence is current and PASS; lease/cleanup validate.
+- [ ] Required smoke (execute implement handoff) or formal UI/manual evidence (direct handoff / execute review verdict) is current and PASS; lease/cleanup validate.
 - [ ] Transition uses the matching `devflow_*` wrapper and expected run.
 - [ ] Exact native status/event/handoff/attachments read back successfully.
 - [ ] No unrelated board, repository, config, release, or publication side effect occurred.

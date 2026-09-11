@@ -78,6 +78,7 @@ GuardClient = guard_client.GuardClient
 HarnessError = errors.HarnessError
 UiLeaseManager = ui_lease.UiLeaseManager
 LEASE_SCHEMA = ui_lease.LEASE_SCHEMA
+LEASE_SCHEMA_V1 = ui_lease.LEASE_SCHEMA_V1
 parse_stage_body = contracts.parse_stage_body
 
 SHA1_A = "a" * 40
@@ -168,6 +169,32 @@ def valid_ui_evidence(**overrides):
         "automation_boundary": "obsidian renderer",
         "cleanup": "released",
         "created_at": "2026-09-10T00:00:00Z",
+    }
+    data.update(overrides)
+    return data
+
+
+def valid_ui_evidence_v3(**overrides):
+    data = valid_ui_evidence(
+        schema=contracts.UI_EVIDENCE_V3_SCHEMA_ID,
+        purpose="smoke",
+        producer_role="implement-worker",
+        review_round=None,
+    )
+    data.update(overrides)
+    return data
+
+
+def valid_publication(**overrides):
+    data = {
+        "schema": evidence.PUBLICATION_SCHEMA_ID,
+        "candidate_commit": SHA1_A,
+        "branch": "main",
+        "remote": "origin",
+        "verified_ref": "refs/heads/main",
+        "publishing_run": 9,
+        "authority_ref": "card:authority-boundaries",
+        "created_at": "2026-09-11T00:00:00Z",
     }
     data.update(overrides)
     return data
@@ -703,6 +730,9 @@ class TestEvidence(IsolatedEvidenceHome):
         loaded = evidence.load_ui_evidence(self.task, SHA1_A)
         self.assertEqual(len(loaded), 1)
         self.assertEqual(loaded[0]["schema"], contracts.UI_EVIDENCE_SCHEMA_ID)
+        self.assertEqual(loaded[0]["purpose"], "acceptance")
+        self.assertEqual(loaded[0]["producer_role"], "implement-worker")
+        self.assertIsNone(loaded[0]["review_round"])
 
     def test_require_successful_relay_result_happy_and_violations(self) -> None:
         happy = valid_relay_result()
@@ -716,15 +746,14 @@ class TestEvidence(IsolatedEvidenceHome):
             ),
             [],
         )
-        required = evidence.require_successful_relay_result(
-            happy,
+        empty_final = evidence.require_successful_relay_result(
+            valid_relay_result(finalMessage=""),
             expected_cwd=RELAY_CWD,
             expected_mode="write",
             expected_model=RELAY_MODEL,
             expected_thinking=RELAY_THINKING,
-            require_final_message=True,
         )
-        self.assertEqual(required, [])
+        self.assertEqual(empty_final, [])
 
         cases = [
             (valid_relay_result(cwd="/other"), "cwd"),
@@ -750,15 +779,15 @@ class TestEvidence(IsolatedEvidenceHome):
                 (needle, violations),
             )
 
-        missing_final = evidence.require_successful_relay_result(
-            valid_relay_result(finalMessage=""),
-            expected_cwd=RELAY_CWD,
-            expected_mode="write",
-            expected_model=RELAY_MODEL,
-            expected_thinking=RELAY_THINKING,
-            require_final_message=True,
-        )
-        self.assertTrue(any("finalMessage" in item for item in missing_final))
+        with self.assertRaises(TypeError):
+            evidence.require_successful_relay_result(
+                happy,
+                expected_cwd=RELAY_CWD,
+                expected_mode="write",
+                expected_model=RELAY_MODEL,
+                expected_thinking=RELAY_THINKING,
+                require_final_message=True,
+            )
 
     def test_fallback_eligible(self) -> None:
         self.assertTrue(
@@ -793,47 +822,11 @@ class TestEvidence(IsolatedEvidenceHome):
         )
         self.assertFalse(evidence.fallback_eligible(valid_relay_result()))
 
-    def test_extract_review_report_formats(self) -> None:
-        payload = {"verdict": "pass", "summary": "ok"}
-        raw_json = json.dumps(payload)
-        self.assertEqual(evidence.extract_review_report(raw_json), payload)
-        fenced_json = "```json\n" + raw_json + "\n```"
-        self.assertEqual(evidence.extract_review_report(fenced_json), payload)
-
-        raw_yaml = "verdict: pass\nsummary: ok\n"
-        self.assertEqual(
-            evidence.extract_review_report(raw_yaml),
-            {"verdict": "pass", "summary": "ok"},
-        )
-        fenced_yaml = "```yaml\n" + raw_yaml + "```"
-        self.assertEqual(
-            evidence.extract_review_report(fenced_yaml),
-            {"verdict": "pass", "summary": "ok"},
-        )
-
-        with self.assertRaises(ValueError):
-            evidence.extract_review_report("a: 1\na: 2\n")
-        with self.assertRaises(ValueError):
-            evidence.extract_review_report("this is not a review document")
-
-    def test_extract_review_report_locates_document_around_prose(self) -> None:
-        payload = {"schema": "development-plan-review.v1", "verdict": "pass"}
-        # Prose preamble + fenced YAML (observed round-2 shape).
-        fenced = "评审完成。\n\n```yaml\nschema: development-plan-review.v1\nverdict: pass\n```"
-        self.assertEqual(evidence.extract_review_report(fenced), payload)
-        # Prose preamble + bare YAML (observed round-1 shape).
-        bare = "总结两句。\ncard_id: t_x\nschema: development-plan-review.v1\nverdict: pass\n"
-        self.assertEqual(
-            evidence.extract_review_report(bare),
-            {"card_id": "t_x", "schema": "development-plan-review.v1", "verdict": "pass"},
-        )
-        # Prose both before and after the fenced document.
-        wrapped = "opening prose\n```json\n" + json.dumps(payload) + "\n```\ntrailing prose"
-        self.assertEqual(evidence.extract_review_report(wrapped), payload)
-        # Key-like prose lines that are not known top-level keys must not match.
-        with self.assertRaises(ValueError):
-            evidence.extract_review_report("随便一句话：不是报告。\n再来一句。")
-
+    def test_extract_review_report_removed(self) -> None:
+        self.assertFalse(hasattr(evidence, "extract_review_report"))
+        self.assertNotIn("extract_review_report", dir(evidence))
+        with self.assertRaises(AttributeError):
+            evidence.extract_review_report("verdict: pass")
 
     def test_normalize_plan_and_execute_review(self) -> None:
         plan_report = plan_review_yaml()
@@ -1124,6 +1117,281 @@ class TestEvidence(IsolatedEvidenceHome):
         )
         self.assertTrue(any("holder_run_id" in item for item in holder_differs))
 
+    def test_load_ui_evidence_v3_purpose_tagging(self) -> None:
+        ui_a = evidence.ui_dir(self.task, SHA1_A, 7)
+        smoke = valid_ui_evidence_v3(created_at="2026-09-10T00:00:00Z")
+        acceptance = valid_ui_evidence_v3(
+            purpose="acceptance",
+            producer_role="review-worker",
+            review_round=2,
+            run_id=9,
+            created_at="2026-09-10T03:00:00Z",
+        )
+        evidence.write_json_atomic(ui_a / "smoke.json", smoke)
+        evidence.write_json_atomic(ui_a / "v2.json", valid_ui_evidence())
+        evidence.write_json_atomic(
+            ui_a / "acceptance.json", acceptance
+        )
+        loaded = evidence.load_ui_evidence(self.task, SHA1_A)
+        self.assertEqual(len(loaded), 3)
+        self.assertEqual(loaded[0]["purpose"], "acceptance")
+        self.assertEqual(loaded[0]["producer_role"], "review-worker")
+        self.assertEqual(loaded[0]["review_round"], 2)
+        by_schema = {item["schema"]: item for item in loaded}
+        v2 = by_schema[contracts.UI_EVIDENCE_SCHEMA_ID]
+        self.assertEqual(v2["purpose"], "acceptance")
+        self.assertEqual(v2["producer_role"], "implement-worker")
+        self.assertIsNone(v2["review_round"])
+        v3_smoke = next(item for item in loaded if item.get("purpose") == "smoke")
+        self.assertEqual(v3_smoke["producer_role"], "implement-worker")
+        self.assertIsNone(v3_smoke["review_round"])
+
+    def test_verify_ui_evidence_binding_purpose_producer_round(self) -> None:
+        execute_card = parse_stage_body(
+            _stage_body(
+                stage="execute-plan",
+                accepted_plan=(
+                    "{card_id: t_evidence, path: "
+                    f"{PLAN_PATH}, sha256: {SHA256}}}"
+                ),
+            )
+        )
+        execute_manifest = valid_candidate(
+            stage="execute-plan",
+            accepted_plan={"path": PLAN_PATH, "sha256": SHA256},
+        )
+        lease_row = {
+            "resource": "obsidian:acceptance",
+            "lease_id": "lease-1",
+            "holder_run_id": 9,
+            "card_id": self.card_id,
+            "candidate_commit": SHA1_A,
+            "acquired_at": "2026-09-10T00:00:00Z",
+            "released_at": "2026-09-10T00:01:00Z",
+        }
+        review_acceptance = valid_ui_evidence_v3(
+            purpose="acceptance",
+            producer_role="review-worker",
+            review_round=2,
+            stage="execute-plan",
+            run_id=9,
+            accepted_plan={"path": PLAN_PATH, "sha256": SHA256},
+            lease={
+                "resource": "obsidian:acceptance",
+                "lease_id": "lease-1",
+                "holder_run_id": 9,
+                "acquired_at": "2026-09-10T00:00:00Z",
+                "released_at": "2026-09-10T00:01:00Z",
+            },
+        )
+        self.assertEqual(
+            evidence.verify_ui_evidence_binding(
+                review_acceptance,
+                manifest=execute_manifest,
+                card=execute_card,
+                run_id=9,
+                attempt_number=1,
+                plan={"path": PLAN_PATH, "sha256": SHA256},
+                relay_session_id=None,
+                lease_records=[lease_row],
+                purpose="acceptance",
+                producer_role="review-worker",
+                review_round=2,
+            ),
+            [],
+        )
+        wrong_round = evidence.verify_ui_evidence_binding(
+            review_acceptance,
+            manifest=execute_manifest,
+            card=execute_card,
+            run_id=9,
+            attempt_number=1,
+            plan={"path": PLAN_PATH, "sha256": SHA256},
+            lease_records=[lease_row],
+            purpose="acceptance",
+            producer_role="review-worker",
+            review_round=1,
+        )
+        self.assertTrue(any("review_round" in item for item in wrong_round))
+        wrong_run = evidence.verify_ui_evidence_binding(
+            review_acceptance,
+            manifest=execute_manifest,
+            card=execute_card,
+            run_id=8,
+            attempt_number=1,
+            plan={"path": PLAN_PATH, "sha256": SHA256},
+            lease_records=[lease_row],
+            purpose="acceptance",
+            producer_role="review-worker",
+            review_round=2,
+        )
+        self.assertTrue(any("run_id" in item for item in wrong_run))
+        wrong_purpose = evidence.verify_ui_evidence_binding(
+            review_acceptance,
+            manifest=execute_manifest,
+            card=execute_card,
+            run_id=9,
+            attempt_number=1,
+            plan={"path": PLAN_PATH, "sha256": SHA256},
+            lease_records=[lease_row],
+            purpose="smoke",
+            producer_role="review-worker",
+            review_round=2,
+        )
+        self.assertTrue(any("purpose" in item for item in wrong_purpose))
+        implement_smoke = valid_ui_evidence_v3(
+            stage="execute-plan",
+            accepted_plan={"path": PLAN_PATH, "sha256": SHA256},
+        )
+        ignored_round = evidence.verify_ui_evidence_binding(
+            implement_smoke,
+            manifest=execute_manifest,
+            card=execute_card,
+            run_id=7,
+            attempt_number=1,
+            plan={"path": PLAN_PATH, "sha256": SHA256},
+            lease_records=None,
+            purpose="smoke",
+            producer_role="implement-worker",
+            review_round=99,
+        )
+        self.assertEqual(ignored_round, [])
+
+        stale_candidate = evidence.verify_ui_evidence_binding(
+            review_acceptance,
+            manifest=valid_candidate(
+                stage="execute-plan",
+                candidate_commit=SHA1_B,
+                diff_head=SHA1_B,
+                accepted_plan={"path": PLAN_PATH, "sha256": SHA256},
+            ),
+            card=execute_card,
+            run_id=9,
+            attempt_number=1,
+            plan={"path": PLAN_PATH, "sha256": SHA256},
+            lease_records=None,
+            purpose="acceptance",
+            producer_role="review-worker",
+            review_round=2,
+        )
+        self.assertTrue(any("candidate_commit" in item for item in stale_candidate))
+        stale_plan = evidence.verify_ui_evidence_binding(
+            review_acceptance,
+            manifest=execute_manifest,
+            card=execute_card,
+            run_id=9,
+            attempt_number=1,
+            plan={"path": PLAN_PATH, "sha256": "d" * 64},
+            lease_records=None,
+            purpose="acceptance",
+            producer_role="review-worker",
+            review_round=2,
+        )
+        self.assertTrue(any("accepted_plan" in item for item in stale_plan))
+
+        evidence.write_json_atomic(
+            evidence.ui_dir(self.task, SHA1_A, 7) / "legacy.json",
+            valid_ui_evidence(),
+        )
+        loaded_v2 = evidence.load_ui_evidence(self.task, SHA1_A)
+        card = parse_stage_body(_stage_body())
+        bound_legacy = evidence.verify_ui_evidence_binding(
+            loaded_v2[0],
+            manifest=valid_candidate(),
+            card=card,
+            run_id=7,
+            attempt_number=1,
+            plan=None,
+            lease_records=None,
+            purpose="acceptance",
+            producer_role="implement-worker",
+        )
+        self.assertEqual(bound_legacy, [])
+
+    def test_publication_record_write_load_and_immutability(self) -> None:
+        first = valid_publication()
+        written = evidence.write_publication_record(self.task, first)
+        self.assertEqual(written["schema"], evidence.PUBLICATION_SCHEMA_ID)
+        loaded = evidence.load_publication_record(self.task, SHA1_A)
+        self.assertEqual(loaded["branch"], "main")
+        self.assertEqual(loaded["verified_ref"], "refs/heads/main")
+        self.assertEqual(loaded["publishing_run"], 9)
+        self.assertEqual(loaded["authority_ref"], "card:authority-boundaries")
+        reused = evidence.write_publication_record(self.task, dict(first))
+        self.assertEqual(reused["remote"], "origin")
+        changed = valid_publication(branch="feature")
+        with self.assertRaises(HarnessError) as ctx:
+            evidence.write_publication_record(self.task, changed)
+        self.assertEqual(ctx.exception.code, errors.CANDIDATE_CHANGED)
+        dest = evidence.candidate_dir(self.task, SHA1_A) / evidence.PUBLICATION_FILENAME
+        self.assertEqual(evidence.load_json(dest)["branch"], "main")
+        self.assertIsNone(evidence.load_publication_record(self.task, SHA1_B))
+        with self.assertRaises(HarnessError) as invalid:
+            evidence.write_publication_record(
+                self.task, {"schema": "nope", "candidate_commit": SHA1_B}
+            )
+        self.assertEqual(invalid.exception.code, errors.EVIDENCE_IDENTITY_MISMATCH)
+
+    def test_write_ui_evidence_unique_name_immutability(self) -> None:
+        first = valid_ui_evidence_v3()
+        second = valid_ui_evidence_v3(
+            purpose="acceptance",
+            created_at="2026-09-10T01:00:00Z",
+        )
+        evidence.write_ui_evidence(self.task, SHA1_A, 7, first)
+        evidence.write_ui_evidence(self.task, SHA1_A, 7, second)
+        written = list(evidence.ui_dir(self.task, SHA1_A, 7).glob("ui-evidence-*.json"))
+        self.assertEqual(len(written), 2)
+        payloads = [evidence.load_json(path) for path in written]
+        purposes = {item["purpose"] for item in payloads}
+        self.assertEqual(purposes, {"smoke", "acceptance"})
+        loaded = evidence.load_ui_evidence(self.task, SHA1_A)
+        self.assertEqual(len(loaded), 2)
+
+        class _FixedUuid:
+            hex = "ab" * 16
+
+        with mock.patch.object(evidence.uuid, "uuid4", return_value=_FixedUuid):
+            evidence.write_ui_evidence(
+                self.task, SHA1_A, 8, valid_ui_evidence_v3(run_id=8)
+            )
+            dest = evidence.ui_dir(self.task, SHA1_A, 8) / (
+                f"ui-evidence-{_FixedUuid.hex}.json"
+            )
+            original = evidence.load_json(dest)
+            with self.assertRaises(HarnessError) as ctx:
+                evidence.write_ui_evidence(
+                    self.task,
+                    SHA1_A,
+                    8,
+                    valid_ui_evidence_v3(
+                        run_id=8, created_at="2026-09-11T00:00:00Z"
+                    ),
+                )
+            self.assertEqual(ctx.exception.code, errors.EVIDENCE_IDENTITY_MISMATCH)
+            self.assertEqual(evidence.load_json(dest)["verdict"], original["verdict"])
+
+        with self.assertRaises(HarnessError) as mismatch:
+            evidence.write_ui_evidence(
+                self.task, SHA1_B, 7, valid_ui_evidence_v3()
+            )
+        self.assertEqual(mismatch.exception.code, errors.EVIDENCE_IDENTITY_MISMATCH)
+
+    def test_verify_candidate_tree_unchanged_happy_dirty_wrong_head(self) -> None:
+        self.git("checkout", "--", "file1.txt")
+        head = self.git("rev-parse", "HEAD").strip()
+        self.assertEqual(
+            evidence.verify_candidate_tree_unchanged(self.repo, head),
+            [],
+        )
+        (self.repo / "file1.txt").write_text("dirty tree\n")
+        dirty = evidence.verify_candidate_tree_unchanged(self.repo, head)
+        self.assertIn("working-tree-dirty", dirty)
+        self.git("checkout", "--", "file1.txt")
+        wrong_head = evidence.verify_candidate_tree_unchanged(self.repo, SHA1_A)
+        self.assertIn("head-mismatch", wrong_head)
+        self.assertNotIn("working-tree-dirty", wrong_head)
+
 
 class TestUiLease(IsolatedEvidenceHome):
     def _manager(self) -> UiLeaseManager:
@@ -1134,18 +1402,42 @@ class TestUiLease(IsolatedEvidenceHome):
         proc.wait()
         return proc.pid
 
+    def _acquire(
+        self,
+        manager: UiLeaseManager,
+        resource_id: str,
+        *,
+        run_id,
+        candidate_commit=SHA1_A,
+        purpose="acceptance",
+        holder_role="implement-worker",
+        **kwargs,
+    ) -> dict:
+        return manager.acquire(
+            resource_id,
+            board=self.board,
+            card_id=self.card_id,
+            run_id=run_id,
+            candidate_commit=candidate_commit,
+            purpose=purpose,
+            holder_role=holder_role,
+            **kwargs,
+        )
+
     def test_acquire_inspect_release_and_owner(self) -> None:
         manager = self._manager()
         resource = "obsidian:my-vault"
-        lease = manager.acquire(
+        lease = self._acquire(
+            manager,
             resource,
-            board=self.board,
-            card_id=self.card_id,
             run_id=7,
-            candidate_commit=SHA1_A,
+            purpose="smoke",
+            holder_role="implement-worker",
         )
         self.assertEqual(lease["schema"], LEASE_SCHEMA)
         self.assertEqual(lease["resource"], resource)
+        self.assertEqual(lease["purpose"], "smoke")
+        self.assertEqual(lease["holder_role"], "implement-worker")
         self.assertEqual(lease["pid"], os.getpid())
         self.assertTrue(lease["lease_id"])
         self.assertRegex(lease["lease_id"], r"^[0-9a-f]{32}$")
@@ -1154,15 +1446,11 @@ class TestUiLease(IsolatedEvidenceHome):
         self.assertTrue(inspected["holder_alive"])
         self.assertEqual(inspected["lease"]["run_id"], 7)
         self.assertEqual(inspected["lease"]["lease_id"], lease["lease_id"])
+        self.assertEqual(inspected["lease"]["purpose"], "smoke")
+        self.assertEqual(inspected["lease"]["holder_role"], "implement-worker")
 
         with self.assertRaises(HarnessError) as busy:
-            manager.acquire(
-                resource,
-                board=self.board,
-                card_id=self.card_id,
-                run_id=8,
-                candidate_commit=SHA1_A,
-            )
+            self._acquire(manager, resource, run_id=8)
         self.assertEqual(busy.exception.code, errors.UI_RESOURCE_BUSY)
 
         with self.assertRaises(HarnessError) as not_owner:
@@ -1177,6 +1465,8 @@ class TestUiLease(IsolatedEvidenceHome):
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["lease_id"], lease["lease_id"])
         self.assertEqual(history[0]["holder_run_id"], 7)
+        self.assertEqual(history[0]["holder_role"], "implement-worker")
+        self.assertEqual(history[0]["purpose"], "smoke")
         self.assertEqual(history[0]["candidate_commit"], SHA1_A)
         self.assertFalse(manager.lease_path(resource).exists())
         again = manager.release(resource, run_id=7)
@@ -1200,19 +1490,20 @@ class TestUiLease(IsolatedEvidenceHome):
                 "pid": dead,
                 "process_start": None,
                 "candidate_commit": SHA1_A,
+                "purpose": "acceptance",
+                "holder_role": "implement-worker",
                 "acquired_at": "2026-01-01T00:00:00+00:00",
             },
         )
-        reclaimed = manager.acquire(
+        reclaimed = self._acquire(
+            manager,
             reclaim_id,
-            board=self.board,
-            card_id=self.card_id,
             run_id=2,
-            candidate_commit=SHA1_A,
             holder_run_is_current=lambda rid: False,
         )
         self.assertEqual(reclaimed["run_id"], 2)
         self.assertEqual(reclaimed["pid"], os.getpid())
+        self.assertEqual(reclaimed["schema"], LEASE_SCHEMA)
         manager.release(reclaim_id, run_id=2)
 
         busy_id = "obsidian:still-current"
@@ -1227,16 +1518,16 @@ class TestUiLease(IsolatedEvidenceHome):
                 "pid": dead,
                 "process_start": None,
                 "candidate_commit": SHA1_A,
+                "purpose": "acceptance",
+                "holder_role": "implement-worker",
                 "acquired_at": "2026-01-01T00:00:00+00:00",
             },
         )
         with self.assertRaises(HarnessError) as ctx:
-            manager.acquire(
+            self._acquire(
+                manager,
                 busy_id,
-                board=self.board,
-                card_id=self.card_id,
                 run_id=3,
-                candidate_commit=SHA1_A,
                 holder_run_is_current=lambda rid: True,
             )
         self.assertEqual(ctx.exception.code, errors.UI_RESOURCE_BUSY)
@@ -1244,39 +1535,32 @@ class TestUiLease(IsolatedEvidenceHome):
     def test_invalid_resource_id(self) -> None:
         manager = self._manager()
         with self.assertRaises(HarnessError) as ctx:
-            manager.acquire(
-                "obsidian:My Vault",
-                board=self.board,
-                card_id=self.card_id,
-                run_id=1,
-                candidate_commit=SHA1_A,
-            )
+            self._acquire(manager, "obsidian:My Vault", run_id=1)
         self.assertEqual(ctx.exception.code, errors.WORKSPACE_INVALID)
 
     def test_release_readback_failure_and_lease_records(self) -> None:
         manager = self._manager()
-        first = manager.acquire(
-            "obsidian:history",
-            board=self.board,
-            card_id=self.card_id,
-            run_id=7,
-            candidate_commit=SHA1_A,
-        )
+        first = self._acquire(manager, "obsidian:history", run_id=7)
         manager.release("obsidian:history", run_id=7)
-        second = manager.acquire(
+        second = self._acquire(
+            manager,
             "obsidian:live",
-            board=self.board,
-            card_id=self.card_id,
             run_id=8,
             candidate_commit=SHA1_B,
+            purpose="acceptance",
+            holder_role="review-worker",
         )
         merged = ui_lease.lease_records(self.home)
         active = ui_lease.active_leases(self.home)
         released = ui_lease.load_release_history(self.home)
         self.assertEqual(len(active), 1)
         self.assertEqual(active[0]["lease_id"], second["lease_id"])
+        self.assertEqual(active[0]["purpose"], "acceptance")
+        self.assertEqual(active[0]["holder_role"], "review-worker")
         self.assertEqual(len(released), 1)
         self.assertEqual(released[0]["lease_id"], first["lease_id"])
+        self.assertEqual(released[0]["purpose"], "acceptance")
+        self.assertEqual(released[0]["holder_role"], "implement-worker")
         self.assertEqual(len(merged), 2)
         self.assertEqual(
             {item["lease_id"] for item in merged},
@@ -1285,13 +1569,7 @@ class TestUiLease(IsolatedEvidenceHome):
         manager.release("obsidian:live", run_id=8)
 
         resource = "obsidian:stuck"
-        lease = manager.acquire(
-            resource,
-            board=self.board,
-            card_id=self.card_id,
-            run_id=3,
-            candidate_commit=SHA1_A,
-        )
+        lease = self._acquire(manager, resource, run_id=3)
         self.assertTrue(lease["lease_id"])
         with mock.patch.object(ui_lease.os, "remove", lambda *_a, **_k: None):
             with self.assertRaises(HarnessError) as noop:
@@ -1307,6 +1585,99 @@ class TestUiLease(IsolatedEvidenceHome):
                 manager.release(resource, run_id=3)
             self.assertEqual(raised.exception.code, errors.HARNESS_STATE_UNAVAILABLE)
         os.remove(str(manager.lease_path(resource)))
+
+    def test_v1_lease_visible_to_inspect_active_and_records(self) -> None:
+        manager = self._manager()
+        v1_id = "obsidian:legacy"
+        v1_lease = {
+            "schema": LEASE_SCHEMA_V1,
+            "lease_id": "deadbeefdeadbeefdeadbeefdeadbeef",
+            "resource": v1_id,
+            "board": self.board,
+            "card_id": self.card_id,
+            "run_id": 11,
+            "pid": os.getpid(),
+            "process_start": None,
+            "candidate_commit": SHA1_A,
+            "acquired_at": "2026-01-01T00:00:00+00:00",
+        }
+        evidence.write_json_atomic(manager.lease_path(v1_id), v1_lease)
+        inspected = manager.inspect(v1_id)
+        self.assertIsNotNone(inspected)
+        self.assertEqual(inspected["lease"]["schema"], LEASE_SCHEMA_V1)
+        self.assertIsNone(inspected["lease"]["purpose"])
+        self.assertEqual(inspected["lease"]["holder_role"], "implement-worker")
+        self.assertTrue(inspected["holder_alive"])
+
+        v2 = self._acquire(
+            manager,
+            "obsidian:current",
+            run_id=12,
+            purpose="acceptance",
+            holder_role="review-worker",
+        )
+        active = ui_lease.active_leases(self.home)
+        self.assertEqual(len(active), 2)
+        by_resource = {item["resource"]: item for item in active}
+        self.assertEqual(by_resource[v1_id]["schema"], LEASE_SCHEMA_V1)
+        self.assertIsNone(by_resource[v1_id]["purpose"])
+        self.assertEqual(by_resource[v1_id]["holder_role"], "implement-worker")
+        self.assertEqual(by_resource["obsidian:current"]["schema"], LEASE_SCHEMA)
+        self.assertEqual(by_resource["obsidian:current"]["lease_id"], v2["lease_id"])
+
+        manager.release("obsidian:current", run_id=12)
+        history = ui_lease.load_release_history(self.home)
+        self.assertEqual(history[0]["purpose"], "acceptance")
+        self.assertEqual(history[0]["holder_role"], "review-worker")
+        merged = ui_lease.lease_records(self.home)
+        self.assertEqual(
+            {item["lease_id"] for item in merged},
+            {v1_lease["lease_id"], v2["lease_id"]},
+        )
+
+        dead = self._dead_pid()
+        reclaim_v1 = "obsidian:reclaim-v1"
+        evidence.write_json_atomic(
+            manager.lease_path(reclaim_v1),
+            {
+                "schema": LEASE_SCHEMA_V1,
+                "resource": reclaim_v1,
+                "board": self.board,
+                "card_id": self.card_id,
+                "run_id": 99,
+                "pid": dead,
+                "process_start": None,
+                "candidate_commit": SHA1_A,
+                "acquired_at": "2026-01-01T00:00:00+00:00",
+            },
+        )
+        reclaimed = self._acquire(
+            manager,
+            reclaim_v1,
+            run_id=4,
+            purpose="smoke",
+            holder_run_is_current=lambda rid: False,
+        )
+        self.assertEqual(reclaimed["schema"], LEASE_SCHEMA)
+        self.assertEqual(reclaimed["purpose"], "smoke")
+        manager.release(reclaim_v1, run_id=4)
+
+        garbage_id = "obsidian:garbage"
+        manager.lease_path(garbage_id).parent.mkdir(parents=True, exist_ok=True)
+        manager.lease_path(garbage_id).write_text("{not json", encoding="utf-8")
+        self.assertIsNone(manager.inspect(garbage_id))
+        self.assertFalse(
+            any(item["resource"] == garbage_id for item in ui_lease.active_leases(self.home))
+        )
+        unknown_id = "obsidian:unknown-schema"
+        evidence.write_json_atomic(
+            manager.lease_path(unknown_id),
+            {"schema": "development-ui-lease.v0", "resource": unknown_id},
+        )
+        self.assertIsNone(manager.inspect(unknown_id))
+        self.assertFalse(
+            any(item["resource"] == unknown_id for item in ui_lease.active_leases(self.home))
+        )
 
 
 if __name__ == "__main__":

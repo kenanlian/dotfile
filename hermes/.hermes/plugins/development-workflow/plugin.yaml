@@ -1,10 +1,11 @@
 name: development-workflow
-version: "0.2.2"
+version: "0.3.0"
 description: >-
-  Development Workflow Harness v2: development-stage.v2 card contract, Guard v2
-  lineage, eight Origin/Worker devflow tools, and a fail-closed pre_tool_call
-  safety net. Enforces Origin, Implement Worker, Review Worker, and non-owning
-  roles. Standalone plugin-only surface; no Hermes core patch. Temporary
+  Development Workflow Harness v3: development-stage.v2 card contract, Guard v2
+  lineage, ten Origin/Worker tools including review-owned execute UI acceptance
+  and exact-SHA candidate publication, and a fail-closed pre_tool_call safety
+  net. Enforces Origin, Implement Worker, Review Worker, and non-owning roles.
+  Standalone plugin-only surface; no Hermes core patch. Temporary
   kanban_finalize_intent remains for development-task.v1 drafts.
 author: Kenan
 kind: standalone
@@ -21,5 +22,6 @@ provides_tools:
   - devflow_ui_lease
   - devflow_implement_handoff
   - devflow_review_verdict
+  - devflow_publish_candidate
 provides_hooks:
   - pre_tool_call

@@ -10,16 +10,17 @@ import contextlib
 import hashlib
 import json
 import os
-import re
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
-from . import contracts as _contracts
 from .contracts import (
     EXECUTE_REVIEW_SCHEMA_ID,
     PLAN_REVIEW_SCHEMA_ID,
+    UI_EVIDENCE_SCHEMA_ID,
+    UI_EVIDENCE_V3_SCHEMA_ID,
     validate_candidate_manifest,
     validate_execute_review,
     validate_plan_review,
@@ -45,6 +46,20 @@ RELAY_RESULT_STATUSES = (
 )
 KANBAN_TASK_TRAILER_PREFIX = "Kanban-Task: "
 REVIEW_EVIDENCE_FILENAME = "review-evidence.json"
+PUBLICATION_SCHEMA_ID = "development-publication.v1"
+PUBLICATION_FILENAME = "publication.json"
+PUBLICATION_KEYS = (
+    "schema",
+    "candidate_commit",
+    "branch",
+    "remote",
+    "verified_ref",
+    "publishing_run",
+    "authority_ref",
+    "created_at",
+)
+_LOADER_ANNOTATION_KEYS = {"_path"}
+_V2_EFFECTIVE_KEYS = ("purpose", "producer_role", "review_round")
 _FALLBACK_MARKERS = (
     "quota",
     "rate limit",
@@ -282,7 +297,12 @@ def load_execute_reviews(task_dir_path: Path) -> list[dict]:
 
 
 def load_ui_evidence(task_dir_path: Path, candidate_commit: str) -> list[dict]:
-    """Load v2 UI evidence for ``candidate_commit``. v1 files are skipped."""
+    """Load v2/v3 UI evidence for ``candidate_commit``. Other versions are skipped.
+
+    v3 keeps its ``purpose`` / ``producer_role`` / ``review_round``. v2 is
+    annotated as implicit acceptance produced by an implement worker with
+    ``review_round=None`` (legacy path).
+    """
     root = Path(task_dir_path) / "ui" / str(candidate_commit)
     found: list[dict] = []
     for path in _json_files(root):
@@ -295,9 +315,101 @@ def load_ui_evidence(task_dir_path: Path, candidate_commit: str) -> list[dict]:
             continue
         item = dict(data)
         item["_path"] = str(path)
+        purpose, producer_role, review_round = _effective_ui_fields(item)
+        item["purpose"] = purpose
+        item["producer_role"] = producer_role
+        item["review_round"] = review_round
         found.append(item)
     found.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     return found
+
+
+def write_ui_evidence(task_dir, candidate, run_id, doc) -> dict:
+    """Write one immutable uniquely named UI evidence file under ``ui/<sha>/<run>/``."""
+    if not isinstance(doc, dict):
+        raise HarnessError(
+            EVIDENCE_IDENTITY_MISMATCH,
+            "UI evidence is not a valid development-ui-evidence document",
+            violations=["ui evidence must be a mapping"],
+        )
+    violations = validate_ui_evidence(doc)
+    if violations:
+        raise HarnessError(
+            EVIDENCE_IDENTITY_MISMATCH,
+            "UI evidence is not a valid development-ui-evidence document",
+            violations=violations,
+        )
+    _bind_equal(violations, "candidate_commit", doc.get("candidate_commit"), candidate)
+    _bind_equal(violations, "run_id", doc.get("run_id"), run_id)
+    if violations:
+        raise HarnessError(
+            EVIDENCE_IDENTITY_MISMATCH,
+            "UI evidence is not bound to the requested candidate/run",
+            violations=violations,
+            expected={"candidate_commit": candidate, "run_id": run_id},
+        )
+    dest = (
+        ui_dir(Path(task_dir), candidate, run_id)
+        / f"ui-evidence-{uuid.uuid4().hex}.json"
+    )
+    return _write_immutable_json(
+        dest,
+        doc,
+        code=EVIDENCE_IDENTITY_MISMATCH,
+        message="UI evidence file already exists with different content",
+        expected={"candidate_commit": candidate, "run_id": run_id},
+        existing_summary=lambda existing: existing,
+    )
+
+
+def write_publication_record(task_dir_path: Path, record: dict) -> dict:
+    """Write an immutable ``candidates/<sha>/publication.json`` record (C10)."""
+    violations = _validate_publication_record(record)
+    if violations:
+        raise HarnessError(
+            EVIDENCE_IDENTITY_MISMATCH,
+            "publication record is not a valid development-publication.v1",
+            violations=violations,
+        )
+    dest = (
+        candidate_dir(task_dir_path, record["candidate_commit"])
+        / PUBLICATION_FILENAME
+    )
+    return _write_immutable_json(
+        dest,
+        record,
+        code=CANDIDATE_CHANGED,
+        message="publication record already exists with different content",
+        expected=_publication_summary(record),
+        existing_summary=_publication_summary,
+    )
+
+
+def load_publication_record(task_dir_path: Path, candidate_commit: str) -> dict | None:
+    dest = candidate_dir(task_dir_path, candidate_commit) / PUBLICATION_FILENAME
+    data = load_json(dest)
+    if not isinstance(data, dict) or _validate_publication_record(data):
+        return None
+    if data.get("candidate_commit") != candidate_commit:
+        return None
+    return data
+
+
+def verify_candidate_tree_unchanged(repo_path, candidate_commit) -> list[str]:
+    """Return HEAD/porcelain violations; empty means the candidate tree is unchanged."""
+    violations: list[str] = []
+    head = git(repo_path, "rev-parse", "HEAD")
+    sha = head.stdout.strip()
+    if head.returncode != 0 or not sha:
+        violations.append("head-unresolvable")
+    elif sha != candidate_commit:
+        violations.append("head-mismatch")
+    porcelain = git(repo_path, "status", "--porcelain")
+    if porcelain.returncode != 0:
+        violations.append("status-unreadable")
+    elif porcelain.stdout.strip():
+        violations.append("working-tree-dirty")
+    return violations
 
 
 def write_review_evidence(run_dir: Path, evidence: dict) -> dict:
@@ -330,7 +442,6 @@ def require_successful_relay_result(
     expected_mode: str,
     expected_model: str,
     expected_thinking: str,
-    require_final_message: bool = False,
 ) -> list[str]:
     """Strict successful-relay gate on a ``delegate-relay.result.v1`` envelope."""
     violations = validate_relay_result(result)
@@ -375,12 +486,6 @@ def require_successful_relay_result(
         violations.append(
             f"thinking must be {expected_thinking!r} (got {thinking!r})"
         )
-    if require_final_message:
-        final = result.get("finalMessage")
-        if not isinstance(final, str) or not final.strip():
-            violations.append(
-                f"finalMessage must be a non-empty string (got {final!r})"
-            )
     return violations
 
 
@@ -396,78 +501,6 @@ def fallback_eligible(result) -> bool:
         return False
     blob = _relay_error_blob(result).lower()
     return any(marker in blob for marker in _FALLBACK_MARKERS)
-
-
-def extract_review_report(final_message: str) -> dict:
-    """Parse one JSON/YAML review document from a relay ``finalMessage``.
-
-    Relays prepend/append prose around the structured document, so beyond the
-    whole-message forms (raw, or one fence covering everything) the document is
-    located inside the message: fenced blocks first, then a bare mapping that
-    starts at a known top-level key.
-    """
-    if not isinstance(final_message, str):
-        raise ValueError(
-            f"final_message must be a string (got {type(final_message).__name__})"
-        )
-    candidates = _review_document_candidates(final_message)
-    problems: list[str] = []
-    for text in candidates:
-        if not text:
-            continue
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            try:
-                data = _load_strict_yaml(text)
-            except ValueError as exc:
-                problems.append(str(exc))
-                continue
-        if isinstance(data, dict):
-            return data
-        problems.append(
-            f"review report must be a mapping (got {type(data).__name__})"
-        )
-    raise ValueError(
-        "review report is not a JSON/YAML document"
-        + (f": {'; '.join(problems)}" if problems else "")
-    )
-
-
-_REPORT_TOP_KEYS = (
-    "schema",
-    "verdict",
-    "card_id",
-    "feature_id",
-    "review_run_id",
-)
-
-
-def _review_document_candidates(final_message: str) -> list[str]:
-    stripped = final_message.strip()
-    if not stripped:
-        return []
-    candidates = [stripped, _strip_one_markdown_fence(stripped)]
-    lines = stripped.splitlines()
-    for index, line in enumerate(lines):
-        if not re.match(r"^```[\w+-]*\s*$", line.strip()):
-            continue
-        closing = next(
-            (
-                follow
-                for follow in range(index + 1, len(lines))
-                if lines[follow].strip() == "```"
-            ),
-            None,
-        )
-        if closing is not None:
-            candidates.append("\n".join(lines[index + 1 : closing]).strip())
-    for index, line in enumerate(lines):
-        key = line.split(":", 1)[0].strip()
-        if key in _REPORT_TOP_KEYS and not line.startswith((" ", "-", "#")):
-            candidates.append("\n".join(lines[index:]).strip())
-            break
-    return candidates
 
 
 def normalize_plan_review(
@@ -564,9 +597,13 @@ def verify_ui_evidence_binding(
     plan: dict | None,
     relay_session_id: str | None = None,
     lease_records: list[dict] | None = None,
+    purpose: str | None = None,
+    producer_role: str | None = None,
+    review_round: int | None = None,
 ) -> list[str]:
-    """Bind UI evidence v2 to the current candidate, card, run, and lease."""
-    violations = validate_ui_evidence(ev)
+    """Bind UI evidence to the current candidate, card, run, purpose, and lease."""
+    document = _document_for_ui_validate(ev) if isinstance(ev, dict) else ev
+    violations = validate_ui_evidence(document)
     if not isinstance(ev, dict):
         return violations
     _bind_equal(violations, "board", ev.get("board"), manifest.get("board"))
@@ -606,6 +643,14 @@ def verify_ui_evidence_binding(
             )
     if lease_records is not None:
         violations.extend(_bind_lease_record(ev, lease_records))
+    effective_purpose, effective_producer, effective_round = _effective_ui_fields(ev)
+    if purpose is not None:
+        _bind_equal(violations, "purpose", effective_purpose, purpose)
+    if producer_role is not None:
+        _bind_equal(violations, "producer_role", effective_producer, producer_role)
+    check_producer = producer_role if producer_role is not None else effective_producer
+    if check_producer == "review-worker" and review_round is not None:
+        _bind_equal(violations, "review_round", effective_round, review_round)
     return violations
 
 
@@ -789,6 +834,72 @@ def _review_summary(data: dict | None) -> dict | None:
     }
 
 
+def _publication_summary(data: dict | None) -> dict | None:
+    if not isinstance(data, dict):
+        return data
+    return {key: data.get(key) for key in PUBLICATION_KEYS}
+
+
+def _validate_publication_record(data) -> list[str]:
+    if not isinstance(data, dict):
+        return [
+            f"publication record must be a mapping (got {type(data).__name__})"
+        ]
+    violations: list[str] = []
+    actual = set(data)
+    wanted = set(PUBLICATION_KEYS)
+    for key in sorted(actual - wanted):
+        violations.append(
+            f"unknown publication key {key!r}; allowed keys: "
+            + ", ".join(PUBLICATION_KEYS)
+        )
+    for key in PUBLICATION_KEYS:
+        if key not in data:
+            violations.append(f"missing required publication key {key!r}")
+    schema = data.get("schema")
+    if "schema" in data and schema != PUBLICATION_SCHEMA_ID:
+        violations.append(
+            f"schema must be {PUBLICATION_SCHEMA_ID!r} (got {schema!r})"
+        )
+    commit = data.get("candidate_commit")
+    if "candidate_commit" in data and (
+        not isinstance(commit, str) or len(commit) != 40
+    ):
+        violations.append(
+            f"candidate_commit must be a 40-character string (got {commit!r})"
+        )
+    for field in ("branch", "remote", "verified_ref", "authority_ref", "created_at"):
+        value = data.get(field)
+        if field in data and (not isinstance(value, str) or not value.strip()):
+            violations.append(
+                f"{field} must be a non-empty string (got {value!r})"
+            )
+    publishing_run = data.get("publishing_run")
+    if "publishing_run" in data and (
+        not isinstance(publishing_run, int) or isinstance(publishing_run, bool)
+    ):
+        violations.append(
+            f"publishing_run must be an int (got {publishing_run!r})"
+        )
+    return violations
+
+
+def _effective_ui_fields(ev: dict) -> tuple[Any, Any, Any]:
+    schema = ev.get("schema")
+    if schema == UI_EVIDENCE_SCHEMA_ID:
+        return "acceptance", "implement-worker", None
+    if schema == UI_EVIDENCE_V3_SCHEMA_ID:
+        return ev.get("purpose"), ev.get("producer_role"), ev.get("review_round")
+    return ev.get("purpose"), ev.get("producer_role"), ev.get("review_round")
+
+
+def _document_for_ui_validate(ev: dict) -> dict:
+    skip = set(_LOADER_ANNOTATION_KEYS)
+    if ev.get("schema") == UI_EVIDENCE_SCHEMA_ID:
+        skip.update(_V2_EFFECTIVE_KEYS)
+    return {key: value for key, value in ev.items() if key not in skip}
+
+
 def _relay_error_blob(result: dict) -> str:
     parts: list[str] = []
     error = result.get("error")
@@ -798,27 +909,6 @@ def _relay_error_blob(result: dict) -> str:
     if tail is not None:
         parts.append(tail if isinstance(tail, str) else str(tail))
     return " ".join(parts)
-
-
-def _strip_one_markdown_fence(text: str) -> str:
-    stripped = text.strip()
-    if not stripped.startswith("```"):
-        return stripped
-    lines = stripped.splitlines()
-    if len(lines) >= 2 and lines[-1].strip() == "```":
-        return "\n".join(lines[1:-1]).strip()
-    return stripped
-
-
-def _load_strict_yaml(text: str) -> Any:
-    yaml_mod = getattr(_contracts, "yaml", None)
-    loader = getattr(_contracts, "_StrictSafeLoader", None)
-    if yaml_mod is None or loader is None:
-        raise ValueError("PyYAML is unavailable; cannot parse review YAML")
-    try:
-        return yaml_mod.load(text, Loader=loader)
-    except yaml_mod.YAMLError as exc:
-        raise ValueError(f"review report YAML is invalid: {exc}") from exc
 
 
 def _raise_identity_mismatch(report: dict, **expected) -> None:

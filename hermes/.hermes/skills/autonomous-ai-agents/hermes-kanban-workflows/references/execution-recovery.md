@@ -125,8 +125,8 @@ After terminal Relay and engineering checks:
 4. Create or locate one local candidate commit with exact `Kanban-Task: <card-id>` trailer.
 5. Record the landing against the terminal attempt.
 6. Generate a candidate manifest.
-7. Perform required UI/manual acceptance against that exact local commit.
-8. Push only after UI PASS and only under applicable authority.
+7. Execute-plan: perform the three critical smoke scenarios against that exact local commit. Direct: perform formal UI/manual acceptance.
+8. Execute-plan: do not push here; publication is the Review Worker's post-acceptance exact-SHA action. Direct: publish only after formal UI PASS and only under applicable authority.
 9. Recheck run and candidate before managed handoff.
 
 Rework creates a new terminal attempt and a new landing/candidate. Old landings and evidence remain historical.

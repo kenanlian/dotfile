@@ -45,8 +45,8 @@ Before any managed Card/guard action, load `hermes-kanban-workflows`. Never bypa
 The Harness derives role from runtime and current Kanban facts; a model cannot self-declare it.
 
 - **Origin** — interactive `default` profile, no Dispatcher task/run environment, and an orchestrator-capable surface. It converges intent, creates/finalizes stages, records accepted decisions/amendments/manual verdicts, inspects, and explicitly unblocks. It never starts a managed Relay, lands a candidate, submits review evidence, or operates a Worker's UI lease.
-- **Implement Worker** — current task/run/claim all match Kanban, run is active, and `claimed.source_status != review`. It starts/attaches/consumes the write Relay, runs engineering closure, freezes candidates, performs required UI acceptance, lands under authority, and hands off through `devflow_implement_handoff`.
-- **Review Worker** — current task/run/claim match, run is active, `claimed.source_status == review`, and the latest handoff is the current candidate's `review_requested`. It starts one fresh read-only review Relay and ends through `devflow_review_verdict`.
+- **Implement Worker** — current task/run/claim all match Kanban, run is active, and `claimed.source_status != review`. It starts/attaches/consumes the write Relay, runs engineering closure, freezes candidates, performs the stage UI duty (execute-plan: narrow candidate-bound critical smoke; direct: formal UI acceptance), and hands off through `devflow_implement_handoff`. Execute-plan publication is the Review Worker's post-acceptance exact-SHA action, not this role's.
+- **Review Worker** — current task/run/claim match, run is active, `claimed.source_status == review`, and the latest handoff is the current candidate's `review_requested`. It starts one fresh read-only review Relay (the relay finishes via the stage submit tool into `delegate-relay.result.v1` `structuredOutput`). For execute-plan, after both source gates PASS it performs formal UI acceptance under a post-dual-gate lease, authorized exact-SHA publication when an upstream is configured, then ends through `devflow_review_verdict`.
 - **Non-owning Worker** — task/run/claim mismatch or a terminal run. It may only inspect/read/exit. It cannot write files, comment, operate Terminal/Relay/Guard/Git/UI, message externally, or transition Kanban. The Harness disables stop-nudge in that old process so it can exit without touching the current run.
 - **Unmanaged** — ordinary work outside a managed development Card.
 
@@ -91,11 +91,11 @@ Goal, Observable acceptance, Included scope, and Authority boundaries must be su
 
 Do not store derived Skill/mode/review fields in the Card. Policy derives them from stage and adapter:
 
-| stage | implement Skill | review Skill | review lane | UI owner | Auto Handoff |
-|---|---|---|---|---|---|
-| direct | `delegate-work` | none | no | Implement Worker, conditional | no |
-| write-plan | `write-plan` | `review-plan` | yes | none | no |
-| execute-plan | `execute-plan` | `review-execute-candidate` | yes | Implement Worker, conditional | required |
+| stage | implement Skill | review Skill | review lane | UI smoke | UI formal acceptance | Auto Handoff |
+|---|---|---|---|---|---|---|
+| direct | `delegate-work` | none | no | none | Implement Worker, conditional | no |
+| write-plan | `write-plan` | `review-plan` | yes | none | none | no |
+| execute-plan | `execute-plan` | `review-execute-candidate` | yes | Implement Worker | Review Worker, post-dual-gate | required |
 
 Feature identity is the literal `feature_id`; a parent edge is only a dependency. Per board, at most one non-archived Card may exist for one `feature_id + stage`.
 
@@ -137,15 +137,17 @@ devflow_inspect
 → validate terminal delegate-relay.result.v1 and stage output
 → engineering checks
 → direct/execute: check current run, create local Card-trailer candidate commit
-→ required UI/manual acceptance against that exact candidate
-→ authorized push only after UI PASS
+→ execute-plan: narrow candidate-bound critical UI smoke (exactly candidate-load,
+  primary-entry, runtime-stability)
+→ direct: formal UI/manual acceptance against that exact candidate, then authorized
+  exact-SHA publication when an upstream is configured
 → recheck run/candidate
 → devflow_implement_handoff
 ```
 
 Write-plan hands off exact Plan path/SHA. Direct and execute create an immutable candidate manifest binding board/card/feature/run/attempt, candidate commit, diff base/head, accepted Plan identity, terminal Relay/session, and evidence hashes. A new candidate or Plan SHA invalidates old evidence without deleting it.
 
-Writable Pi must not commit or push. If it does, stop for attribution/recovery. Landing uses `Kanban-Task: <card-id>` and the guard's v2 landing lineage. UI failure stays with implementation: resume the exact session, create a new attempt and new local candidate, then rerun failed scenarios and necessary regression.
+Writable Pi must not commit or push. If it does, stop for attribution/recovery. Landing uses `Kanban-Task: <card-id>` and the guard's v2 landing lineage. Smoke FAIL (execute-plan) and formal-acceptance FAIL (direct) stay with implementation: resume the exact session, create a new attempt and new local candidate, then rerun failed scenarios and necessary regression. Execute-plan formal-acceptance FAIL is the Review Worker's `revise` path, not Implement-owned rework.
 
 `devflow_implement_handoff` performs validation and the native transition atomically:
 
@@ -163,19 +165,23 @@ devflow_inspect
   `devflow_start_or_inspect_relay` (bounded wait slices by default, clamped just below
   the agent sequential-tool ceiling; on `attach`,
   heartbeat once and repeat the same bounded wait, never busy-poll files)
-→ validate run-scoped result and evidence identity
+→ validate run-scoped `structuredOutput` (stage submit tool) and evidence identity
+→ execute-plan, both gates PASS: acquire post-dual-gate acceptance lease, perform
+  formal UI acceptance, record v3 evidence, authorized exact-SHA publication
 → devflow_review_verdict(pass | revise | blocked)
 ```
 
-`review-execute-candidate` reviews one frozen commit range and emits independent `patch_gate` and `plan_conformance_gate` results plus `overall`. Either sub-gate FAIL forces REVISE. The Review Worker verifies any existing UI/manual PASS evidence belongs to the same candidate/Plan; it does not drive the renderer again.
+`review-execute-candidate` reviews one frozen commit range and finishes by calling `submit_execute_review` with independent `patch_gate` and `plan_conformance_gate` results plus `overall` (`review-plan` finishes via `submit_plan_review`). Either sub-gate FAIL forces REVISE. The Relay does not consume UI evidence. After both gates PASS, the outer Review Worker performs formal UI acceptance under a post-dual-gate lease.
 
 `devflow_review_verdict` maps exactly one terminal action: PASS→native complete, REVISE→native request changes with findings reference, BLOCKED→genuine typed block. Review round is derived from native history. Do not begin round 4 without Kenan's explicit authorization and a materially revised candidate.
 
 ## UI acceptance
 
-Required UI acceptance belongs to the Implement Worker after candidate commit and before push/handoff. Engineering tests never replace a real renderer. Acquire the named resource with `devflow_ui_lease`, generate evidence while the run-bound lease is valid, and always release/record cleanup. Review only validates evidence binding.
+Engineering tests never replace a real renderer. UI evidence enters the artifacts tree only through `devflow_ui_lease(action=record_evidence)` while a live purpose-matching lease is held.
 
-If deterministic scenarios pass but `manual_acceptance` remains, persist a candidate-bound checklist and block `needs_input`. Origin records Kenan's PASS/FAIL through `devflow_record_decision(kind=manual-verdict)` and explicitly unblocks. A fresh Implement Worker revalidates candidate/Plan before continuing; FAIL resumes exact-session rework.
+Execute-plan splits the duty: the Implement Worker records candidate-bound critical smoke (`purpose=smoke`; exactly `candidate-load`, `primary-entry`, `runtime-stability`) after the frozen local candidate and before `request_review`. Smoke never substitutes for formal acceptance. The outer Review Worker records formal acceptance (`purpose=acceptance`, `producer_role=review-worker`, current `review_round`) only after the merged Relay's Patch and Plan Conformance gates both PASS, under a post-dual-gate lease; then `devflow_publish_candidate` pushes the exact candidate SHA when an upstream is configured. Direct keeps Implement-owned formal acceptance (`purpose=acceptance`) and optional exact-SHA publication. Write-plan performs no UI.
+
+If deterministic scenarios pass but `manual_acceptance` remains, persist a candidate-bound checklist and block `needs_input`. For execute-plan this block is review-source: Origin records Kenan's PASS/FAIL through `devflow_record_decision(kind=manual-verdict)` and explicitly unblocks; native Kanban resumes in the review lane, and the fresh Review Worker revalidates candidate/Plan/round then re-runs the full review pipeline (merged Relay, lease, formal acceptance, publication) because verdict and acceptance evidence are run-scoped and never carry across runs. For direct, a fresh Implement Worker revalidates candidate/Plan before continuing. FAIL resumes exact-session implement rework.
 
 Use `references/behavior-acceptance.md` and the application-specific acceptance Skill.
 
@@ -184,8 +190,8 @@ Use `references/behavior-acceptance.md` and the application-specific acceptance 
 Fresh sessions rebuild from persistent facts, not old chats:
 
 - Origin: board + task id (or feature id) → `devflow_inspect`.
-- Implement: current Kanban run/claim → accepted decisions → Guard v2 → terminal result → Git landings/candidate → UI/manual evidence.
-- Review: current `review_requested` handoff → frozen candidate/Plan → run-scoped review result.
+- Implement: current Kanban run/claim → accepted decisions → Guard v2 → terminal result → Git landings/candidate → smoke (execute) or formal UI/manual evidence (direct).
+- Review: current `review_requested` handoff → frozen candidate/Plan → run-scoped review `structuredOutput` → formal acceptance/publication evidence for execute-plan.
 
 Guard live means attach; terminal means consume; uncertain means typed block. Only same-scope implement rework resumes the exact Coding Agent session. No general force exists. A narrowly approved zero-side-effect uncertain recovery remains Origin-only and can never authorize a non-owning Worker or override live/ambiguous write risk.
 
@@ -195,13 +201,17 @@ Do not commit, push, create PRs, tag, release, deploy, publish, alter versions, 
 
 New Cards use v2. Running/completed `development-stage.v1` Cards retain legacy inspect/transition compatibility until terminal; unfinalized legacy drafts may finalize as full v2. Guard v1 migrates in place on the first exclusive managed write with an atomic backup and lossless mapping to one attempt and optional landing. Failure to migrate is `HARNESS_INCOMPATIBLE`, never a reset.
 
+## Process safeguard
+
+Canonical design and revision inputs for this workflow must be tracked in the development-artifacts repository before an accepted design is finalized. An accepted design may not reverse a settled revision item without an explicit, sourced decision recorded in its reconciliation ledger.
+
 ## Invariants
 
 - One direct Card, or one write-plan + execute-plan pair; retries, Relay attempts, review rounds, and evidence are not Cards.
 - Managed v2 creation/finalization/Relay/UI/handoff/verdict use `devflow_*` tools.
 - Current run/claim ownership is checked immediately before every managed side effect.
-- Review is one fresh read-only Relay per stage/round; execute uses the merged review Skill.
-- Required UI acceptance occurs once, on the Implement Worker, against the frozen current candidate.
+- Review is one fresh read-only Relay per stage/round; execute uses the merged review Skill; each review Relay finishes via its stage submit tool (`submit_plan_review` / `submit_execute_review`).
+- Execute-plan required UI is split: Implement records candidate-bound critical smoke against the frozen current candidate; the outer Review Worker records formal acceptance once per review run after both source gates PASS. Direct keeps Implement-owned formal acceptance. Write-plan performs no UI.
 - No Goal Mode, auto-decompose, monitor, per-Card Cron, phase database, generic workflow DSL, or Core patch.
 
 ## References

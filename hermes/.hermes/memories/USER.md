@@ -14,7 +14,7 @@
 §
 验收后可常驻授权 commit，并自动 push 插件仓 main（仅触发 CI）；官网仓 main（push=生产部署）、tag、PR、发布均逐次授权。
 §
-开发任务在建卡或开工前须让柯楠三选一：两阶段卡、direct 卡、当前会话直接执行；当前会话直接执行不进入 Harness。managed Card 用 development-stage.v2 + devflow_*：direct 无卡内评审；write-plan 用 review-plan；execute 用单个 review-execute-candidate（独立 Patch/Conformance Gate），最多 3 轮。Required UI 由 Implement Worker 对冻结 candidate 在真实 renderer 验收，Review 只核验证据。
+开发任务在建卡或开工前须让柯楠三选一：两阶段卡、direct 卡、当前会话直接执行；当前会话直接执行不进入 Harness。managed Card 用 development-stage.v2 + devflow_*：direct 无卡内评审；write-plan 用 review-plan；execute 用单个 review-execute-candidate（独立 Patch/Conformance Gate），最多 3 轮。Required UI：execute-plan 由 Implement Worker 对冻结 candidate 在真实 renderer 做窄范围 critical smoke，外层 Review Worker 在双 Gate PASS 后租约下做正式验收并按需 exact-SHA 发布；direct 仍由 Implement 做正式验收。
 §
 前端/Obsidian UI 必须由华生在真实浏览器或 Obsidian 走关键路径，不能用测试、lint 或代码审查代替；无法可靠自动验时说明阻碍、已验范围和风险，并交由用户手验必要项。
 §

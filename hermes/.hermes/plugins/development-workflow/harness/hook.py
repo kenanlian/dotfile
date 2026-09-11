@@ -20,7 +20,8 @@ from .context import (
 )
 from .contracts import STAGE_SCHEMA_ID, card_schema_id, parse_decision_comment
 from .errors import HARNESS_STATE_UNAVAILABLE, RUN_OWNERSHIP_LOST
-from .hermes_adapter import HermesAdapter
+from .hermes_adapter import HermesAdapter, resolve_hermes_home
+from .ui_lease import UiLeaseManager, active_leases
 
 HOOK_NAME = "pre_tool_call"
 DEVFLOW_WRAPPER_HINT = (
@@ -34,9 +35,11 @@ _SCRIPT_BYPASS_HINT = (
 )
 _REVIEW_HINT = (
     "Review workers on managed development-stage cards are read-only evidence "
-    "validation. Do not mutate the workspace, browser, computer, messaging, "
-    "or generic tools; use devflow_inspect / devflow_start_or_inspect_relay / "
-    "devflow_review_verdict."
+    "validation except for lease-gated UI acceptance. Do not mutate the "
+    "workspace, messaging, or generic tools; drive browser/computer UI only "
+    "while holding a purpose=acceptance lease. Use devflow_inspect / "
+    "devflow_start_or_inspect_relay / devflow_review_verdict / "
+    "devflow_ui_lease / devflow_publish_candidate."
 )
 
 _GUARD_SCRIPT_MARKER = "development_external_guard.py"
@@ -135,6 +138,8 @@ _REVIEW_ALLOW = _READ_ONLY | frozenset(
     {
         "devflow_start_or_inspect_relay",
         "devflow_review_verdict",
+        "devflow_ui_lease",
+        "devflow_publish_candidate",
         "kanban_block",
         "kanban_heartbeat",
         "kanban_comment",
@@ -147,6 +152,16 @@ _REVIEW_DESCRIBABLE_TOOLS = frozenset(
         "devflow_inspect",
         "devflow_start_or_inspect_relay",
         "devflow_review_verdict",
+        "devflow_ui_lease",
+        "devflow_publish_candidate",
+    }
+)
+_UI_ACCEPTANCE_SURFACE = frozenset(
+    {
+        "computer_use",
+        "desktop_project",
+        "annotate_preview",
+        "apply_layout",
     }
 )
 _NON_OWNING_ALLOW = _READ_ONLY | _READ_ONLY_KANBAN | frozenset({"devflow_inspect"})
@@ -176,6 +191,32 @@ def _is_readonly_kanban(tool_name: str) -> bool:
 def _is_browser_mutator(tool_name: str) -> bool:
     """Mutating browser_* family: prefix match, minus the read-only allowlist."""
     return tool_name.startswith("browser_") and tool_name not in _READ_ONLY
+
+
+def _is_ui_acceptance_surface(tool_name: str) -> bool:
+    """Narrow UI-driving tools C9 opens only under a live acceptance lease."""
+    return tool_name in _UI_ACCEPTANCE_SURFACE or _is_browser_mutator(tool_name)
+
+
+def _review_acceptance_lease_held(run_id) -> bool:
+    """True iff a live purpose=acceptance lease is held by ``run_id``.
+
+    Fail-closed: any read/parse/lookup error is treated as no lease.
+    """
+    try:
+        if run_id is None:
+            return False
+        manager = UiLeaseManager(hermes_home=resolve_hermes_home())
+        wanted = str(run_id)
+        for lease in active_leases(manager.hermes_home):
+            if (
+                lease.get("purpose") == "acceptance"
+                and str(lease.get("run_id")) == wanted
+            ):
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def _is_mcp_name(tool_name: str) -> bool:
@@ -367,7 +408,7 @@ def _evaluate_protected(tool_name: str, args: dict) -> dict | None:
         return _block(_non_owning_message())
 
     if ctx.role == "review-worker":
-        return _review_policy(tool_name, args)
+        return _review_policy(tool_name, args, ctx)
 
     if ctx.role == "implement-worker":
         return _implement_policy(tool_name, args)
@@ -378,7 +419,7 @@ def _evaluate_protected(tool_name: str, args: dict) -> dict | None:
     return None
 
 
-def _review_policy(tool_name: str, args: dict) -> dict | None:
+def _review_policy(tool_name: str, args: dict, ctx) -> dict | None:
     if tool_name == "tool_describe":
         raw = args.get("names")
         names = [raw] if isinstance(raw, str) else raw
@@ -391,7 +432,8 @@ def _review_policy(tool_name: str, args: dict) -> dict | None:
             return None
         return _block(
             "Review workers may describe only devflow_inspect, "
-            "devflow_start_or_inspect_relay, and devflow_review_verdict."
+            "devflow_start_or_inspect_relay, devflow_review_verdict, "
+            "devflow_ui_lease, and devflow_publish_candidate."
         )
     if tool_name == "tool_search":
         return _block(
@@ -415,6 +457,10 @@ def _review_policy(tool_name: str, args: dict) -> dict | None:
             )
         return None
     if tool_name in _REVIEW_ALLOW:
+        return None
+    if _is_ui_acceptance_surface(tool_name) and _review_acceptance_lease_held(
+        ctx.env_run_id
+    ):
         return None
     return _block(_REVIEW_HINT)
 

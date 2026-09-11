@@ -25,8 +25,9 @@ Implement this bounded direct development-stage.v2 Card in the exact repository.
 Settled decisions, UI classification, and Authority boundaries>
 
 Inspect before editing; preserve unrelated work. Own todo decomposition, bounded internal
-delegation, implementation, focused/integration verification, and a renderer-ready handoff
-when UI acceptance is required. Return outcome, commands and observed results, changed files,
+delegation, implementation, focused/integration verification, and a renderer-ready
+candidate (execute-plan critical smoke after freeze; direct formal acceptance) when UI
+is required. Return outcome, commands and observed results, changed files,
 artifacts, and limitations. Do not commit, push, open a PR, release, deploy, publish, change
 versions, or perform unauthorized external effects.
 ```
@@ -69,7 +70,7 @@ Pi-internal post-execution review cycle, create no .dev/review directory, and re
 `skip: outer review gate`.
 
 Return implementation outcome, exact verification commands and observed results, changed
-files, renderer build/install/reload steps when UI acceptance is required, artifacts,
+files, renderer build/install/reload steps when UI smoke or acceptance is required, artifacts,
 deviations, and limitations. Do not commit, push, open a PR, release, deploy, publish,
 change versions, or perform unauthorized external effects.
 ```
@@ -90,8 +91,9 @@ Every review brief includes:
 ```text
 You and every delegated child are source/worktree read-only. Do not edit files, create
 workspace audit artifacts, run builds/tests or state-changing commands, invoke write-access
-children, commit, push, or perform external effects. Return the complete standalone review
-in the final response.
+children, commit, push, or perform external effects. Finish by calling the stage submit
+tool (`submit_plan_review` or `submit_execute_review`); the caller persists the captured
+structuredOutput.
 ```
 
 The run-scoped adapter directory is control-plane evidence, not a reviewer-authored workspace artifact. Review workers pass the brief inline via `brief_content` (they have no write tools); the harness validates it, persists it to `<run-dir>/brief.md` for the evidence chain, and spawns the Relay. `devflow_start_or_inspect_relay` waits in bounded slices (each clamped just below the agent sequential-tool ceiling, 420s by default) and consumes a terminal result in the same call. If it returns `attach`, heartbeat once and invoke it again; never busy-poll event/result files. `wait_seconds=0` is reserved for immediate diagnostic inspection.
@@ -102,9 +104,9 @@ Use `/skill:review-plan ` as the brief's first line (same trailing-space rule as
 
 ### Execute-plan review
 
-Run exactly one `review-execute-candidate` Relay with the first line `/skill:review-execute-candidate `. Pass exact board/card/feature, review run/round, repository, `diff_base`, committed `diff_head`/candidate, accepted Plan path/SHA, intended behavior, implementation handoff, and current candidate-bound UI/manual evidence paths when present.
+Run exactly one `review-execute-candidate` Relay with the first line `/skill:review-execute-candidate `. Pass exact board/card/feature, review run/round, repository, `diff_base`, committed `diff_head`/candidate, accepted Plan path/SHA, intended behavior, and implementation handoff.
 
-The Skill returns separate:
+The Skill finishes via `submit_execute_review` with separate:
 
 ```yaml
 patch_gate:
@@ -117,7 +119,7 @@ overall:
   verdict: pass | revise | blocked
 ```
 
-Either sub-gate failure forces `overall: revise`. The outer Review Worker validates identity and routes through `devflow_review_verdict`; it never blindly forwards prose.
+Either sub-gate failure forces `overall: revise`. The Relay does not consume UI evidence. The outer Review Worker validates identity, performs formal UI acceptance after both gates PASS, and routes through `devflow_review_verdict`; it never blindly forwards prose.
 
 ## Rework
 

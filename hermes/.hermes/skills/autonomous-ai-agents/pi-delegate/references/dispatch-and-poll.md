@@ -39,13 +39,17 @@ node "<skill-dir>/scripts/relay.mjs" --brief brief.txt --cd /path/to/repo
 | `--timeout <dur>` | Optional relay watchdog (default: off; h/m/s strings). Normal orchestration omits it; a deliberately long guard (`4h`) beats a task estimate. |
 | `--out-dir <dir>` | Artifact directory (default: a fresh directory under the system temp dir). |
 | `--auto-handoff-plan <file>` | Enable top-level Auto Handoff: one additional `-e` plus child-process `PI_AUTO_HANDOFF_PLAN_FILE` (the exact validated plan path) and `PI_AUTO_HANDOFF_HANDOFF_DIR` (`<actual out dir>/auto-handoff`). `<file>` must be an absolute readable non-empty regular file. Absence disables atomically. |
+| `--review-output plan\|execute` | Review relays only (never with `--write`). Loads `extensions/review-submit/` via `-e`, adds exactly `submit_plan_review` or `submit_execute_review` to the read-only allowlist, and captures exactly one successful expected-tool result into `structuredOutput`. |
+| `--review-output-recovery` | Single output-only recovery turn. Requires `--session` and `--review-output`. Child allowlist is only the stage submit tool; an output-only instruction is appended. |
 | `-h`, `--help` | Print the relay's header help. |
 
 A fresh run defaults to read-only. Writing requires an explicit `--write`. The relay
 always passes `--no-extensions` plus an explicit `-e <delegate-agent-root>` so extension
 loading is deterministic: the `delegate_agent` tool exists and nothing implicit loads.
 When `--auto-handoff-plan` is present, one additional `-e` loads the auto-handoff
-extension; delegated children keep `--no-extensions` and never receive it. Global
+extension; delegated children keep `--no-extensions` and never receive it. When
+`--review-output` is present, one additional `-e` loads the review-submit extension
+and the stage submit tool is added to the read-only allowlist. Global
 Skills discovery stays enabled; the relay never copies or mirrors Skills.
 
 There is no `call_allowlist` in this relay: a `--read-only` parent can still ask
@@ -83,6 +87,16 @@ Artifacts live outside the repo by default so they do not appear in `touchedFile
   the run never produced an assistant message), `resolvedProvider`, `thinking`, `resumed`.
 - `startedAt`, `finishedAt`, `finalMessage`, `usage` (last assistant usage), `stopReason`,
   `autoRetryCount` (Pi auto-retries are normal; they are counted, not failed).
+  `finalMessage` is diagnostic only; review runs finish via the stage submit tool and
+  nothing parses `finalMessage`.
+- `structuredOutput` — `{ tool, payload }` when `--review-output` captured exactly one
+  successful expected-tool result (`submit_plan_review` or `submit_execute_review`);
+  otherwise `null`. Absent `--review-output`, always `null` (write-mode relays never
+  set the flag). Zero, two or more successful expected-tool results, or an error
+  result from the expected tool, are protocol errors: `structuredOutput` stays `null`
+  and `structuredOutputError` carries the diagnostic.
+- `structuredOutputError` — diagnostic string for a failed review-output capture;
+  `null` when capture succeeded or `--review-output` was absent.
 - `briefPath`, `finalPath` (null when absent), `eventsPath`, `stderrPath`.
 - `touchedFiles` — `git status --porcelain` lines for the working tree under `--cd`
   only, taken at terminal time. It is a snapshot, not an attribution of Pi's edits:
@@ -125,8 +139,14 @@ and writes `status: "unavailable"`.
 - **`status: "aborted"`:** the relay itself was killed and forwarded the kill to Pi.
   The result is written before the relay exits; inspect the working tree before
   re-dispatching.
-- **Empty `finalMessage`:** inspect `touchedFiles` and the diff. Add a closing-report
-  requirement to the next brief.
+- **Empty `finalMessage`:** for write/implement runs, inspect `touchedFiles` and the
+  diff; add a closing-report requirement to the next brief. Review runs terminate via
+  `submit_plan_review` / `submit_execute_review`; an empty `finalMessage` is expected
+  and is not a report-channel failure — consume `structuredOutput` instead.
+- **`structuredOutput` null with `structuredOutputError` on a review run:** the expected
+  submit tool was missing, duplicated, or returned an error. Do not guess from
+  `finalMessage`. At most one `--review-output-recovery --session <id>` turn, then a
+  typed capability block.
 - **`autoRetryCount > 0` on a completed run:** normal GLM endpoint flakiness absorbed
   by Pi's retry; not an incident.
 
@@ -142,9 +162,11 @@ ID observed in Pi's event stream to equal the requested full ID. The lifecycle m
 - execute-plan: fresh `--write` plus `--auto-handoff-plan <absolute accepted plan path>`; preserve the new execution session id;
 - rework: `--session <execution-id> --write` plus `--auto-handoff-plan` (execute-plan rework only; write-plan rework does not re-pass the option).
 
-Card review relays are always fresh `--read-only` Sessions. They never resume a
-planning/execution Session, never pass `--auto-handoff-plan`, and are validated
-directly by the native review run rather than the write-mode external guard.
+Card review relays are always fresh `--read-only --review-output plan|execute`
+Sessions. They never resume a planning/execution Session, never pass
+`--auto-handoff-plan`, and are consumed via `structuredOutput` rather than the
+write-mode external guard. A missing structured output may use one
+`--review-output-recovery --session <review-session-id>` turn.
 
 When Auto Handoff is enabled, handoff artifacts land under `<out-dir>/auto-handoff/`
 (`handoff-NNN-*.md`, `.auto-handoff-events.jsonl`), outside the product repository.
@@ -159,10 +181,12 @@ The argv is equivalent to:
 ```bash
 pi --mode json -p --no-extensions -e ~/.pi/agent/extensions/delegate-agent \
   [-e ~/Secret-Projects/pi-auto-handoff]              # only with --auto-handoff-plan
-  --tools read,grep,find,ls,delegate_agent            # or the write set
+  [-e <pi-delegate>/extensions/review-submit]         # only with --review-output
+  --tools read,grep,find,ls,delegate_agent            # or write set; review-output appends the stage submit tool
+                                                      # --review-output-recovery: only the stage submit tool
   [--model provider/model] --thinking high \
   [--session <existing-id>] \
-  -- @<temp-prompt-file>
+  [--append-system-prompt <output-only instruction>]  # only with --review-output-recovery
 ```
 
 When `--auto-handoff-plan` is set, the child is spawned with a fresh env copy that

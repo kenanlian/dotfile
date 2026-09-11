@@ -28,13 +28,20 @@ _EXECUTION_OPS = ("execution", "rework")
 
 @dataclass(frozen=True)
 class StagePolicy:
-    """Per-stage derived workflow policy (not stored on the Card)."""
+    """Per-stage derived workflow policy (not stored on the Card).
+
+    UI ownership is split: ``ui_smoke_owner`` is ``implement`` or
+    ``none``; ``ui_acceptance_owner`` is ``implement``, ``review``, or
+    ``none``. These are derived policy fields, never duplicated onto the
+    Card (``development-stage.v2``).
+    """
 
     stage: str
     implement_skill: str
     review_skill: str | None
     review_lane: bool
-    ui_execution: str
+    ui_smoke_owner: str
+    ui_acceptance_owner: str
     auto_handoff: bool
     completion_owner: str
     max_review_rounds: int
@@ -46,7 +53,8 @@ POLICIES: dict[str, StagePolicy] = {
         implement_skill="delegate-work",
         review_skill=None,
         review_lane=False,
-        ui_execution="implement",
+        ui_smoke_owner="none",
+        ui_acceptance_owner="implement",
         auto_handoff=False,
         completion_owner="implement",
         max_review_rounds=MAX_REVIEW_ROUNDS,
@@ -56,7 +64,8 @@ POLICIES: dict[str, StagePolicy] = {
         implement_skill="write-plan",
         review_skill="review-plan",
         review_lane=True,
-        ui_execution="none",
+        ui_smoke_owner="none",
+        ui_acceptance_owner="none",
         auto_handoff=False,
         completion_owner="review",
         max_review_rounds=MAX_REVIEW_ROUNDS,
@@ -66,7 +75,8 @@ POLICIES: dict[str, StagePolicy] = {
         implement_skill="execute-plan",
         review_skill="review-execute-candidate",
         review_lane=True,
-        ui_execution="implement",
+        ui_smoke_owner="implement",
+        ui_acceptance_owner="review",
         auto_handoff=True,
         completion_owner="review",
         max_review_rounds=MAX_REVIEW_ROUNDS,

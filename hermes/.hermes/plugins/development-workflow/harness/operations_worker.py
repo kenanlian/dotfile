@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -25,15 +26,18 @@ from .context import (
 from .contracts import (
     CANDIDATE_SCHEMA_ID,
     PLAN_REVIEW_SCHEMA_ID,
+    UI_PROTOCOL_REVIEW_ACCEPTANCE,
     parse_decision_comment,
     validate_execute_review,
     validate_plan_review,
+    validate_ui_evidence,
 )
 from .errors import (
     ADAPTER_CAPABILITY_MISSING,
     AUTO_HANDOFF_INVALID,
     BRIEF_MISSING,
     CARD_CONTRACT_INVALID,
+    CANDIDATE_CHANGED,
     CANDIDATE_NOT_FROZEN,
     EVIDENCE_IDENTITY_MISMATCH,
     HARNESS_INCOMPATIBLE,
@@ -42,23 +46,31 @@ from .errors import (
     MANUAL_ACCEPTANCE_PENDING,
     PLAN_IDENTITY_MISSING,
     PLAN_SHA_MISMATCH,
+    PUBLICATION_REQUIRED,
+    PUBLICATION_VERIFICATION_FAILED,
     RELAY_ATTEMPT_UNCERTAIN,
     REVIEW_GATE_INCOMPLETE,
     REVIEW_ROLE_REQUIRED,
+    REVIEW_STRUCTURED_OUTPUT_MISSING,
     ROUND_LIMIT_REACHED,
     RUN_NOT_OWNED,
     RUN_OWNERSHIP_LOST,
     UI_ACCEPTANCE_INCOMPLETE,
+    UI_RESOURCE_BUSY,
+    UI_SMOKE_INCOMPLETE,
     WORKSPACE_INVALID,
+    HarnessError,
     failure,
 )
 from .evidence import (
+    PUBLICATION_SCHEMA_ID,
     REVIEW_EVIDENCE_FILENAME,
-    extract_review_report,
     fallback_eligible,
+    git,
     handoff_metadata_from_runs,
     load_candidate_manifests,
     load_json,
+    load_publication_record,
     load_review_evidence,
     load_ui_evidence,
     normalize_execute_review,
@@ -70,12 +82,15 @@ from .evidence import (
     sha256_file,
     task_dir,
     verify_auto_handoff_result,
+    verify_candidate_tree_unchanged,
     verify_landing,
     verify_plan_identity,
     verify_ui_evidence_binding,
     write_candidate_manifest,
     write_json_atomic,
+    write_publication_record,
     write_review_evidence,
+    write_ui_evidence,
 )
 from .guard_client import GuardClient
 from .policy import (
@@ -87,6 +102,26 @@ from .policy import (
 from .ui_lease import UiLeaseManager, lease_records, load_release_history
 
 REVIEW_RELAY_SCHEMA = "devflow-review-relay.v1"
+SMOKE_SCENARIO_NAMES = frozenset(
+    {"candidate-load", "primary-entry", "runtime-stability"}
+)
+_SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
+_REVIEW_SUBMIT_TOOL = {
+    "write-plan": "submit_plan_review",
+    "execute-plan": "submit_execute_review",
+}
+_REVIEW_OUTPUT_FLAG = {
+    "write-plan": "plan",
+    "execute-plan": "execute",
+}
+_OUTPUT_RECOVERY_REMEDIATION = (
+    "re-issue devflow_start_or_inspect_relay with output_recovery=true "
+    "to resume the exact Pi session in --review-output-recovery mode"
+)
+_OUTPUT_RECOVERY_USED_REMEDIATION = (
+    "file a typed block (block_kind=capability); output recovery already "
+    "used for this review run and no valid structuredOutput was produced"
+)
 RELAY_WAIT_DEFAULT_SECONDS = 1800
 RELAY_WAIT_MAX_SECONDS = 3000
 _EXECUTOR_WAIT_FALLBACK_SECONDS = 420
@@ -520,7 +555,9 @@ def _strip_path_key(item: dict) -> dict:
     return {key: value for key, value in item.items() if key != "_path"}
 
 
-def _ui_binding_code(violations: list[str]) -> str:
+def _ui_binding_code(
+    violations: list[str], *, incomplete_code: str = UI_ACCEPTANCE_INCOMPLETE
+) -> str:
     identity_markers = (
         "does not match",
         "identity",
@@ -534,10 +571,89 @@ def _ui_binding_code(violations: list[str]) -> str:
     blob = " ".join(violations).lower()
     if any(marker in blob for marker in identity_markers):
         return EVIDENCE_IDENTITY_MISMATCH
-    return UI_ACCEPTANCE_INCOMPLETE
+    return incomplete_code
 
 
-def _require_ui_pass(
+def _ui_purpose(item: dict) -> str | None:
+    purpose = item.get("purpose")
+    if purpose in {"smoke", "acceptance"}:
+        return purpose
+    return None
+
+
+def _implement_run_id(ctx: Any, manifest: dict) -> int:
+    producing_run_id = manifest.get("implement_run_id")
+    if isinstance(producing_run_id, int) and not isinstance(producing_run_id, bool):
+        return int(producing_run_id)
+    return int(ctx.env_run_id)
+
+
+def _pass_ui_items(items: list[dict], *, purpose: str) -> list[dict]:
+    return [
+        item
+        for item in items
+        if item.get("verdict") == "PASS" and _ui_purpose(item) == purpose
+    ]
+
+
+def _bind_ui_or_fail(
+    ctx: Any,
+    adapter: Any,
+    stage: Any,
+    ev: dict,
+    *,
+    manifest: dict,
+    attempt_number: int,
+    plan: dict | None,
+    relay_session_id: str | None,
+    run_id: int,
+    purpose: str,
+    producer_role: str,
+    review_round: int | None,
+    incomplete_code: str,
+    message: str,
+) -> None:
+    violations = verify_ui_evidence_binding(
+        ev,
+        manifest=manifest,
+        card=stage,
+        run_id=int(run_id),
+        attempt_number=int(attempt_number),
+        plan=plan,
+        relay_session_id=relay_session_id,
+        lease_records=lease_records(adapter.hermes_home),
+        purpose=purpose,
+        producer_role=producer_role,
+        review_round=review_round,
+    )
+    if violations:
+        _fail(
+            ctx,
+            _ui_binding_code(violations, incomplete_code=incomplete_code),
+            message,
+            violations=violations,
+            candidate_commit=manifest.get("candidate_commit") or ev.get("candidate_commit"),
+        )
+
+
+def _smoke_scenarios_ok(ev: dict) -> bool:
+    scenarios = ev.get("scenarios")
+    if not isinstance(scenarios, list) or len(scenarios) != len(SMOKE_SCENARIO_NAMES):
+        return False
+    names: list[str] = []
+    for item in scenarios:
+        if not isinstance(item, dict):
+            return False
+        name = item.get("name")
+        if not isinstance(name, str) or name not in SMOKE_SCENARIO_NAMES:
+            return False
+        if item.get("verdict") != "PASS":
+            return False
+        names.append(name)
+    return set(names) == SMOKE_SCENARIO_NAMES
+
+
+def _require_smoke_pass(
     ctx: Any,
     adapter: Any,
     stage: Any,
@@ -552,48 +668,268 @@ def _require_ui_pass(
     if stage.ui_acceptance != "required":
         return
     items = load_ui_evidence(task_dir_path, candidate)
-    pass_items = [item for item in items if item.get("verdict") == "PASS"]
+    pass_items = _pass_ui_items(items, purpose="smoke")
     if not pass_items:
-        verdicts = [item.get("verdict") for item in items]
+        _fail(
+            ctx,
+            UI_SMOKE_INCOMPLETE,
+            "required UI smoke has no PASS evidence for this candidate",
+            candidate_commit=candidate,
+            verdicts=[item.get("verdict") for item in items],
+        )
+    last_code = UI_SMOKE_INCOMPLETE
+    last_violations: list[str] = []
+    last_ev: dict | None = None
+    for raw in pass_items:
+        ev = _strip_path_key(raw)
+        if not _smoke_scenarios_ok(ev):
+            last_ev = ev
+            last_violations = ["smoke scenario name set is not exactly C3"]
+            continue
+        violations = verify_ui_evidence_binding(
+            ev,
+            manifest=manifest,
+            card=stage,
+            run_id=_implement_run_id(ctx, manifest),
+            attempt_number=int(attempt_number),
+            plan=plan,
+            relay_session_id=relay_session_id,
+            lease_records=lease_records(adapter.hermes_home),
+            purpose="smoke",
+            producer_role="implement-worker",
+            review_round=None,
+        )
+        if not violations:
+            return
+        last_ev = ev
+        last_violations = violations
+        last_code = _ui_binding_code(violations, incomplete_code=UI_SMOKE_INCOMPLETE)
+    if last_ev is not None and not _smoke_scenarios_ok(last_ev):
+        _fail(
+            ctx,
+            UI_SMOKE_INCOMPLETE,
+            "smoke evidence scenarios must be exactly candidate-load, "
+            "primary-entry, and runtime-stability, all PASS",
+            candidate_commit=candidate,
+            scenarios=last_ev.get("scenarios"),
+        )
+    _fail(
+        ctx,
+        last_code,
+        "UI smoke evidence is not bound to the current candidate/run/lease",
+        violations=last_violations,
+        candidate_commit=candidate,
+    )
+
+
+def _require_acceptance_pass(
+    ctx: Any,
+    adapter: Any,
+    stage: Any,
+    task_dir_path: Path,
+    *,
+    candidate: str,
+    manifest: dict,
+    attempt_number: int,
+    plan: dict | None,
+    relay_session_id: str | None,
+    producing_run_id: int,
+    producer_role: str,
+    review_round: int | None = None,
+) -> None:
+    if stage.ui_acceptance != "required":
+        return
+    items = load_ui_evidence(task_dir_path, candidate)
+    pass_items = _pass_ui_items(items, purpose="acceptance")
+    if not pass_items:
         _fail(
             ctx,
             UI_ACCEPTANCE_INCOMPLETE,
             "required UI acceptance has no PASS evidence for this candidate",
             candidate_commit=candidate,
-            verdicts=verdicts,
+            verdicts=[item.get("verdict") for item in items],
         )
-    ev = _strip_path_key(pass_items[0])
-    # Bind against the run that PRODUCED the evidence. On the review-pass
-    # path the manifest is loaded from disk and its implement_run_id is the
-    # evidence's run; using ctx.env_run_id there (the review run) would make
-    # every ui_acceptance=required execute card unfailable-to-pass. On the
-    # implement paths the manifest was just written with
-    # implement_run_id=ctx.env_run_id, so the fallback is identical.
-    producing_run_id = manifest.get("implement_run_id")
-    run_id = (
-        int(producing_run_id)
-        if isinstance(producing_run_id, int)
-        and not isinstance(producing_run_id, bool)
-        else int(ctx.env_run_id)
+    last_code = UI_ACCEPTANCE_INCOMPLETE
+    last_violations: list[str] = []
+    for raw in pass_items:
+        ev = _strip_path_key(raw)
+        violations = verify_ui_evidence_binding(
+            ev,
+            manifest=manifest,
+            card=stage,
+            run_id=int(producing_run_id),
+            attempt_number=int(attempt_number),
+            plan=plan,
+            relay_session_id=relay_session_id,
+            lease_records=lease_records(adapter.hermes_home),
+            purpose="acceptance",
+            producer_role=producer_role,
+            review_round=review_round,
+        )
+        if not violations:
+            return
+        last_violations = violations
+        last_code = _ui_binding_code(violations)
+    _fail(
+        ctx,
+        last_code,
+        "UI evidence is not bound to the current candidate/run/lease",
+        violations=last_violations,
+        candidate_commit=candidate,
     )
-    violations = verify_ui_evidence_binding(
-        ev,
+
+
+def _acceptance_pass_bound(
+    adapter: Any,
+    stage: Any,
+    task_dir_path: Path,
+    *,
+    candidate: str,
+    manifest: dict,
+    attempt_number: int,
+    plan: dict | None,
+    producing_run_id: int,
+    producer_role: str,
+    review_round: int | None,
+    relay_session_id: str | None = None,
+) -> bool:
+    items = load_ui_evidence(task_dir_path, candidate)
+    for item in _pass_ui_items(items, purpose="acceptance"):
+        ev = _strip_path_key(item)
+        violations = verify_ui_evidence_binding(
+            ev,
+            manifest=manifest,
+            card=stage,
+            run_id=int(producing_run_id),
+            attempt_number=int(attempt_number),
+            plan=plan,
+            relay_session_id=relay_session_id,
+            lease_records=lease_records(adapter.hermes_home),
+            purpose="acceptance",
+            producer_role=producer_role,
+            review_round=review_round,
+        )
+        if not violations:
+            return True
+    return False
+
+
+def _require_ui_pass(
+    ctx: Any,
+    adapter: Any,
+    stage: Any,
+    task_dir_path: Path,
+    *,
+    candidate: str,
+    manifest: dict,
+    attempt_number: int,
+    plan: dict | None,
+    relay_session_id: str | None,
+) -> None:
+    """C12 legacy wrapper: implement-produced acceptance bound to implement run."""
+    _require_acceptance_pass(
+        ctx,
+        adapter,
+        stage,
+        task_dir_path,
+        candidate=candidate,
         manifest=manifest,
-        card=stage,
-        run_id=run_id,
-        attempt_number=int(attempt_number),
+        attempt_number=attempt_number,
         plan=plan,
         relay_session_id=relay_session_id,
-        lease_records=lease_records(adapter.hermes_home),
+        producing_run_id=_implement_run_id(ctx, manifest),
+        producer_role="implement-worker",
+        review_round=None,
     )
+
+
+def _newest_handoff_metadata(adapter: Any, conn: Any, card_id: str) -> dict:
+    metas = handoff_metadata_from_runs(adapter.list_runs(conn, card_id) or [])
+    first = metas[0] if metas else {}
+    return first if isinstance(first, dict) else {}
+
+
+def _ui_protocol_or_fail(ctx: Any, metadata: dict | None) -> str | None:
+    """None selects C12 legacy. A present unknown marker is a contract error."""
+    if not isinstance(metadata, dict) or "ui_protocol" not in metadata:
+        return None
+    value = metadata.get("ui_protocol")
+    if value != UI_PROTOCOL_REVIEW_ACCEPTANCE:
+        _fail(
+            ctx,
+            CARD_CONTRACT_INVALID,
+            "ui_protocol marker is present but is not "
+            f"{UI_PROTOCOL_REVIEW_ACCEPTANCE!r} (got {value!r})",
+            ui_protocol=value,
+        )
+    return str(value)
+
+
+def _tree_or_fail(ctx: Any, repo, candidate: str | None) -> None:
+    if not candidate:
+        return
+    violations = verify_candidate_tree_unchanged(repo, candidate)
     if violations:
         _fail(
             ctx,
-            _ui_binding_code(violations),
-            "UI evidence is not bound to the current candidate/run/lease",
+            CANDIDATE_CHANGED,
+            "candidate tree HEAD/porcelain readback failed",
             violations=violations,
             candidate_commit=candidate,
         )
+
+
+def _review_output_flag(stage: Any) -> str | None:
+    return _REVIEW_OUTPUT_FLAG.get(str(getattr(stage, "stage", "")))
+
+
+def _review_submit_tool(stage: Any) -> str | None:
+    return _REVIEW_SUBMIT_TOOL.get(str(getattr(stage, "stage", "")))
+
+
+def _both_execute_gates_pass(data: dict) -> bool:
+    patch = data.get("patch_gate") if isinstance(data.get("patch_gate"), dict) else {}
+    conformance = (
+        data.get("plan_conformance_gate")
+        if isinstance(data.get("plan_conformance_gate"), dict)
+        else {}
+    )
+    return patch.get("verdict") == "pass" and conformance.get("verdict") == "pass"
+
+
+def _branch_has_upstream(repo, branch: str) -> bool:
+    proc = git(repo, "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}")
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def _current_branch_or_fail(ctx: Any, repo) -> str:
+    proc = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = proc.stdout.strip()
+    if proc.returncode != 0 or not branch or branch == "HEAD":
+        _fail(
+            ctx,
+            CARD_CONTRACT_INVALID,
+            "publication requires a named branch (detached HEAD refused)",
+            branch=branch or None,
+        )
+    return branch
+
+
+def _default_publish_remote(repo, branch: str) -> str | None:
+    proc = git(repo, "config", "--get", f"branch.{branch}.remote")
+    remote = proc.stdout.strip()
+    return remote or None
+
+
+def _ls_remote_sha(repo, remote: str, branch: str) -> str | None:
+    proc = git(repo, "ls-remote", remote, f"refs/heads/{branch}")
+    if proc.returncode != 0:
+        return None
+    line = (proc.stdout or "").strip().splitlines()
+    if not line:
+        return None
+    sha = line[0].split()[0].strip() if line[0].split() else ""
+    return sha or None
 
 
 def _manual_verdict_or_fail(
@@ -822,6 +1158,8 @@ def build_relay_argv(
     resume_session: str | None,
     plan_path: str | None,
     model: str,
+    review_output: str | None = None,
+    output_recovery: bool = False,
 ) -> list[str]:
     """Build ``node relay.mjs ...`` argv. Tests monkeypatch this seam."""
     argv = [
@@ -842,6 +1180,10 @@ def build_relay_argv(
         argv.extend(["--thinking", str(thinking)])
     if resume_session:
         argv.extend(["--session", str(resume_session)])
+    if spec.mode == "read" and review_output:
+        argv.extend(["--review-output", str(review_output)])
+        if output_recovery:
+            argv.append("--review-output-recovery")
     argv.extend(["--out-dir", str(out_dir)])
     if plan_path:
         argv.extend(["--auto-handoff-plan", str(plan_path)])
@@ -859,7 +1201,6 @@ def _gate_successful_result(
     result: Any,
     *,
     expected_cwd: str,
-    require_final_message: bool = False,
     allow_report_status: bool = False,
 ) -> list[str]:
     expected_model = _model_for_result(spec, result)
@@ -869,7 +1210,6 @@ def _gate_successful_result(
         expected_mode=_envelope_mode(spec),
         expected_model=expected_model,
         expected_thinking=spec.thinking,
-        require_final_message=require_final_message,
     )
     if not violations:
         return []
@@ -1235,6 +1575,10 @@ def _review_spawn(
     result_path: Path,
     model: str,
     relay_script: Path,
+    resume_session: str | None = None,
+    review_output: str | None = None,
+    output_recovery: bool = False,
+    prior_record: dict | None = None,
 ) -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     argv = build_relay_argv(
@@ -1244,9 +1588,11 @@ def _review_spawn(
         repo=str(repo),
         out_dir=str(run_dir),
         result_path=str(result_path),
-        resume_session=None,
+        resume_session=resume_session,
         plan_path=None,
         model=model,
+        review_output=review_output,
+        output_recovery=output_recovery,
     )
     stdout_log = open(run_dir / "relay-stdout.log", "ab")
     stderr_log = open(run_dir / "relay-stderr.log", "ab")
@@ -1273,17 +1619,21 @@ def _review_spawn(
     _LIVE_REVIEW_PROCS[proc.pid] = proc
     process_start = _ps_lstart(proc.pid)
     started_at = datetime.now(timezone.utc).isoformat()
-    write_json_atomic(
-        run_dir / "relay.json",
+    record = dict(prior_record) if isinstance(prior_record, dict) else {}
+    record.update(
         {
             "schema": REVIEW_RELAY_SCHEMA,
             "pid": proc.pid,
             "process_start": process_start,
             "result_path": str(result_path),
-            "session_id": None,
+            "session_id": resume_session or record.get("session_id"),
             "started_at": started_at,
-        },
+            "output_recovery_used": bool(
+                output_recovery or record.get("output_recovery_used")
+            ),
+        }
     )
+    write_json_atomic(run_dir / "relay.json", record)
     return {
         "ok": True,
         "outcome": "spawned",
@@ -1294,7 +1644,7 @@ def _review_spawn(
         "model": model,
         "out_dir": str(run_dir),
         "result_path": str(result_path),
-        "resumed": None,
+        "resumed": resume_session,
         "auto_handoff": False,
     }
 
@@ -1361,12 +1711,43 @@ def _review_consume_or_attach(
         spec,
         result,
         expected_cwd=expected_cwd,
-        require_final_message=True,
         allow_report_status=True,
     )
     assert isinstance(result, dict)
+    session_id = result.get("sessionId")
+    if isinstance(session_id, str) and session_id.strip():
+        updated = dict(record)
+        updated["session_id"] = session_id
+        write_json_atomic(run_dir / "relay.json", updated)
+        record = updated
+    expected_tool = _review_submit_tool(stage)
+    structured = result.get("structuredOutput")
+    payload = None
+    tool_name = None
+    if isinstance(structured, dict):
+        tool_name = structured.get("tool")
+        payload = structured.get("payload")
+    recovery_used = bool(record.get("output_recovery_used"))
+    if (
+        not expected_tool
+        or tool_name != expected_tool
+        or not isinstance(payload, dict)
+    ):
+        _fail(
+            ctx,
+            REVIEW_STRUCTURED_OUTPUT_MISSING,
+            "terminal review result has no valid structuredOutput for the "
+            "stage submit tool",
+            expected_tool=expected_tool,
+            structured_output_error=result.get("structuredOutputError"),
+            output_recovery_used=recovery_used,
+            remediation=(
+                _OUTPUT_RECOVERY_USED_REMEDIATION
+                if recovery_used
+                else _OUTPUT_RECOVERY_REMEDIATION
+            ),
+        )
     try:
-        report = extract_review_report(result.get("finalMessage") or "")
         kwargs = dict(
             board=board,
             card_id=card_id,
@@ -1375,17 +1756,24 @@ def _review_consume_or_attach(
             round=int(round_n),
         )
         if str(stage.stage) == "write-plan":
-            evidence_doc = normalize_plan_review(report, **kwargs)
+            evidence_doc = normalize_plan_review(payload, **kwargs)
         else:
-            evidence_doc = normalize_execute_review(report, **kwargs)
+            evidence_doc = normalize_execute_review(payload, **kwargs)
     except ValueError as exc:
         message = str(exc)
-        code = (
-            EVIDENCE_IDENTITY_MISMATCH
-            if "identity mismatch" in message
-            else REVIEW_GATE_INCOMPLETE
+        if "identity mismatch" in message:
+            _fail(ctx, EVIDENCE_IDENTITY_MISMATCH, message)
+        _fail(
+            ctx,
+            REVIEW_STRUCTURED_OUTPUT_MISSING,
+            message,
+            output_recovery_used=recovery_used,
+            remediation=(
+                _OUTPUT_RECOVERY_USED_REMEDIATION
+                if recovery_used
+                else _OUTPUT_RECOVERY_REMEDIATION
+            ),
         )
-        _fail(ctx, code, message)
     written = write_review_evidence(run_dir, evidence_doc)
     evidence_path = str(run_dir / REVIEW_EVIDENCE_FILENAME)
     return {
@@ -1521,6 +1909,7 @@ def _review_relay(
     brief_content: str | None,
     repo: Path,
     wait_seconds: Any,
+    output_recovery: bool = False,
 ) -> dict:
     ok, reasons = review_authority(adapter, ctx)
     if not ok:
@@ -1557,6 +1946,92 @@ def _review_relay(
     model = spec.model
     cwd = str(repo)
     bounded_wait = _relay_wait_seconds(adapter, ctx, wait_seconds)
+    review_output = _review_output_flag(stage)
+    relay_script = Path(adapter.hermes_home) / spec.skill_script_relpath
+    if output_recovery:
+        if not isinstance(record, dict):
+            _fail(
+                ctx,
+                REVIEW_STRUCTURED_OUTPUT_MISSING,
+                "output_recovery requires an existing review relay record",
+                remediation=_OUTPUT_RECOVERY_REMEDIATION,
+            )
+        if record.get("output_recovery_used") is True:
+            _fail(
+                ctx,
+                REVIEW_STRUCTURED_OUTPUT_MISSING,
+                "output recovery already used for this review run",
+                output_recovery_used=True,
+                remediation=_OUTPUT_RECOVERY_USED_REMEDIATION,
+            )
+        if _pid_alive(record.get("pid")):
+            _fail(
+                ctx,
+                RELAY_ATTEMPT_UNCERTAIN,
+                "cannot start output recovery while the review relay is live",
+                remediation=_UNCERTAIN_REMEDIATION,
+            )
+        session_id = record.get("session_id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            prior_result = load_json(result_path)
+            if isinstance(prior_result, dict):
+                session_id = prior_result.get("sessionId")
+        if not isinstance(session_id, str) or not session_id.strip():
+            _fail(
+                ctx,
+                REVIEW_STRUCTURED_OUTPUT_MISSING,
+                "output_recovery requires the exact prior Pi session id",
+                remediation=_OUTPUT_RECOVERY_REMEDIATION,
+            )
+        existing_brief = run_dir / "brief.md"
+        if existing_brief.is_file():
+            brief = existing_brief
+        else:
+            brief = _resolve_brief_or_fail(
+                ctx,
+                brief_path=brief_path,
+                brief_content=brief_content,
+                card_id=card_id,
+                dest_dir=run_dir,
+            )
+        if result_path.exists():
+            try:
+                result_path.unlink()
+            except OSError:
+                pass
+        spawned = _review_spawn(
+            ctx,
+            spec,
+            brief=brief,
+            repo=cwd,
+            run_dir=run_dir,
+            result_path=result_path,
+            model=model,
+            relay_script=relay_script,
+            resume_session=str(session_id),
+            review_output=review_output,
+            output_recovery=True,
+            prior_record=record,
+        )
+        if bounded_wait <= 0:
+            return spawned
+        record = load_json(record_path)
+        if not isinstance(record, dict):
+            _fail(ctx, RELAY_ATTEMPT_UNCERTAIN, "review relay record missing after spawn")
+        return _review_wait_or_consume(
+            adapter,
+            ctx,
+            spec,
+            stage,
+            run_dir,
+            record,
+            model,
+            wait_seconds=bounded_wait,
+            expected_cwd=cwd,
+            board=board,
+            card_id=card_id,
+            round_n=round_n,
+        )
     if isinstance(record, dict):
         return _review_wait_or_consume(
             adapter,
@@ -1587,7 +2062,10 @@ def _review_relay(
         run_dir=run_dir,
         result_path=result_path,
         model=model,
-        relay_script=Path(adapter.hermes_home) / spec.skill_script_relpath,
+        relay_script=relay_script,
+        resume_session=None,
+        review_output=review_output,
+        output_recovery=False,
     )
     if bounded_wait <= 0:
         return spawned
@@ -1617,6 +2095,7 @@ def op_start_or_inspect_relay(
     brief_content: str | None = None,
     repo: str | None = None,
     wait_seconds: Any = None,
+    output_recovery: bool = False,
 ) -> dict:
     """Derive commissioning and spawn, attach, or consume a Relay (§14, §19.5)."""
     ctx = _prologue(adapter)
@@ -1629,6 +2108,12 @@ def op_start_or_inspect_relay(
             remediation="dispatch a Worker; do not start Relays from Origin",
         )
     stage, workspace = _worker_card(adapter, ctx)
+    if output_recovery and ctx.role != "review-worker":
+        _fail(
+            ctx,
+            REVIEW_ROLE_REQUIRED,
+            "output_recovery is a review-lane recovery turn",
+        )
     if ctx.role == "review-worker":
         return _review_relay(
             adapter,
@@ -1638,6 +2123,7 @@ def op_start_or_inspect_relay(
             brief_content=brief_content,
             repo=workspace,
             wait_seconds=wait_seconds,
+            output_recovery=bool(output_recovery),
         )
     if isinstance(brief_content, str) and brief_content.strip():
         _fail(
@@ -1662,25 +2148,33 @@ def op_start_or_inspect_relay(
 # ---------------------------------------------------------------------------
 
 
-def op_ui_lease(adapter: Any, *, action: str, resource_id: str) -> dict:
-    """Acquire, release, or inspect a named UI acceptance resource (§17.2)."""
+def op_ui_lease(
+    adapter: Any,
+    *,
+    action: str,
+    resource_id: str,
+    evidence: dict | None = None,
+) -> dict:
+    """Acquire, release, inspect, or record UI evidence on a named resource."""
     ctx = _prologue(adapter)
     _require_roles(
         ctx,
         "implement-worker",
+        "review-worker",
         code=IMPLEMENT_ROLE_REQUIRED,
         message=(
-            "devflow_ui_lease requires an implement worker "
+            "devflow_ui_lease requires an implement or review worker "
             f"(role is {ctx.role!r})"
         ),
     )
-    stage, _workspace = _worker_card(adapter, ctx)
+    stage, workspace = _worker_card(adapter, ctx)
     action_name = (action or "").strip()
-    if action_name not in {"acquire", "release", "inspect"}:
+    if action_name not in {"acquire", "release", "inspect", "record_evidence"}:
         _fail(
             ctx,
             CARD_CONTRACT_INVALID,
-            f"action must be acquire, release, or inspect (got {action!r})",
+            "action must be acquire, release, inspect, or record_evidence "
+            f"(got {action!r})",
         )
     board = _resolve_board(adapter, ctx)
     card_id = _card_id(ctx)
@@ -1711,24 +2205,6 @@ def op_ui_lease(adapter: Any, *, action: str, resource_id: str) -> dict:
     candidate = (
         str(landing["commit"]) if landing and landing.get("commit") else None
     )
-    if action_name == "release":
-        released = manager.release(
-            resource_id, run_id=ctx.env_run_id, candidate_commit=candidate
-        )
-        return {"ok": True, **released}
-    if stage.ui_acceptance != "required":
-        _fail(
-            ctx,
-            UI_ACCEPTANCE_INCOMPLETE,
-            "ui_acceptance is not 'required'",
-            ui_acceptance=stage.ui_acceptance,
-        )
-    if not candidate:
-        _fail(
-            ctx,
-            CANDIDATE_NOT_FROZEN,
-            "no candidate landing commit is recorded for UI lease acquire",
-        )
 
     def holder_run_is_current(run_id: Any) -> bool:
         conn = None
@@ -1743,15 +2219,231 @@ def op_ui_lease(adapter: Any, *, action: str, resource_id: str) -> dict:
             if conn is not None:
                 adapter.close(conn)
 
-    lease = manager.acquire(
-        resource_id,
-        board=board,
-        card_id=card_id,
-        run_id=ctx.env_run_id,
-        candidate_commit=candidate,
-        holder_run_is_current=holder_run_is_current,
+    if action_name == "release":
+        inspected = manager.inspect(resource_id)
+        lease_doc = (inspected or {}).get("lease") if isinstance(inspected, dict) else None
+        tree_candidate = None
+        if isinstance(lease_doc, dict):
+            tree_candidate = lease_doc.get("candidate_commit") or candidate
+        if tree_candidate:
+            _tree_or_fail(ctx, workspace, str(tree_candidate))
+        released = manager.release(
+            resource_id, run_id=ctx.env_run_id, candidate_commit=candidate
+        )
+        return {"ok": True, **released}
+
+    if action_name == "record_evidence":
+        return _record_ui_evidence(
+            adapter,
+            ctx,
+            stage,
+            manager=manager,
+            resource_id=resource_id,
+            evidence=evidence,
+            board=board,
+            card_id=card_id,
+            workspace=workspace,
+        )
+
+    if stage.ui_acceptance != "required":
+        _fail(
+            ctx,
+            UI_ACCEPTANCE_INCOMPLETE,
+            "ui_acceptance is not 'required'",
+            ui_acceptance=stage.ui_acceptance,
+        )
+    if not candidate:
+        _fail(
+            ctx,
+            CANDIDATE_NOT_FROZEN,
+            "no candidate landing commit is recorded for UI lease acquire",
+        )
+    purpose, holder_role = _lease_acquire_purpose_and_role(
+        adapter, ctx, stage, board, card_id, candidate, guard
     )
+    _tree_or_fail(ctx, workspace, candidate)
+    try:
+        lease = manager.acquire(
+            resource_id,
+            board=board,
+            card_id=card_id,
+            run_id=ctx.env_run_id,
+            candidate_commit=candidate,
+            purpose=purpose,
+            holder_role=holder_role,
+            holder_run_is_current=holder_run_is_current,
+        )
+    except HarnessError:
+        raise
     return {"ok": True, "lease": lease, "lease_id": lease.get("lease_id")}
+
+
+def _lease_acquire_purpose_and_role(
+    adapter: Any,
+    ctx: Any,
+    stage: Any,
+    board: str,
+    card_id: str,
+    candidate: str,
+    guard: GuardClient,
+) -> tuple[str, str]:
+    if ctx.role == "implement-worker":
+        purpose = "smoke" if str(stage.stage) == "execute-plan" else "acceptance"
+        return purpose, "implement-worker"
+    if str(stage.stage) != "execute-plan":
+        _fail(
+            ctx,
+            REVIEW_GATE_INCOMPLETE,
+            "review UI lease is only available on execute-plan",
+            stage=stage.stage,
+        )
+    conn = _connect(adapter, ctx, board)
+    try:
+        metadata = _newest_handoff_metadata(adapter, conn, card_id)
+        protocol = _ui_protocol_or_fail(ctx, metadata)
+        if protocol is None:
+            _fail(
+                ctx,
+                REVIEW_GATE_INCOMPLETE,
+                "review UI lease requires ui_protocol "
+                f"{UI_PROTOCOL_REVIEW_ACCEPTANCE!r} on the newest handoff",
+            )
+        events = list(adapter.list_events(conn, card_id) or [])
+        round_n = review_round_from_events(events)
+        data, _path = _load_harness_review_evidence(
+            ctx, adapter, board, card_id, stage, round_n
+        )
+        violations = validate_execute_review(data)
+        if violations:
+            _fail(
+                ctx,
+                REVIEW_GATE_INCOMPLETE,
+                "review UI lease requires a valid execute-review for the "
+                "current run/round",
+                violations=violations,
+            )
+        _bind_execute_review(
+            ctx,
+            data,
+            card_id=card_id,
+            round_n=round_n,
+            candidate=candidate,
+            accepted_sha=_plan_sha(stage.accepted_plan),
+        )
+        if not _both_execute_gates_pass(data):
+            _fail(
+                ctx,
+                REVIEW_GATE_INCOMPLETE,
+                "review UI lease requires both Patch and Plan Conformance "
+                "gates to PASS",
+            )
+    finally:
+        adapter.close(conn)
+    return "acceptance", "review-worker"
+
+
+def _record_ui_evidence(
+    adapter: Any,
+    ctx: Any,
+    stage: Any,
+    *,
+    manager: UiLeaseManager,
+    resource_id: str,
+    evidence: dict | None,
+    board: str,
+    card_id: str,
+    workspace: Path,
+) -> dict:
+    if not isinstance(evidence, dict):
+        _fail(
+            ctx,
+            CARD_CONTRACT_INVALID,
+            "record_evidence requires an evidence object",
+        )
+    inspected = manager.inspect(resource_id)
+    lease = (inspected or {}).get("lease") if isinstance(inspected, dict) else None
+    if not isinstance(lease, dict):
+        _fail(
+            ctx,
+            UI_RESOURCE_BUSY,
+            "record_evidence requires a live lease on this resource",
+            resource_id=resource_id,
+        )
+    if str(lease.get("run_id")) != str(ctx.env_run_id):
+        _fail(
+            ctx,
+            UI_RESOURCE_BUSY,
+            "record_evidence requires a live lease held by this run",
+            resource_id=resource_id,
+            holder=lease,
+        )
+    doc = dict(evidence)
+    purpose = doc.get("purpose")
+    lease_purpose = lease.get("purpose")
+    if purpose != lease_purpose:
+        _fail(
+            ctx,
+            EVIDENCE_IDENTITY_MISMATCH,
+            "evidence.purpose must match the live lease purpose",
+            expected=lease_purpose,
+            actual=purpose,
+        )
+    mismatches: dict[str, Any] = {}
+    if doc.get("run_id") != ctx.env_run_id:
+        mismatches["run_id"] = {
+            "expected": ctx.env_run_id,
+            "actual": doc.get("run_id"),
+        }
+    if doc.get("producer_role") != ctx.role:
+        mismatches["producer_role"] = {
+            "expected": ctx.role,
+            "actual": doc.get("producer_role"),
+        }
+    lease_candidate = lease.get("candidate_commit")
+    if doc.get("candidate_commit") != lease_candidate:
+        mismatches["candidate_commit"] = {
+            "expected": lease_candidate,
+            "actual": doc.get("candidate_commit"),
+        }
+    conn = _connect(adapter, ctx, board)
+    try:
+        round_n = review_round_from_events(adapter.list_events(conn, card_id) or [])
+    finally:
+        adapter.close(conn)
+    expected_round = round_n if ctx.role == "review-worker" else None
+    if doc.get("review_round") != expected_round:
+        mismatches["review_round"] = {
+            "expected": expected_round,
+            "actual": doc.get("review_round"),
+        }
+    if mismatches:
+        _fail(
+            ctx,
+            EVIDENCE_IDENTITY_MISMATCH,
+            "UI evidence identity does not match the live lease/run",
+            fields=mismatches,
+        )
+    if ctx.role == "review-worker":
+        doc["relay_session_id"] = None
+    violations = validate_ui_evidence(doc)
+    if violations:
+        _fail(
+            ctx,
+            EVIDENCE_IDENTITY_MISMATCH,
+            "UI evidence is not a valid development-ui-evidence document",
+            violations=violations,
+        )
+    _tree_or_fail(ctx, workspace, lease_candidate)
+    try:
+        written = write_ui_evidence(
+            _task_dir(adapter, board, card_id),
+            lease_candidate,
+            ctx.env_run_id,
+            doc,
+        )
+    except HarnessError as err:
+        _fail(ctx, err.code, err.message, **dict(err.details or {}))
+    return {"ok": True, "evidence": written}
 
 
 # ---------------------------------------------------------------------------
@@ -1861,7 +2553,7 @@ def op_implement_handoff(
                 implement_run_id=int(ctx.env_run_id),
                 attempt_number=attempt_number,
             )
-            _require_ui_pass(
+            _require_acceptance_pass(
                 ctx,
                 adapter,
                 stage,
@@ -1871,6 +2563,9 @@ def op_implement_handoff(
                 attempt_number=attempt_number,
                 plan=None,
                 relay_session_id=_session_of(last, result),
+                producing_run_id=int(ctx.env_run_id),
+                producer_role="implement-worker",
+                review_round=None,
             )
             _manual_verdict_or_fail(adapter, ctx, conn, card_id, stage, candidate)
             _recheck_ownership(adapter, ctx, conn, card_id)
@@ -2038,7 +2733,7 @@ def op_implement_handoff(
                 implement_run_id=int(ctx.env_run_id),
                 attempt_number=attempt_number,
             )
-            _require_ui_pass(
+            _require_smoke_pass(
                 ctx,
                 adapter,
                 stage,
@@ -2049,7 +2744,6 @@ def op_implement_handoff(
                 plan=stage.accepted_plan if isinstance(stage.accepted_plan, dict) else None,
                 relay_session_id=_session_of(last, result),
             )
-            _manual_verdict_or_fail(adapter, ctx, conn, card_id, stage, candidate)
             round_n = review_round_from_events(
                 adapter.list_events(conn, card_id) or []
             )
@@ -2066,6 +2760,7 @@ def op_implement_handoff(
                     },
                     "accepted_plan_sha256": expected_sha,
                     "round": round_n,
+                    "ui_protocol": UI_PROTOCOL_REVIEW_ACCEPTANCE,
                 },
                 expected_run_id=ctx.env_run_id,
             )
@@ -2257,7 +2952,7 @@ def op_review_verdict(
             "review authority missing: " + ", ".join(reasons),
             reasons=reasons,
         )
-    stage, _workspace = _worker_card(adapter, ctx)
+    stage, workspace = _worker_card(adapter, ctx)
     card_id = _card_id(ctx)
     board = _resolve_board(adapter, ctx)
     verdict_name = (verdict or "").strip()
@@ -2282,6 +2977,10 @@ def op_review_verdict(
         guard = _guard_client(adapter, board, card_id)
         landing = _latest_landing(guard.read_state())
         candidate = str(landing["commit"]) if landing and landing.get("commit") else None
+        protocol = _ui_protocol_or_fail(
+            ctx, _newest_handoff_metadata(adapter, conn, card_id)
+        )
+        new_protocol = protocol == UI_PROTOCOL_REVIEW_ACCEPTANCE
         if round_n > MAX_REVIEW_ROUNDS:
             if not _round_limit_authorized(
                 adapter,
@@ -2419,36 +3118,80 @@ def op_review_verdict(
                     candidate=candidate,
                     accepted_sha=_plan_sha(stage.accepted_plan),
                 )
-                if stage.ui_acceptance == "required":
-                    manifests = [
-                        item
-                        for item in load_candidate_manifests(
-                            _task_dir(adapter, board, card_id)
-                        )
-                        if item.get("candidate_commit") == candidate
-                    ]
-                    if not manifests:
+                manifests = [
+                    item
+                    for item in load_candidate_manifests(
+                        _task_dir(adapter, board, card_id)
+                    )
+                    if item.get("candidate_commit") == candidate
+                ]
+                if not manifests:
+                    _fail(
+                        ctx,
+                        CANDIDATE_NOT_FROZEN,
+                        "candidate manifest is missing for UI evidence binding",
+                        candidate_commit=candidate,
+                    )
+                attempt_number = int(manifests[0].get("attempt_number") or 0)
+                landing_attempt = _find_attempt(
+                    guard.read_state(), attempt_number
+                ) or _latest_attempt(guard.read_state())
+                task_dir_path = _task_dir(adapter, board, card_id)
+                plan = (
+                    stage.accepted_plan
+                    if isinstance(stage.accepted_plan, dict)
+                    else None
+                )
+                if new_protocol:
+                    if not _both_execute_gates_pass(data):
                         _fail(
                             ctx,
-                            CANDIDATE_NOT_FROZEN,
-                            "candidate manifest is missing for UI evidence binding",
+                            REVIEW_GATE_INCOMPLETE,
+                            "execute review gates must both PASS for a pass verdict",
+                        )
+                    _require_acceptance_pass(
+                        ctx,
+                        adapter,
+                        stage,
+                        task_dir_path,
+                        candidate=candidate,
+                        manifest=manifests[0],
+                        attempt_number=attempt_number,
+                        plan=plan,
+                        relay_session_id=None,
+                        producing_run_id=int(ctx.env_run_id),
+                        producer_role="review-worker",
+                        review_round=int(round_n),
+                    )
+                    _manual_verdict_or_fail(
+                        adapter, ctx, conn, card_id, stage, candidate
+                    )
+                    _tree_or_fail(ctx, workspace, candidate)
+                    branch_proc = git(workspace, "rev-parse", "--abbrev-ref", "HEAD")
+                    branch = branch_proc.stdout.strip()
+                    if (
+                        branch
+                        and branch != "HEAD"
+                        and _branch_has_upstream(workspace, branch)
+                        and load_publication_record(task_dir_path, candidate) is None
+                    ):
+                        _fail(
+                            ctx,
+                            PUBLICATION_REQUIRED,
+                            "publication.json is required before review pass "
+                            "when the candidate branch has a configured upstream",
                             candidate_commit=candidate,
                         )
-                    attempt_number = int(manifests[0].get("attempt_number") or 0)
-                    landing_attempt = _find_attempt(
-                        guard.read_state(), attempt_number
-                    ) or _latest_attempt(guard.read_state())
+                elif stage.ui_acceptance == "required":
                     _require_ui_pass(
                         ctx,
                         adapter,
                         stage,
-                        _task_dir(adapter, board, card_id),
+                        task_dir_path,
                         candidate=candidate,
                         manifest=manifests[0],
                         attempt_number=attempt_number,
-                        plan=stage.accepted_plan
-                        if isinstance(stage.accepted_plan, dict)
-                        else None,
+                        plan=plan,
                         relay_session_id=_session_of(landing_attempt),
                     )
                 summary = reason or "review pass"
@@ -2513,13 +3256,6 @@ def op_review_verdict(
                         violations=violations,
                     )
                 overall = (data.get("overall") or {}).get("verdict")
-                if overall != "revise":
-                    _fail(
-                        ctx,
-                        REVIEW_GATE_INCOMPLETE,
-                        "execute review overall/gates are not consistent with revise",
-                        overall=overall,
-                    )
                 _bind_execute_review(
                     ctx,
                     data,
@@ -2528,6 +3264,63 @@ def op_review_verdict(
                     candidate=candidate,
                     accepted_sha=_plan_sha(stage.accepted_plan),
                 )
+                if overall == "revise":
+                    pass
+                elif (
+                    new_protocol
+                    and overall == "pass"
+                    and stage.ui_acceptance == "required"
+                ):
+                    if not findings_ref or not str(findings_ref).strip():
+                        _fail(
+                            ctx,
+                            CARD_CONTRACT_INVALID,
+                            "revise after dual-gate PASS requires findings_ref "
+                            "describing the UI defect",
+                        )
+                    manifests = [
+                        item
+                        for item in load_candidate_manifests(
+                            _task_dir(adapter, board, card_id)
+                        )
+                        if item.get("candidate_commit") == candidate
+                    ]
+                    if not manifests:
+                        _fail(
+                            ctx,
+                            CANDIDATE_NOT_FROZEN,
+                            "candidate manifest is missing for UI evidence binding",
+                            candidate_commit=candidate,
+                        )
+                    attempt_number = int(manifests[0].get("attempt_number") or 0)
+                    if _acceptance_pass_bound(
+                        adapter,
+                        stage,
+                        _task_dir(adapter, board, card_id),
+                        candidate=str(candidate),
+                        manifest=manifests[0],
+                        attempt_number=attempt_number,
+                        plan=stage.accepted_plan
+                        if isinstance(stage.accepted_plan, dict)
+                        else None,
+                        producing_run_id=int(ctx.env_run_id),
+                        producer_role="review-worker",
+                        review_round=int(round_n),
+                        relay_session_id=None,
+                    ):
+                        _fail(
+                            ctx,
+                            REVIEW_GATE_INCOMPLETE,
+                            "execute review overall/gates are not consistent with revise",
+                            overall=overall,
+                        )
+                else:
+                    _fail(
+                        ctx,
+                        REVIEW_GATE_INCOMPLETE,
+                        "execute review overall/gates are not consistent with revise",
+                        overall=overall,
+                    )
             returned = adapter.request_changes(
                 conn,
                 card_id,
@@ -2598,6 +3391,228 @@ def op_review_verdict(
             "verdict": "blocked",
             "block_kind": block_kind,
             "round": round_n,
+        }
+    finally:
+        adapter.close(conn)
+
+
+def _candidate_manifest_or_fail(
+    ctx: Any, task_dir_path: Path, candidate: str
+) -> dict:
+    manifests = [
+        item
+        for item in load_candidate_manifests(task_dir_path)
+        if item.get("candidate_commit") == candidate
+    ]
+    if not manifests:
+        _fail(
+            ctx,
+            CANDIDATE_NOT_FROZEN,
+            "candidate manifest is missing",
+            candidate_commit=candidate,
+        )
+    return manifests[0]
+
+
+def op_publish_candidate(
+    adapter: Any,
+    *,
+    expected_candidate_commit: str,
+    authority_ref: str,
+    remote: str | None = None,
+) -> dict:
+    """Exact-SHA publication of the frozen candidate (C10)."""
+    ctx = _prologue(adapter)
+    stage, workspace = _worker_card(adapter, ctx)
+    card_id = _card_id(ctx)
+    board = _resolve_board(adapter, ctx)
+    sha = (expected_candidate_commit or "").strip()
+    if not _SHA1_RE.fullmatch(sha):
+        _fail(
+            ctx,
+            CARD_CONTRACT_INVALID,
+            "expected_candidate_commit must be a 40-character lowercase hex SHA",
+            expected_candidate_commit=expected_candidate_commit,
+        )
+    if not isinstance(authority_ref, str) or not authority_ref.strip():
+        _fail(ctx, CARD_CONTRACT_INVALID, "authority_ref is required")
+    authority_ref = authority_ref.strip()
+    remote_name = remote.strip() if isinstance(remote, str) and remote.strip() else None
+
+    if str(stage.stage) == "direct":
+        _require_roles(
+            ctx,
+            "implement-worker",
+            code=IMPLEMENT_ROLE_REQUIRED,
+            message=(
+                "devflow_publish_candidate on direct requires an implement "
+                f"worker (role is {ctx.role!r})"
+            ),
+        )
+    elif str(stage.stage) == "execute-plan":
+        _require_roles(
+            ctx,
+            "review-worker",
+            code=REVIEW_ROLE_REQUIRED,
+            message=(
+                "devflow_publish_candidate on execute-plan requires a review "
+                f"worker (role is {ctx.role!r})"
+            ),
+        )
+    else:
+        _fail(
+            ctx,
+            CARD_CONTRACT_INVALID,
+            f"stage {stage.stage!r} does not support publication",
+        )
+
+    guard = _guard_client(adapter, board, card_id)
+    landing = _latest_landing(guard.read_state())
+    frozen = str(landing["commit"]) if landing and landing.get("commit") else None
+    if not frozen:
+        _fail(ctx, CANDIDATE_NOT_FROZEN, "no candidate landing commit is recorded")
+    task_dir_path = _task_dir(adapter, board, card_id)
+    manifest = _candidate_manifest_or_fail(ctx, task_dir_path, frozen)
+    if sha != frozen or sha != manifest.get("candidate_commit"):
+        _fail(
+            ctx,
+            CANDIDATE_CHANGED,
+            "expected_candidate_commit does not match the frozen candidate",
+            expected=sha,
+            frozen=frozen,
+        )
+
+    conn = _connect(adapter, ctx, board)
+    try:
+        protocol = _ui_protocol_or_fail(
+            ctx, _newest_handoff_metadata(adapter, conn, card_id)
+        )
+        if str(stage.stage) == "execute-plan" and protocol is None:
+            _fail(
+                ctx,
+                CARD_CONTRACT_INVALID,
+                "publication on execute-plan requires ui_protocol "
+                f"{UI_PROTOCOL_REVIEW_ACCEPTANCE!r}",
+            )
+        events = list(adapter.list_events(conn, card_id) or [])
+        round_n = review_round_from_events(events)
+        attempt_number = int(manifest.get("attempt_number") or 0)
+        plan = (
+            stage.accepted_plan if isinstance(stage.accepted_plan, dict) else None
+        )
+        if stage.ui_acceptance == "required":
+            if str(stage.stage) == "direct":
+                _require_acceptance_pass(
+                    ctx,
+                    adapter,
+                    stage,
+                    task_dir_path,
+                    candidate=sha,
+                    manifest=manifest,
+                    attempt_number=attempt_number,
+                    plan=None,
+                    relay_session_id=None,
+                    producing_run_id=int(ctx.env_run_id),
+                    producer_role="implement-worker",
+                    review_round=None,
+                )
+            else:
+                _require_acceptance_pass(
+                    ctx,
+                    adapter,
+                    stage,
+                    task_dir_path,
+                    candidate=sha,
+                    manifest=manifest,
+                    attempt_number=attempt_number,
+                    plan=plan,
+                    relay_session_id=None,
+                    producing_run_id=int(ctx.env_run_id),
+                    producer_role="review-worker",
+                    review_round=int(round_n),
+                )
+            _manual_verdict_or_fail(adapter, ctx, conn, card_id, stage, sha)
+        elif str(stage.stage) == "execute-plan":
+            data, _path = _load_harness_review_evidence(
+                ctx, adapter, board, card_id, stage, round_n
+            )
+            violations = validate_execute_review(data)
+            if violations or not _both_execute_gates_pass(data):
+                _fail(
+                    ctx,
+                    REVIEW_GATE_INCOMPLETE,
+                    "publication requires dual-gate PASS for the current round",
+                    violations=violations,
+                )
+            _bind_execute_review(
+                ctx,
+                data,
+                card_id=card_id,
+                round_n=round_n,
+                candidate=sha,
+                accepted_sha=_plan_sha(stage.accepted_plan),
+            )
+        _tree_or_fail(ctx, workspace, sha)
+        branch = _current_branch_or_fail(ctx, workspace)
+        if remote_name is None:
+            remote_name = _default_publish_remote(workspace, branch)
+        if not remote_name:
+            _fail(
+                ctx,
+                CARD_CONTRACT_INVALID,
+                "remote is required when the branch has no configured upstream",
+            )
+        push = git(workspace, "push", remote_name, f"{sha}:{branch}")
+        if push.returncode != 0:
+            _fail(
+                ctx,
+                PUBLICATION_VERIFICATION_FAILED,
+                "git push of the exact candidate SHA failed",
+                stderr=(push.stderr or "").strip(),
+                remote=remote_name,
+                branch=branch,
+                candidate_commit=sha,
+            )
+        verified = _ls_remote_sha(workspace, remote_name, branch)
+        if verified != sha:
+            _fail(
+                ctx,
+                PUBLICATION_VERIFICATION_FAILED,
+                "remote ref does not equal the published candidate SHA",
+                expected=sha,
+                actual=verified,
+                remote=remote_name,
+                branch=branch,
+            )
+        record = {
+            "schema": PUBLICATION_SCHEMA_ID,
+            "candidate_commit": sha,
+            "branch": branch,
+            "remote": remote_name,
+            "verified_ref": f"refs/heads/{branch}",
+            "publishing_run": int(ctx.env_run_id),
+            "authority_ref": authority_ref,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            written = write_publication_record(task_dir_path, record)
+        except HarnessError as err:
+            _fail(ctx, err.code, err.message, **dict(err.details or {}))
+        adapter.add_comment(
+            conn,
+            card_id,
+            str(ctx.role),
+            (
+                f"Published candidate {sha} to {remote_name} "
+                f"{branch} (authority: {authority_ref})"
+            ),
+        )
+        return {
+            "ok": True,
+            "candidate_commit": sha,
+            "branch": branch,
+            "remote": remote_name,
+            "publication": written,
         }
     finally:
         adapter.close(conn)

@@ -4,25 +4,42 @@ Use only when accepted scope contains graphical UI behavior. This reference owns
 
 ## Ownership and ordering
 
-Required UI acceptance is led by the current **Implement Worker** after a frozen local candidate commit exists and before push or managed handoff:
+Required UI work follows a frozen local candidate commit. Stage splits smoke from formal acceptance; smoke never substitutes for full acceptance scenarios and never satisfies formal acceptance.
+
+**Execute-plan smoke (Implement Worker, before `devflow_implement_handoff`):**
 
 ```text
 terminal implementation Relay + engineering checks
 → devflow current-run/candidate validation
 → local Card-trailer candidate commit + candidate manifest
-→ acquire named UI lease
-→ load exact candidate build and execute real-renderer scenarios
-→ persist candidate-bound evidence and release lease
-→ authorized push only after PASS
+→ acquire named UI lease (purpose=smoke)
+→ load exact candidate build and execute the three critical smoke scenarios
+  (candidate-load, primary-entry, runtime-stability)
+→ persist candidate-bound smoke evidence via record_evidence and release lease
 → recheck current run/candidate
 → devflow_implement_handoff
 ```
 
-The Review Worker does not drive UI again. It verifies that PASS evidence and any manual verdict belong to the current board/card/feature, producing implement run, candidate commit, diff range, accepted Plan SHA, and valid lease interval. A new candidate or Plan invalidates earlier evidence.
+**Execute-plan formal acceptance (outer Review Worker, after both source gates PASS):**
+
+```text
+fresh read-only review-execute-candidate Relay; both gates PASS
+→ acquire named UI lease (purpose=acceptance) for the current review run
+→ load exact candidate build and execute full real-renderer acceptance scenarios
+→ persist v3 acceptance evidence (producer_role=review-worker, current review_round)
+  via record_evidence and release lease
+→ authorized exact-SHA publication when an upstream is configured
+→ devflow_review_verdict
+```
+
+**Direct (Implement Worker, no review lane):** freeze the candidate, acquire `purpose=acceptance` lease, execute full acceptance, record evidence, optional exact-SHA publication, then complete.
+
+The read-only review Relay does not consume UI evidence and does not drive a renderer. Formal UI acceptance is the outer Review Worker's post-Relay, post-dual-gate step. A new candidate or Plan invalidates earlier evidence.
 
 ## UI lease
 
-Before any agent drives a shared application resource, call `devflow_ui_lease(action=acquire)` with a stable resource such as `obsidian:<acceptance-vault>`. Only an owning Implement Worker with a frozen current candidate may acquire it.
+Before any agent drives a shared application resource, call `devflow_ui_lease(action=acquire)` with a stable resource such as `obsidian:<acceptance-vault>`. An owning Implement Worker (execute-plan `purpose=smoke`; direct `purpose=acceptance`) or an owning Review Worker (`purpose=acceptance` only after both source gates PASS and the newest handoff carries `ui_protocol: review-acceptance.v1`) with a frozen current candidate may acquire it. During a valid acceptance lease, HEAD must equal the candidate commit and `git status --porcelain` must be empty.
+
 
 - Never let two agents or sessions drive one renderer/vault concurrently.
 - A live owning holder blocks acquisition.
@@ -34,13 +51,14 @@ Before any agent drives a shared application resource, call `devflow_ui_lease(ac
 
 ```text
 ~/Secret-Projects/development-artifacts/<board>/tasks/<card-id>/
-  ui/<candidate-sha>/<implement-run-id>/
+  ui/<candidate-sha>/<producing-run-id>/
 ```
 
-Record one run manifest plus bounded scenario evidence. It includes:
+Record one v3 run document plus bounded scenario evidence through `devflow_ui_lease(action=record_evidence)`. It includes:
 
-- schema/version and artifact content SHA;
-- board, Card, feature, stage, implement run and attempt;
+- schema `development-ui-evidence.v3`, `purpose` (`smoke` | `acceptance`), `producer_role`, `review_round` (integer ≥ 1 iff review-worker, else `null`), and artifact content SHA;
+- board, Card, feature, stage, producing run and attempt;
+
 - candidate commit and diff base/head;
 - accepted Plan path/SHA when execute-plan;
 - terminal Relay/session identity;
@@ -88,7 +106,7 @@ Tests, lint, typecheck, builds, reviews, and executor claims never convert BLOCK
 
 ## Failure and rework
 
-A FAIL is a correctable implementation result, not a blocker. Keep implementation ownership and resume the exact recorded session with:
+A smoke FAIL, or a direct formal-acceptance FAIL, is a correctable implementation result, not a blocker. Keep implementation ownership and resume the exact recorded session with:
 
 - candidate/build identity;
 - minimal UI reproduction;
@@ -97,8 +115,8 @@ A FAIL is a correctable implementation result, not a blocker. Keep implementatio
 - before/after state; and
 - screenshot/DOM/renderer evidence.
 
-Describe behavior, not a guessed cause. Start a new guard v2 rework attempt with a fresh output directory/result path and mandatory accepted-Plan Auto Handoff for execute-plan. The repaired output becomes a new local candidate; old evidence remains historical but cannot satisfy the gate. Verify failed scenarios first, then necessary regression.
+Describe behavior, not a guessed cause. Start a new guard v2 rework attempt with a fresh output directory/result path and mandatory accepted-Plan Auto Handoff for execute-plan. The repaired output becomes a new local candidate; old evidence remains historical but cannot satisfy the gate. Verify failed scenarios first, then necessary regression. An execute-plan formal-acceptance FAIL after both source gates PASS is Review `revise` (request-changes), not an Implement-owned blocker.
 
-Use BLOCKED only for permission, external environment, unavailable automation evidence, or a manual-only decision. Persist the pending checklist, release/clean the UI resource, and call typed `needs_input`. Origin records Kenan's candidate-bound verdict; after unblock a fresh Implement Worker revalidates candidate/Plan before continuing. Manual FAIL returns to exact-session rework.
+Use BLOCKED only for permission, external environment, unavailable automation evidence, or a manual-only decision. Persist the pending checklist, release/clean the UI resource, and call typed `needs_input`. For execute-plan this block is review-source: Origin records Kenan's candidate-bound verdict; after unblock the fresh Review Worker revalidates candidate/Plan/round and re-runs the full review pipeline (merged Relay, lease, formal acceptance, publication) because verdict and acceptance evidence are run-scoped and never carry across runs. For direct, a fresh Implement Worker revalidates candidate/Plan before continuing. Manual FAIL returns to exact-session implement rework.
 
-Pass only when every authorized automated scenario is PASS and every required manual item has a current candidate-bound PASS. Release the lease and verify cleanup before handoff.
+Smoke PASS is required for execute-plan implement handoff. Formal acceptance PASS (every authorized automated scenario PASS, every required manual item a current candidate-bound PASS) is required for execute-plan review verdict and for direct completion. Release the lease and verify cleanup before the owning handoff or verdict.

@@ -39,8 +39,9 @@ Use the Harness surface for managed Cards:
 | `devflow_record_decision` | Origin | Append sourced intent decision, amendment, or candidate-bound manual verdict |
 | `devflow_finalize_stage` | Origin | Validate full v2 replacement body/capabilities and call native specification |
 | `devflow_start_or_inspect_relay` | owning Worker | Derive and launch/attach/consume the exact write or review Relay; review calls wait in bounded slices by default |
-| `devflow_ui_lease` | Implement Worker | Acquire/release/inspect a candidate/run-bound named resource |
-| `devflow_implement_handoff` | Implement Worker | Validate current Plan/candidate/checks/UI then native complete/request-review |
+| `devflow_ui_lease` | owning Implement or Review Worker | Acquire/release/inspect/record_evidence for a candidate/run-bound named resource (Implement: smoke or direct acceptance; Review: post-dual-gate acceptance) |
+| `devflow_publish_candidate` | Review Worker (execute-plan); Implement Worker (direct) | Narrow exact-SHA publication after formal acceptance |
+| `devflow_implement_handoff` | Implement Worker | Validate current Plan/candidate/checks plus smoke (execute) or formal UI (direct), then native complete/request-review |
 | `devflow_review_verdict` | Review Worker | Validate current review evidence then native complete/request-changes/block |
 
 Do not use raw `kanban_create/link/finalize`, native lifecycle transitions, direct guard calls, or direct Relay launchers to bypass these tools on a managed v2 Card. The plugin's `pre_tool_call` hook is a safety net, not the preferred happy path. It blocks known bypasses, review writes, and non-owning mutations; internal failure returns `HARNESS_STATE_UNAVAILABLE` for protected actions while unrelated tools remain unaffected.
@@ -105,13 +106,13 @@ sequential-tool ceiling (420s by default); `attach`
 means heartbeat once and invoke the same tool again. `wait_seconds=0` is for an
 immediate diagnostic inspection only.
 
-Write-plan review uses one `review-plan`. Execute review uses one `review-execute-candidate` with independent patch and plan-conformance gates. Review evidence binds board/card/feature/run/round/candidate/diff/accepted-Plan and artifact hashes. Any identity change invalidates it.
+Write-plan review uses one `review-plan`. Execute review uses one `review-execute-candidate` with independent patch and plan-conformance gates. Each review Relay finishes via its stage submit tool (`submit_plan_review` / `submit_execute_review`) captured into `delegate-relay.result.v1` `structuredOutput`. Review evidence binds board/card/feature/run/round/candidate/diff/accepted-Plan and artifact hashes. Any identity change invalidates it.
 
 ## Candidate and UI evidence
 
-Direct/execute handoff requires a local candidate commit with exact `Kanban-Task: <card-id>` trailer and an immutable manifest under `candidates/<sha>/candidate.json`. It binds current implement run, guard attempt/terminal session, diff base/head, and accepted Plan. Candidate commits follow engineering checks and precede required UI acceptance. Push occurs only after current-candidate UI/manual PASS under applicable authority.
+Direct/execute handoff requires a local candidate commit with exact `Kanban-Task: <card-id>` trailer and an immutable manifest under `candidates/<sha>/candidate.json`. It binds current implement run, guard attempt/terminal session, diff base/head, and accepted Plan. Candidate commits follow engineering checks and precede UI work: execute-plan records critical smoke then requests review; the Review Worker then performs formal acceptance and authorized exact-SHA publication; direct records formal UI/manual PASS then may publish. Execute-plan implement handoff must not wait on formal acceptance.
 
-Automated UI acceptance runs under a named `devflow_ui_lease` and writes evidence under `ui/<candidate>/<run>/`. A live current owner blocks another holder. Reclaim requires dead PID and non-current run. Review validates current evidence; it does not drive the renderer.
+Automated UI evidence runs under a named `devflow_ui_lease` (Implement `purpose=smoke` or direct `purpose=acceptance`; Review `purpose=acceptance` after both source gates PASS) and is recorded via `record_evidence` under `ui/<candidate>/<run>/`. A live current owner blocks another holder. Reclaim requires dead PID and non-current run. The read-only review Relay does not consume UI evidence. Formal UI acceptance is the outer Review Worker's post-Relay step.
 
 ## Recovery
 
@@ -122,7 +123,7 @@ Automated UI acceptance runs under a named `devflow_ui_lease` and writes evidenc
 - Known feature uses board + feature id.
 - Board-only lookup returns bounded active candidates and never guesses among multiples.
 
-Rebuild cheapest-first: Card/current run/claim/events → decisions/amendments → Guard v2 or current review result → accepted Plan → Git/candidate → UI/manual evidence → session history only if still ambiguous.
+Rebuild cheapest-first: Card/current run/claim/events → decisions/amendments → Guard v2 or current review result → accepted Plan → Git/candidate → smoke/acceptance/manual evidence → session history only if still ambiguous.
 
 Write guard live means attach; terminal means consume; uncertain means typed block. Only same-scope rework resumes the exact implement session. Old Worker chats never regain ownership.
 

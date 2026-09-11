@@ -51,6 +51,7 @@ _ALLOWED_ACTIONS: dict[str, list[str]] = {
         "devflow_start_or_inspect_relay",
         "devflow_ui_lease",
         "devflow_implement_handoff",
+        "devflow_publish_candidate",
         "read",
         "kanban_block",
         "kanban_heartbeat",
@@ -59,6 +60,8 @@ _ALLOWED_ACTIONS: dict[str, list[str]] = {
     "review-worker": [
         "devflow_inspect",
         "devflow_start_or_inspect_relay",
+        "devflow_ui_lease",
+        "devflow_publish_candidate",
         "devflow_review_verdict",
         "read",
         "kanban_block",

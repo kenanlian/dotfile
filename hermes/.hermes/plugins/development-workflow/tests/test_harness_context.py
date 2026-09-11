@@ -231,7 +231,20 @@ class TestClassifySession(IsolatedKanbanHome):
         self.assertTrue(ctx.is_worker())
         self.assertTrue(ctx.is_owning())
         self.assertEqual(ctx.env_task_id, claimed.id)
-        self.assertIn("devflow_implement_handoff", allowed_actions_for(ctx.role))
+        self.assertEqual(
+            allowed_actions_for(ctx.role),
+            [
+                "devflow_inspect",
+                "devflow_start_or_inspect_relay",
+                "devflow_ui_lease",
+                "devflow_implement_handoff",
+                "devflow_publish_candidate",
+                "read",
+                "kanban_block",
+                "kanban_heartbeat",
+                "exit",
+            ],
+        )
 
     def test_review_claim_is_review_worker(self) -> None:
         conn = self.adapter.connect()
@@ -253,7 +266,20 @@ class TestClassifySession(IsolatedKanbanHome):
         ctx = classify_session(self.adapter)
         self.assertEqual(ctx.role, "review-worker")
         self.assertEqual(ctx.source_status, "review")
-        self.assertIn("devflow_review_verdict", allowed_actions_for(ctx.role))
+        self.assertEqual(
+            allowed_actions_for(ctx.role),
+            [
+                "devflow_inspect",
+                "devflow_start_or_inspect_relay",
+                "devflow_ui_lease",
+                "devflow_publish_candidate",
+                "devflow_review_verdict",
+                "read",
+                "kanban_block",
+                "kanban_heartbeat",
+                "exit",
+            ],
+        )
 
     def test_mismatched_run_id_is_non_owning_and_quarantine(self) -> None:
         conn = self.adapter.connect()

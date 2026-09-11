@@ -21,6 +21,16 @@ if (dumpPath) {
 
 const sessionId = process.env.PI_STUB_SESSION ?? "stub-session-1";
 process.stdout.write(`${JSON.stringify({ type: "session", id: sessionId })}\n`);
+const extraEvents = process.env.PI_STUB_EVENTS;
+if (extraEvents) {
+  const events = JSON.parse(extraEvents);
+  if (!Array.isArray(events)) {
+    throw new Error("PI_STUB_EVENTS must be a JSON array");
+  }
+  for (const event of events) {
+    process.stdout.write(`${JSON.stringify(event)}\n`);
+  }
+}
 process.stdout.write(`${JSON.stringify({
   type: "message_end",
   message: {
