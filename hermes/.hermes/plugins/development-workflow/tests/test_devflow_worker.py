@@ -1333,6 +1333,13 @@ class TestReviewRelay(IsolatedWorkerHome):
         ) / evidence.REVIEW_EVIDENCE_FILENAME
         self.assertFalse(evidence_path.exists())
 
+    def test_review_wait_clamps_under_sequential_tool_ceiling(self) -> None:
+        ctx = None
+        clamped = operations_worker._review_wait_seconds(self.adapter, ctx, 1800)
+        self.assertEqual(clamped, 390)
+        short = operations_worker._review_wait_seconds(self.adapter, ctx, 100)
+        self.assertEqual(short, 100)
+
     def test_review_brief_content_persists_and_spawns(self) -> None:
         created = self.create_feature(route="two-stage", feature_id="review-brief-inline")
         wp_id = created["cards"][0]["task_id"]

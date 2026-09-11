@@ -160,7 +160,8 @@ Do not call `kanban_complete` or `kanban_request_review` directly for a managed 
 ```text
 devflow_inspect
 → one fresh read-only `review-plan` or `review-execute-candidate` Relay through
-  `devflow_start_or_inspect_relay` (1800-second bounded wait by default; on `attach`,
+  `devflow_start_or_inspect_relay` (bounded wait slices by default, clamped just below
+  the agent sequential-tool ceiling; on `attach`,
   heartbeat once and repeat the same bounded wait, never busy-poll files)
 → validate run-scoped result and evidence identity
 → devflow_review_verdict(pass | revise | blocked)

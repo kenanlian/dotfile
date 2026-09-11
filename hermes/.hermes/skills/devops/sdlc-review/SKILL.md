@@ -56,8 +56,9 @@ code-review procedure below:
 2. Start, attach, or consume the stage review only through
    `devflow_start_or_inspect_relay`. Write-plan uses one fresh read-only `review-plan`;
    execute-plan uses one fresh read-only `review-execute-candidate` with separate Patch
-   and Plan Conformance gates. The tool waits up to 1800 seconds by default; if it
-   returns `attach`, heartbeat once and call it again with `wait_seconds=1800` instead
+   and Plan Conformance gates. The tool waits in bounded slices by default (each clamped
+   just below the agent sequential-tool ceiling, 420s by default); if it
+   returns `attach`, heartbeat once and call it again instead
    of polling event/result files. Use `wait_seconds=0` only for an immediate diagnostic
    inspection. Never use the write-mode guard, resume an implement Session, or launch
    the adapter directly.

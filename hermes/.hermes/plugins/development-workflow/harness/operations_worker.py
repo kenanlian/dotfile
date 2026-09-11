@@ -89,6 +89,9 @@ from .ui_lease import UiLeaseManager, lease_records, load_release_history
 REVIEW_RELAY_SCHEMA = "devflow-review-relay.v1"
 REVIEW_WAIT_DEFAULT_SECONDS = 1800
 REVIEW_WAIT_MAX_SECONDS = 3000
+_EXECUTOR_WAIT_FALLBACK_SECONDS = 420
+_EXECUTOR_WAIT_MARGIN_SECONDS = 30
+_EXECUTOR_WAIT_FLOOR_SECONDS = 60
 BLOCK_KINDS = ("needs_input", "capability", "dependency", "transient")
 _NON_SUCCESS_STATUSES = frozenset({"failed", "timeout", "aborted", "unavailable"})
 _UNCERTAIN_REMEDIATION = (
@@ -1348,9 +1351,28 @@ def _review_consume_or_attach(
     }
 
 
-def _review_wait_seconds(ctx: Any, value: Any) -> int:
+def _executor_wait_ceiling(adapter: Any) -> int:
+    """Largest slice that returns before the agent's sequential-tool deadline."""
+    timeout_s: Any = _EXECUTOR_WAIT_FALLBACK_SECONDS
+    try:
+        runtime = adapter._load_runtime()
+        load = runtime.get("load_config_readonly") if isinstance(runtime, dict) else None
+        cfg = load() if callable(load) else {}
+        raw = ((cfg or {}).get("timeouts") or {}).get("tools") or {}
+        candidate = raw.get("sequential_call")
+        if candidate is not None:
+            timeout_s = float(candidate)
+    except Exception:
+        timeout_s = _EXECUTOR_WAIT_FALLBACK_SECONDS
+    return max(
+        _EXECUTOR_WAIT_FLOOR_SECONDS,
+        int(timeout_s - _EXECUTOR_WAIT_MARGIN_SECONDS),
+    )
+
+
+def _review_wait_seconds(adapter: Any, ctx: Any, value: Any) -> int:
     if value is None:
-        return REVIEW_WAIT_DEFAULT_SECONDS
+        value = REVIEW_WAIT_DEFAULT_SECONDS
     if isinstance(value, bool) or not isinstance(value, int):
         _fail(
             ctx,
@@ -1365,7 +1387,7 @@ def _review_wait_seconds(ctx: Any, value: Any) -> int:
             f"wait_seconds must be between 0 and {REVIEW_WAIT_MAX_SECONDS}",
             wait_seconds=value,
         )
-    return value
+    return min(value, _executor_wait_ceiling(adapter))
 
 
 def _wait_for_review_process(pid: int, wait_seconds: int) -> None:
@@ -1479,7 +1501,7 @@ def _review_relay(
     record = load_json(record_path)
     model = spec.model
     cwd = str(repo)
-    bounded_wait = _review_wait_seconds(ctx, wait_seconds)
+    bounded_wait = _review_wait_seconds(adapter, ctx, wait_seconds)
     if isinstance(record, dict):
         return _review_wait_or_consume(
             adapter,

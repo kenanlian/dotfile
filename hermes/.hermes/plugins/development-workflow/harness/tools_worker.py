@@ -118,9 +118,12 @@ DEVFLOW_START_OR_INSPECT_RELAY_SCHEMA = {
                 "default": 1800,
                 "description": (
                     "Review lane only. Wait up to this many seconds for the "
-                    "current Relay before returning attach; terminal Relays "
-                    "are consumed in the same call. Defaults to 1800. Use 0 "
-                    "only for an immediate diagnostic inspection."
+                    "current Relay before returning attach; the effective "
+                    "slice is clamped just below the agent sequential-tool "
+                    "ceiling (420s by default). Terminal Relays are consumed "
+                    "in the same call. Defaults to 1800; on attach, heartbeat "
+                    "once and call again. Use 0 only for an immediate "
+                    "diagnostic inspection."
                 ),
             },
         },
