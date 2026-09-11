@@ -1,5 +1,5 @@
 name: development-workflow
-version: "0.2.0"
+version: "0.2.1"
 description: >-
   Development Workflow Harness v2: development-stage.v2 card contract, Guard v2
   lineage, eight Origin/Worker devflow tools, and a fail-closed pre_tool_call

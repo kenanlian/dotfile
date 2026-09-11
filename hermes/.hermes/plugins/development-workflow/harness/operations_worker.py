@@ -87,8 +87,8 @@ from .policy import (
 from .ui_lease import UiLeaseManager, lease_records, load_release_history
 
 REVIEW_RELAY_SCHEMA = "devflow-review-relay.v1"
-REVIEW_WAIT_DEFAULT_SECONDS = 1800
-REVIEW_WAIT_MAX_SECONDS = 3000
+RELAY_WAIT_DEFAULT_SECONDS = 1800
+RELAY_WAIT_MAX_SECONDS = 3000
 _EXECUTOR_WAIT_FALLBACK_SECONDS = 420
 _EXECUTOR_WAIT_MARGIN_SECONDS = 30
 _EXECUTOR_WAIT_FLOOR_SECONDS = 60
@@ -966,6 +966,7 @@ def _write_mode_relay(
     *,
     brief_path: str,
     repo: Path,
+    wait_seconds: int = 0,
 ) -> dict:
     card_id = _card_id(ctx)
     board = _resolve_board(adapter, ctx)
@@ -1144,6 +1145,46 @@ def _write_mode_relay(
             ctx, guard, spec, stage, outcome_payload, expected_cwd=cwd
         )
     if outcome in ("spawned", "attach"):
+        if wait_seconds > 0:
+            # Block inside this single tool call instead of returning attach
+            # immediately: a model-level re-call loop burns iteration budget
+            # (150-turn default) while a write relay runs for ~an hour.
+            pid = outcome_payload.get("pid")
+            if isinstance(pid, int) and not isinstance(pid, bool):
+                _wait_for_relay_process(pid, wait_seconds)
+                rc2, outcome_payload = guard.start_or_inspect(
+                    operation=operation,
+                    out_dir=out_dir,
+                    result_path=result_path,
+                    cmd_json=argv,
+                    cwd=cwd,
+                    plan_artifact=plan_artifact,
+                    new_attempt=False,
+                )
+                if rc2 != 0:
+                    _fail(
+                        ctx,
+                        HARNESS_STATE_UNAVAILABLE,
+                        "guard start-or-inspect failed",
+                        guard=outcome_payload,
+                    )
+                outcome = outcome_payload.get("outcome")
+                if outcome == "uncertain":
+                    _fail(
+                        ctx,
+                        RELAY_ATTEMPT_UNCERTAIN,
+                        str(
+                            outcome_payload.get("reason")
+                            or "relay attempt is uncertain"
+                        ),
+                        reason=outcome_payload.get("reason"),
+                        remediation=_UNCERTAIN_REMEDIATION,
+                    )
+                if outcome == "terminal":
+                    return _consume_terminal(
+                        ctx, guard, spec, stage, outcome_payload,
+                        expected_cwd=cwd,
+                    )
         result: dict[str, Any] = {
             "ok": True,
             "outcome": outcome,
@@ -1370,9 +1411,10 @@ def _executor_wait_ceiling(adapter: Any) -> int:
     )
 
 
-def _review_wait_seconds(adapter: Any, ctx: Any, value: Any) -> int:
+def _relay_wait_seconds(adapter: Any, ctx: Any, value: Any) -> int:
+    """Validate and clamp wait_seconds; shared by review and write lanes."""
     if value is None:
-        value = REVIEW_WAIT_DEFAULT_SECONDS
+        value = RELAY_WAIT_DEFAULT_SECONDS
     if isinstance(value, bool) or not isinstance(value, int):
         _fail(
             ctx,
@@ -1380,18 +1422,18 @@ def _review_wait_seconds(adapter: Any, ctx: Any, value: Any) -> int:
             "wait_seconds must be an integer",
             wait_seconds=value,
         )
-    if value < 0 or value > REVIEW_WAIT_MAX_SECONDS:
+    if value < 0 or value > RELAY_WAIT_MAX_SECONDS:
         _fail(
             ctx,
             CARD_CONTRACT_INVALID,
-            f"wait_seconds must be between 0 and {REVIEW_WAIT_MAX_SECONDS}",
+            f"wait_seconds must be between 0 and {RELAY_WAIT_MAX_SECONDS}",
             wait_seconds=value,
         )
     return min(value, _executor_wait_ceiling(adapter))
 
 
-def _wait_for_review_process(pid: int, wait_seconds: int) -> None:
-    """Block on the run-owned review Relay without a model polling loop."""
+def _wait_for_relay_process(pid: int, wait_seconds: int) -> None:
+    """Block on a run-owned Relay without a model polling loop."""
     if wait_seconds <= 0:
         return
     child = _LIVE_REVIEW_PROCS.get(pid)
@@ -1441,7 +1483,7 @@ def _review_wait_or_consume(
     )
     if current.get("outcome") != "attach" or wait_seconds <= 0:
         return current
-    _wait_for_review_process(int(current["pid"]), wait_seconds)
+    _wait_for_relay_process(int(current["pid"]), wait_seconds)
     current_ctx = _prologue(adapter)
     return _review_consume_or_attach(
         current_ctx,
@@ -1501,7 +1543,7 @@ def _review_relay(
     record = load_json(record_path)
     model = spec.model
     cwd = str(repo)
-    bounded_wait = _review_wait_seconds(adapter, ctx, wait_seconds)
+    bounded_wait = _relay_wait_seconds(adapter, ctx, wait_seconds)
     if isinstance(record, dict):
         return _review_wait_or_consume(
             adapter,
@@ -1593,7 +1635,12 @@ def op_start_or_inspect_relay(
             rule="review-only",
         )
     return _write_mode_relay(
-        adapter, ctx, stage, brief_path=brief_path or "", repo=workspace
+        adapter,
+        ctx,
+        stage,
+        brief_path=brief_path or "",
+        repo=workspace,
+        wait_seconds=_relay_wait_seconds(adapter, ctx, wait_seconds),
     )
 
 
