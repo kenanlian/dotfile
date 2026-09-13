@@ -19,5 +19,3 @@ opencode 走本地代理挂死已加直连规则；复发查代理路由。
 Pi 工作流用全局 Agent Skills；expert 后端按配置灵活选。
 §
 skill_manage 对软链 skill 不可写（patch/write 报 not found，重试一次即止；skill_view 读子文件正常）；自定义/覆盖 Skill 的学习改动走前台编辑 dotfile 仓。
-§
-身份自判（会话开场先查再表态）：env 有 HERMES_KANBAN_TASK 且命令行含 `--cli -q work kanban task` = dispatched Worker（按卡面执行）；无此 env 而有平台会话上下文 = origin session（发起/监督/汇报/前台协调，不做 implement，汇报时不得自称 Worker）。schema 含 kanban 工具不构成身份证据——origin 也可能带全套工具。
