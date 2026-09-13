@@ -1,21 +1,21 @@
 ---
 name: codex-delegate
-description: Transport Codex runs for development-orchestrator.
+description: Transport Codex CLI runs: preflight, dispatch, exact-thread resume, result contract.
 license: MIT
 compatibility: Requires the authenticated OpenAI Codex CLI, Node 18+, and git.
 metadata:
   version: 0.5.2
   hermes:
-    related_skills: [development-orchestrator]
+    related_skills: []
 ---
 
 # Codex Transport Adapter
 
-Provide reliable Codex CLI transport for `development-orchestrator`: binary/authentication preflight, workspace pinning, sandbox mode, outer model and effort, structured artifacts, watchdogs, and exact-thread resume. This adapter is not a development workflow, planner, reviewer, acceptance authority, or landing policy.
+Provide reliable Codex CLI transport: binary/authentication preflight, workspace pinning, sandbox mode, outer model and effort, structured artifacts, watchdogs, and exact-thread resume. This adapter is not a development workflow, planner, reviewer, acceptance authority, or landing policy.
 
 ## When to Use
 
-Load only when `development-orchestrator` has selected Codex as the external parent agent.
+Load when commissioning a Codex CLI run.
 
 Do not use this Skill to decide requirements, decide whether Origin grounding is needed, perform code review, define behavioral acceptance, or replace target-discovered Agent Skills.
 
@@ -93,19 +93,19 @@ The relay writes `result.json` with fields including:
 
 Completion means the child process exited and `result.json` exists. A progress display or final-message fragment is not completion.
 
-On timeout, abort, or failure, preserve the working tree and artifacts for `development-orchestrator`; do not clean, retry, or start a replacement blindly.
+On timeout, abort, or failure, preserve the working tree and artifacts for the commissioning session; do not clean, retry, or start a replacement blindly.
 
 ## Boundary
 
 - The target Codex parent owns repository investigation, planning, implementation, tests, internal review, and preparing the product artifact.
 - The target-discovered entry Skill owns internal subagents and domain Skills.
-- Hermes owns product discussion and real behavior acceptance under `development-orchestrator`.
+- Hermes owns product discussion and real behavior acceptance.
 - This adapter owns only transport mechanics.
 
 Do not inspect code or rerun gates because this adapter says so. Do not commit unless the controlling workflow separately and explicitly authorizes a commit-only run of already-prepared changes. Never push, create a PR, release, deploy, publish, or change versions.
 
 ## Verification
 
-A transport run is valid only when the intended repository, sandbox, outer model/effort, exact thread ID, terminal result status, and artifact paths are recorded for the controlling `development-orchestrator` workflow.
+A transport run is valid only when the intended repository, sandbox, outer model/effort, exact thread ID, terminal result status, and artifact paths are recorded for the commissioning session.
 
 For detailed relay failure semantics, see [references/dispatch-and-poll.md](references/dispatch-and-poll.md).

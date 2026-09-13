@@ -158,5 +158,5 @@ Two alternatives exist if you ever want them, but the helper is the recommended 
 
 The helper never commits — by design, not omission. Whether Codex's sandbox can write `.git` varies by
 version, OS, and execution path, so relying on it is a coin flip. The robust contract is: Codex edits
-the working tree; the Execution Worker lands intended files under the external guard's
-Git baseline and `Kanban-Task` trailer rule. See the `development-orchestrator` skill.
+the working tree; landing intended files (Git baseline, trailer conventions) belongs to the
+commissioning workflow, not this adapter.

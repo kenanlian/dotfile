@@ -119,11 +119,6 @@ The helper blocks. Use the orchestrator's background-command facility, or backgr
 it in a shell and poll for `result.json`. The run is done only when the process has
 exited and the file carries a `status`.
 
-Managed `development-stage.v2` Review Workers do not launch this helper directly.
-`devflow_start_or_inspect_relay` owns the process and blocks in slices clamped just
-below the agent sequential-tool ceiling (420s by default); an `attach` response means heartbeat once and repeat that bounded wait,
-never busy-poll the artifact files in model turns.
-
 A pre-run usage error exits 2 and writes no result. A missing `pi` binary exits 127
 and writes `status: "unavailable"`.
 
@@ -198,5 +193,5 @@ Delegated children keep `--no-extensions` and never receive the auto-handoff `-e
 ## The commit boundary
 
 The relay never commits or performs remote/release actions. Pi edits the working
-tree; the orchestrator reviews, re-runs the gates, and commits under its own
-authority. See `development-orchestrator`.
+tree; the commissioning session reviews, re-runs the gates, and commits under its own
+authority.

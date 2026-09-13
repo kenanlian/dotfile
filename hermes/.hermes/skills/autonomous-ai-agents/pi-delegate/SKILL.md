@@ -1,26 +1,23 @@
 ---
 name: pi-delegate
-description: Transport Pi runs for development-orchestrator.
+description: Transport Pi CLI runs: preflight, dispatch, exact-session resume, structured result contract.
 license: MIT
 compatibility: Requires the `pi` CLI (~/.local/bin/pi) 0.84.4+, Node 18+, and git.
 metadata:
   version: 0.5.0
   hermes:
-    related_skills: [development-orchestrator, pi-coding-agent]
+    related_skills: [pi-coding-agent]
 ---
 
 # Pi Transport Adapter
 
-Provide reliable Pi CLI transport for `development-orchestrator`: preflight, exact-cwd dispatch, read-only/write tool gating, explicit model and thinking, exact-session resume, structured artifacts, watchdog, and a truthful `delegate-relay.result.v1` result. This adapter is not a development workflow, planner, reviewer, acceptance authority, or landing policy.
+Provide reliable Pi CLI transport: preflight, exact-cwd dispatch, read-only/write tool gating, explicit model and thinking, exact-session resume, structured artifacts, watchdog, and a truthful `delegate-relay.result.v1` result. This adapter is not a development workflow, planner, reviewer, acceptance authority, or landing policy.
 
 ## When to Use
 
-Load when `development-orchestrator`/the Development Workflow Harness has selected Pi as
-the external parent agent, or when Kenan explicitly commissions a one-off current-session
-Pi run outside the managed Card workflow. In the latter case this Skill provides transport
-only: do not create Cards, invoke the Harness/guard, or import managed lifecycle policy.
+Load when commissioning any Pi CLI run — a delegated relay or a one-off current-session run. This Skill provides transport only.
 
-Do not use this Skill to decide requirements, decide whether Origin grounding is needed, perform code review, define behavioral acceptance, or replace target-discovered Agent Skills.
+Do not use this Skill to decide requirements, decide whether grounding is needed, perform code review, define behavioral acceptance, or replace target-discovered Agent Skills.
 
 ## Preflight
 
@@ -32,10 +29,10 @@ pi --version
 pi --list-models <search>
 ```
 
-Select the model by the commissioned relay stage; the authoritative stage→model map is the Pi commissioning map in `development-orchestrator`. Unless the user explicitly requests another model:
+An explicit model from the commissioner always wins. Otherwise, unless the user explicitly requests another model:
 
-- **Stage implement relays** (`write-plan`, `execute-plan`) and their same-session rework: primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`.
-- **All review relays** (`review-plan`, `review-execute-candidate`), **direct implement relays**, and **Origin grounding relays** (read-only factual grounding outside any Card): `zai-coding-cn/glm-5.3`, no fallback.
+- **Write-mode implement relays** and their same-session rework: primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`.
+- **Read-only review and grounding relays**: `zai-coding-cn/glm-5.3`, no fallback.
 
 All tiers run `--thinking high`. Models are provider-prefixed (`provider/model`), optionally with a `:thinking` suffix (`pi --model zai-coding-cn/glm-5.3:high`). If the brief's task scoping proves wrong mid-run, stop expansion and reclassify before continuing.
 
@@ -71,40 +68,23 @@ The brief is passed to Pi on the child's stdin (no positional argument; pi consu
 
 Extension loading is deterministic: `--no-extensions` plus explicit `-e <delegate-agent-root>` so the `delegate_agent` tool exists and nothing implicit loads. When `--auto-handoff-plan` is present, the relay loads one additional `-e` for the auto-handoff extension root (discovery: `PI_AUTO_HANDOFF_ROOT`, then `~/Secret-Projects/pi-auto-handoff`; `PI_AUTO_HANDOFF_ROOT` is a relay-internal discovery override, not a workflow-facing parameter) and injects child-process-scoped `PI_AUTO_HANDOFF_PLAN_FILE` and `PI_AUTO_HANDOFF_HANDOFF_DIR`; it never mutates the relay's own environment. When `--review-output` is present, the relay loads one additional `-e` for the review-submit extension root (bundled at `extensions/review-submit/`; override `PI_REVIEW_SUBMIT_ROOT`) and enables exactly the stage submit tool. Delegated children keep `--no-extensions` and never receive the auto-handoff or review-submit extension. Global Skills discovery stays enabled — Skills come from the single global root `~/Secret-Projects/agent_skills/skills` via the dotfile-managed `~/.pi/agent/skills` symlink; the relay never copies or mirrors Skills.
 
-## Development-Orchestrator Stages
+## Common run patterns
 
-Execute-plan implement relays and every same-session execute-plan rework relay pass `--auto-handoff-plan <absolute accepted plan path>` (the same path the guard validated as `--plan-artifact`). Origin grounding, write-plan, direct, and all review relays never pass it; delegated children never receive Auto Handoff.
+### Read-only grounding run
 
-### Optional Origin grounding
+Start fresh with `--read-only`; follow-ups may resume the exact `sessionId`. Never pass `--auto-handoff-plan` to a read-only run.
 
-For product discussion only, start fresh with `--read-only`; follow-ups may resume the exact `sessionId`. This Session is ephemeral and must never be passed to a Dispatcher worker or reused for Planning/Execution. Origin grounding relays never pass `--auto-handoff-plan`.
+### Write-mode implement run
 
-### Direct implement
+Start a fresh parent with `--write` under the implement model (primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`). Begin the brief with the first line `/skill:<entry-skill> ` (trailing space, then the task body), include the complete task contract, and require the exact deliverable plus top-level outcome. Preserve the returned `sessionId` for same-scope rework.
 
-Start a fresh direct Parent with `--write` under `zai-coding-cn/glm-5.3` (no fallback). Begin the brief with the first line `/skill:delegate-work ` (trailing space, then the task body) plus exact task inputs; the `delegate-work` Skill owns the internal delegation discipline. Direct relays never pass `--auto-handoff-plan`.
+### Read-only review run with structured output
 
-### Explicit write-plan
+Start every review relay fresh with `--read-only --review-output plan|execute` under `zai-coding-cn/glm-5.3` (no fallback); never pass an implement `--session`. Begin with the first line `/skill:<review-skill> ` (trailing space) plus exact review inputs, and explicitly forbid the reviewer and every delegated child from writing or invoking write-access children. Give each relay a unique run-scoped out dir/result path, wait for process exit, and consume `structuredOutput` (tool + payload); `finalMessage` is diagnostic only and is not parsed. If a terminal review result lacks a valid `structuredOutput`, re-issue one `--review-output-recovery --session <id>` turn. Review relays never pass `--auto-handoff-plan`.
 
-Start a fresh Planning Parent with `--write` and no Origin `--session`, under the stage implement model (primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`). Begin the brief with the first line `/skill:write-plan ` (trailing space, then the brief body), include the complete converged Card contract, declare that the outer native Card review owns final plan review, and require the exact final Plan path/SHA plus top-level outcome. The target Skill skips its duplicate internal final-review cycle but owns planning internals and allowed planning writes. Write-plan relays never pass `--auto-handoff-plan`.
+### Session resume for rework
 
-### Explicit execute-plan
-
-Start a separate fresh Execution Parent with `--write`, `--auto-handoff-plan <absolute accepted plan path>` (the same path the guard validated as `--plan-artifact`), and no Planning `--session`, under the stage implement model (primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`). Begin the brief with the first line `/skill:execute-plan ` (trailing space, then the brief body), include the exact accepted Plan path/SHA, and declare that the outer native Card review owns final patch/conformance review. Preserve the returned execution `sessionId` for same-scope rework.
-
-### Card review
-
-Start every review relay fresh with `--read-only --review-output plan` (write-plan review) or `--read-only --review-output execute` (execute review) under `zai-coding-cn/glm-5.3` (no fallback); never pass a planning/execution `--session`. Begin with the first line `/skill:review-plan ` (write-plan review) or `/skill:review-execute-candidate ` (execute review) — same trailing-space rule — plus exact Plan/candidate/commit-range inputs. Explicitly forbid the reviewer and every delegated child from writing or invoking write-access children. Give each relay a unique run-scoped out dir/result path, wait for process exit, and consume `structuredOutput` (tool + payload); `finalMessage` is diagnostic only and is not parsed. The write-mode external guard is not reused by Review Workers. Review relays never pass `--auto-handoff-plan`. If a terminal review result lacks a valid `structuredOutput`, the Harness may re-issue one `--review-output-recovery --session <id>` turn.
-
-For managed `development-stage.v2` work, the Harness owns that wait through
-`devflow_start_or_inspect_relay`: it waits in bounded slices (clamped just below
-the agent sequential-tool ceiling, 420s by default) and consumes a
-terminal result in the same call. On `attach`, heartbeat once and repeat the bounded
-wait; do not poll `events.jsonl`/`result.json` in model turns. Direct invocation of
-`relay.mjs` outside the Harness retains the blocking behavior documented below.
-
-### Behavioral rework
-
-Resume the exact recorded Pi `sessionId` with `--session <session-id> --write`, the observed failure packet, and the implement model of its relay family (stage cards: `kimi-coding/k3` primary, `zai-coding-cn/glm-5.3` fallback; direct: `zai-coding-cn/glm-5.3`). Execute-plan rework re-passes `--auto-handoff-plan` with the same accepted plan path (the same path the guard validated as `--plan-artifact`). Write-plan rework does not re-pass the option. The relay fails when that Session is absent or the observed ID differs; never replace it silently.
+Resume the exact recorded Pi `sessionId` with `--session <session-id> --write` plus the observed failure packet and the implement model of its relay family. The relay fails when that Session is absent or the observed ID differs; never replace it silently.
 
 ## Result Contract
 
@@ -126,13 +106,13 @@ Completion means the Pi process exited and `result.json` exists. A progress disp
 
 - The target Pi parent owns repository investigation, planning/implementation, tests, internal delegation, and preparing the product artifact. When the commissioning brief declares an outer native Card review, `write-plan`/`execute-plan` skip only their duplicate internal final-review cycles.
 - The target-discovered entry Skill (e.g. `write-plan`) owns internal subagents and domain Skills.
-- Hermes owns product discussion and real behavior acceptance under `development-orchestrator`.
+- Hermes owns product discussion and real behavior acceptance.
 - This adapter owns only transport mechanics.
 
 Do not inspect code or rerun gates because this adapter says so. The relay never commits, pushes, creates PRs, releases, deploys, publishes, or changes versions.
 
 ## Verification
 
-A transport run is valid only when the intended repository, mode, model, thinking, exact session id, terminal result status, and artifact paths are recorded for the controlling `development-orchestrator` workflow.
+A transport run is valid only when the intended repository, mode, model, thinking, exact session id, terminal result status, and artifact paths are recorded for the commissioning session.
 
 For detailed relay failure semantics, see [references/dispatch-and-poll.md](references/dispatch-and-poll.md).

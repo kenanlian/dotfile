@@ -160,6 +160,5 @@ values are quoted.
 
 ## The commit boundary
 
-The relay never commits. Cursor edits the working tree; the Execution Worker lands intended
-files under the external guard's Git baseline and `Kanban-Task` trailer rule. See the
-`development-orchestrator` skill.
+The relay never commits. Cursor edits the working tree; landing intended files (Git baseline,
+trailer conventions) belongs to the commissioning workflow, not this adapter.

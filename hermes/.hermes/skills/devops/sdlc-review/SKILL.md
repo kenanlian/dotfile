@@ -44,48 +44,6 @@ This skill is loaded automatically by the review dispatcher. Start with `kanban_
 3. Choose exactly one verdict: approve, request changes, or escalate.
 4. Record concrete evidence in the terminal Kanban transition.
 
-## Managed development-stage.v2 override
-
-When the Card body is `schema: development-stage.v2`, the standalone Development
-Workflow Harness owns the deterministic path and this section overrides the generic
-code-review procedure below:
-
-1. Call `devflow_inspect()` and require current Review Worker role, matching task/run/claim,
-   `claimed.source_status == review`, and the latest `review_requested` handoff for the
-   current Plan or frozen candidate.
-2. Start, attach, or consume the stage review only through
-   `devflow_start_or_inspect_relay`. Write-plan uses one fresh read-only `review-plan`;
-   execute-plan uses one fresh read-only `review-execute-candidate` with separate Patch
-   and Plan Conformance gates. The tool waits in bounded slices by default (each clamped
-   just below the agent sequential-tool ceiling, 420s by default); if it
-   returns `attach`, heartbeat once and call it again instead
-   of polling event/result files. Use `wait_seconds=0` only for an immediate diagnostic
-   inspection. Never use the write-mode guard, resume an implement Session, or launch
-   the adapter directly.
-3. The Pi review Relay and every delegated child remain source/worktree read-only. Do not
-   edit, run state-changing commands, invoke a write-access child, or rerun project tests
-   from that Relay. The Relay performs source review only; this Hermes Worker validates its
-   terminal `structuredOutput`, identity, and completeness, then (for execute-plan after
-   both gates PASS) performs formal UI acceptance under the lease-gated surface.
-4. For execute review: consume the Relay's `submit_execute_review` `structuredOutput`; require both
-   sub-gates, exact candidate/diff/accepted-Plan identity, and current run/round. After both gates
-   PASS, acquire the post-dual-gate acceptance lease, perform formal UI acceptance, record v3
-   evidence, and publish the exact candidate SHA when an upstream is configured. Verdict and
-   acceptance evidence are run-scoped and never carry across runs: after a review-lane
-   `needs_input` unblock, the fresh Review Worker in the same round still re-runs the full
-   pipeline (merged Relay, lease, formal acceptance, publication). Do not rerun formal
-   acceptance after a recorded PASS verdict already exists for this same review run, candidate,
-   and round.
-5. Submit exactly one terminal action through
-   `devflow_review_verdict(pass|revise|blocked)`. Do not directly call
-   `kanban_complete`, `kanban_request_changes`, or lifecycle `kanban_block` for a managed
-   verdict; the wrapper validates and calls the native primitive.
-
-Either execute sub-gate FAIL means REVISE. Missing or mismatched evidence is REVISE when
-the implementer can correct it, and BLOCKED only for a genuine human/external prerequisite.
-Review round is native `changes_requested` history plus one; round four requires Kenan's
-explicit authorization and a materially revised candidate.
-
 ## Quick Reference
 
 | Verdict | When | Final action |

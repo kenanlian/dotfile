@@ -6,7 +6,7 @@ tags: [Coding-Agent, Pi, Delegation, Subagent, Headless]
 metadata:
   hermes:
     tags: [Coding-Agent, Pi, Delegation, Subagent, Headless]
-    related_skills: [opencode, cursor-delegate, pi-delegate, development-orchestrator]
+    related_skills: [opencode, cursor-delegate, pi-delegate]
 ---
 
 # Pi Coding Agent

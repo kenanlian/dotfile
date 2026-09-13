@@ -1,21 +1,21 @@
 ---
 name: cursor-delegate
-description: Transport Cursor runs for development-orchestrator.
+description: Transport Cursor Agent CLI runs: preflight, dispatch, exact-session resume, result contract.
 license: MIT
 compatibility: Requires the authenticated Cursor `agent` CLI, Node 18+, and git.
 metadata:
   version: 0.5.3
   hermes:
-    related_skills: [development-orchestrator]
+    related_skills: []
 ---
 
 # Cursor Transport Adapter
 
-Provide reliable Cursor Agent CLI transport for `development-orchestrator`: authentication preflight, workspace pinning, permission mode, model selection, structured artifacts, watchdogs, and exact-session resume. This adapter is not a development workflow, planner, reviewer, acceptance authority, or landing policy.
+Provide reliable Cursor Agent CLI transport: authentication preflight, workspace pinning, permission mode, model selection, structured artifacts, watchdogs, and exact-session resume. This adapter is not a development workflow, planner, reviewer, acceptance authority, or landing policy.
 
 ## When to Use
 
-Load only when `development-orchestrator` has selected Cursor as the external parent agent.
+Load when commissioning a Cursor Agent CLI run.
 
 Do not use this Skill to decide requirements, decide whether Origin grounding is needed, perform code review, define behavioral acceptance, or replace target-discovered Agent Skills.
 
@@ -31,7 +31,7 @@ agent models
 
 Classify the whole outer run by its requested deliverable before selecting the parent model. Unless the user explicitly requests another model:
 
-- **Lightweight/simple task:** when `development-orchestrator` selects its lightweight direct-delegation path, use Cursor Grok 4.6 High explicitly with `--model cursor-grok-4.6-high`. This also covers narrow commit-only and read-only factual tasks. Confirm `cursor-grok-4.6-high` still appears in live `agent models` and record `resolvedModel`.
+- **Lightweight/simple task:** for narrow lightweight direct-delegation tasks, use Cursor Grok 4.6 High explicitly with `--model cursor-grok-4.6-high`. This also covers narrow commit-only and read-only factual tasks. Confirm `cursor-grok-4.6-high` still appears in live `agent models` and record `resolvedModel`.
 - **Default for substantial work:** use Claude Opus 5 with high effort for structured, complex, mixed, or ambiguous tasks and any run involving planning, review, product judgment, architecture, persistence, migration, or other load-bearing decisions. Pass the live supported slug explicitly as `--model claude-opus-5-thinking-high`. As of Cursor CLI `2026.08.25-3e8eec8`, `agent models` labels this slug `Claude Opus 5 1M Thinking`; model labels and allocations can change, so verify the live label before dispatch and require `resolvedModel` to confirm the intended 1M allocation rather than a silent 300K fallback.
 
 If lightweight repository discovery reveals broader coupling or consequential judgment, stop expansion and reclassify the task before continuing with the Opus default. Confirm the selected ID appears in live `agent models` before dispatch.
@@ -95,19 +95,19 @@ The relay writes `result.json` with fields including:
 
 Completion means the child process exited and `result.json` exists. A progress display or final-message fragment is not completion.
 
-On timeout, abort, or failure, preserve the working tree and artifacts for `development-orchestrator`; do not clean, retry, or start a replacement blindly.
+On timeout, abort, or failure, preserve the working tree and artifacts for the commissioning session; do not clean, retry, or start a replacement blindly.
 
 ## Boundary
 
 - The target Cursor parent owns repository investigation, planning, implementation, tests, internal review, and preparing the product artifact.
 - The target-discovered entry Skill owns internal subagents and domain Skills.
-- Hermes owns product discussion and real behavior acceptance under `development-orchestrator`.
+- Hermes owns product discussion and real behavior acceptance.
 - This adapter owns only transport mechanics.
 
 Do not inspect code or rerun gates because this adapter says so. Do not commit unless the controlling workflow separately and explicitly authorizes a commit-only run of already-prepared changes. Never push, create a PR, release, deploy, publish, or change versions.
 
 ## Verification
 
-A transport run is valid only when the intended repository, permission mode, outer model, exact session ID, terminal result status, and artifact paths are recorded for the controlling `development-orchestrator` workflow.
+A transport run is valid only when the intended repository, permission mode, outer model, exact session ID, terminal result status, and artifact paths are recorded for the commissioning session.
 
 For detailed relay failure semantics, see [references/dispatch-and-poll.md](references/dispatch-and-poll.md).

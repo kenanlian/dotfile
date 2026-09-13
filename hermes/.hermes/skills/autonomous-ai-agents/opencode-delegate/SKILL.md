@@ -1,6 +1,6 @@
 ---
 name: opencode-delegate
-description: Transport OpenCode runs for development-orchestrator.
+description: Transport OpenCode CLI runs: preflight, dispatch, exact-session resume, result contract.
 version: 0.1.1
 author: 柯楠, Hermes Agent
 license: MIT
@@ -8,16 +8,16 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [development, opencode, transport, delegation]
-    related_skills: [development-orchestrator, opencode]
+    related_skills: [opencode]
 ---
 
 # OpenCode Transport Adapter
 
-Provide OpenCode CLI transport for `development-orchestrator`: preflight, workspace and permission pinning, outer model selection, artifact capture, watchdogs, and exact-session resume. It does not decide requirements, workflow, review, acceptance, or landing.
+Provide OpenCode CLI transport: preflight, workspace and permission pinning, outer model selection, artifact capture, watchdogs, and exact-session resume. It does not decide requirements, workflow, review, acceptance, or landing.
 
 ## When to Use
 
-Load only after `development-orchestrator` selects OpenCode. Use the general `opencode` Skill for direct TUI use, PR review, statistics, or ordinary one-shot tasks outside this workflow.
+Load when commissioning an OpenCode CLI run. Use the general `opencode` Skill for direct TUI use, PR review, statistics, or ordinary one-shot tasks outside delegation.
 
 ## Preflight and Model Policy
 
@@ -34,7 +34,7 @@ opencode agent list
 Use exact IDs from `opencode models`; never invent or normalize one. Unless the user overrides the current task:
 
 - **Substantial/structured:** `zhipuai-coding-plan/glm-5.3 --variant high` for planning, review, design, implementation, architecture, persistence, migration, or other consequential judgment.
-- **Lightweight:** `opencode-go/deepseek-v4-pro --variant high` only for the orchestrator's narrow simple path, commit-only work, or factual read-only retrieval with no recommendation/design/review/file change.
+- **Lightweight:** `opencode-go/deepseek-v4-pro --variant high` only for narrow simple tasks, commit-only work, or factual read-only retrieval with no recommendation/design/review/file change.
 
 GLM supports `low|high|max`; DeepSeek supports `high|max`. Pass model and variant explicitly, confirm availability immediately before dispatch, and require `result.json` to report the same resolved outer model. If lightweight work exposes broad coupling or consequential judgment, stop and reclassify before using GLM.
 
@@ -62,18 +62,17 @@ The brief travels through stdin, never argv. The Relay runs `opencode run --form
 
 `--write` uses OpenCode `--auto`, which may approve any request not denied by configuration. Use only for a trusted repository and an authorized writable phase; it is not an OS sandbox.
 
-## Stage Mapping
+## Common run patterns
 
-- **Optional Origin grounding:** for product discussion only, start `--read-only`; follow-ups may resume its exact `sessionId`. This Session is ephemeral and never passes to a Dispatcher worker or Planning/Execution.
-- **`write-plan`:** start a fresh Planning Parent with `--write` and no Origin `--session`; begin with `Use the discovered write-plan Skill.`, include the complete converged Card contract, and require the exact Plan plus top-level gate/artifact outcome.
-- **`execute-plan`:** start a separate fresh Execution Parent with `--write` and no Planning `--session`; begin with `Use the discovered execute-plan Skill.` and include the exact accepted Plan path. Preserve its execution `sessionId`.
-- **Rework:** resume the exact execution session with `--session <execution-id> --write` and the observed failure/missing-contract packet.
+- **Read-only grounding run:** start `--read-only`; follow-ups may resume its exact `sessionId`.
+- **Write-mode implement run:** start fresh with `--write` and no prior `--session`; begin the brief with the entry Skill invocation, include the complete task contract, and require the exact deliverable plus top-level outcome. Preserve the returned `sessionId`.
+- **Rework:** resume the exact session with `--session <id> --write` and the observed failure/missing-contract packet.
 
 ## Result Contract
 
 `result.json` records terminal status/exit, OpenCode version, exact `sessionId`, requested/resolved model/variant/Agent, permission mode, available usage, `finalMessage`, `touchedFiles`, and paths to brief/events/final/stderr/session artifacts.
 
-Completion requires child-process exit and a valid `result.json`; a streamed text fragment or idle-looking event is not terminal. On timeout, abort, or failure, preserve the working tree and artifacts for the orchestrator—do not clean, retry, or replace the session blindly.
+Completion requires child-process exit and a valid `result.json`; a streamed text fragment or idle-looking event is not terminal. On timeout, abort, or failure, preserve the working tree and artifacts for the commissioning session—do not clean, retry, or replace the session blindly.
 
 ## Boundaries
 

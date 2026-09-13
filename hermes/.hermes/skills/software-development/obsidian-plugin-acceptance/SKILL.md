@@ -9,7 +9,7 @@ tags: [obsidian, plugin, behavior-acceptance, eval, dom]
 
 # Obsidian Plugin Acceptance via CLI eval
 
-Exercise a plugin through the same running app a user operates, using the official `obsidian-cli` `eval` command as the primary oracle. This skill owns Obsidian-specific execution mechanics; the acceptance lifecycle (scenarios, verdicts, failure packets, manual-check batching) lives in `development-orchestrator` references/behavior-acceptance.md.
+Exercise a plugin through the same running app a user operates, using the official `obsidian-cli` `eval` command as the primary oracle. This skill owns Obsidian-specific execution mechanics.
 
 ## When to Use
 
@@ -24,38 +24,6 @@ Not for note/vault content management — that is the `obsidian` skill.
 - Obsidian desktop running; CLI enabled (Settings → General → Advanced → Command line interface).
 - Executable: `/Applications/Obsidian.app/Contents/MacOS/obsidian-cli` (the GUI binary is NOT the CLI).
 - A scratch vault dedicated to acceptance (never the user's primary vault). `vaults` lists registered names.
-
-### Managed development-stage.v2 acceptance
-
-When a `development-stage.v2` Worker performs Obsidian UI work, this Skill owns
-only Obsidian execution mechanics; the Development Workflow Harness owns role, run,
-candidate, evidence, and lifecycle gates.
-
-1. Freeze and record the local Card-trailer candidate before loading its build.
-2. Acquire `devflow_ui_lease` for `obsidian:<acceptance-vault>` with the purpose that
-   matches the caller's duty: Implement Worker `purpose=smoke` on execute-plan (exactly
-   `candidate-load`, `primary-entry`, `runtime-stability`) or `purpose=acceptance` on
-   direct; Review Worker `purpose=acceptance` only after both source gates PASS. Require
-   board, Card, producing run, PID/start identity, and candidate commit to match.
-3. Prove the running plugin build comes from that exact candidate, then record evidence
-   through `devflow_ui_lease(action=record_evidence)` under
-   `development-artifacts/<board>/tasks/<card>/ui/<candidate>/<run>/`.
-4. Bind the v3 verdict to `purpose` / `producer_role` / `review_round` (integer ≥ 1 iff
-   review-worker), board/Card/feature/run/attempt, candidate/diff, accepted Plan SHA,
-   terminal Relay/session, fixture state, lease interval, scenario observations, evidence
-   content hashes, and cleanup.
-5. Release the lease after evidence is durably written. Smoke PASS authorizes execute-plan
-   implement handoff; formal acceptance PASS authorizes publication and the review verdict
-   (or direct completion). This Skill does not perform the lifecycle transition. Formal
-   execute-plan Obsidian acceptance is the outer Review Worker's post-Relay step, not the
-   read-only review Relay's.
-
-A new candidate or Plan SHA invalidates old PASS evidence. Smoke FAIL or direct
-formal-acceptance FAIL returns to exact-session implementation rework and a new candidate;
-execute-plan formal-acceptance FAIL is Review `revise`. Manual-only or external evidence
-gaps become a candidate-bound `needs_input` checklist (review-source on execute-plan).
-Never drive a shared acceptance vault without the lease, and stop if another CLI/session
-is already mutating it.
 
 ### 0. CLI fallback: direct CDP eval (when obsidian-cli hangs)
 

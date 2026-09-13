@@ -8,7 +8,7 @@ platforms: [macos, linux, windows]
 metadata:
   hermes:
     tags: [electron, cdp, desktop, ui-verification, behavior-acceptance]
-    related_skills: [computer-use, development-orchestrator, dogfood, inspecting-hermes-desktop-dom]
+    related_skills: [computer-use, dogfood, inspecting-hermes-desktop-dom]
 ---
 
 # Electron Desktop UI Acceptance

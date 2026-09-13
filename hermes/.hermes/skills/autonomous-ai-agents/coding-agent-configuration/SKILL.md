@@ -6,7 +6,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [coding-agent, configuration, subagents, permissions, validation]
-    related_skills: [opencode, codex, claude-code, development-orchestrator]
+    related_skills: [opencode, codex, claude-code]
 ---
 
 # Coding-Agent Configuration

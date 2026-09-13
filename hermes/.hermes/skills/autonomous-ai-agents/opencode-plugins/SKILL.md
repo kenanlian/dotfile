@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [OpenCode, Plugin, Extension, Context-Management]
-    related_skills: [opencode, development-orchestrator]
+    related_skills: [opencode]
 ---
 
 # OpenCode V2 Plugin Development

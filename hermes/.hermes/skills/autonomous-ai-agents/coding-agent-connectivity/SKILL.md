@@ -5,7 +5,7 @@ version: 1.0.0
 metadata:
   hermes:
     tags: [Coding-Agent, OpenCode, Networking, Proxy, Troubleshooting]
-    related_skills: [opencode, codex, development-orchestrator]
+    related_skills: [opencode, codex]
 ---
 
 # Coding-Agent CLI Connectivity Diagnosis
