@@ -37,6 +37,7 @@ Exit codes: `0` completed, `1` other failure, `2` CLI/ownership conflict, `75` r
 | `plan` | planner | read-only | `plan.v1` via `submit_plan` | fresh or exact resume |
 | `plan_review` | plan-reviewer | read-only | `plan-review.v1` via `submit_plan_review` | Job must be fresh |
 | `implement` | implementer | write | `implementation.v1` via `submit_implementation` | fresh or exact resume |
+| `direct_implement` | implementer | write | `direct-implementation.v1` via `submit_direct_implementation` | fresh or exact resume |
 | `execute_review` | execute-reviewer | read-only | `execute-review.v1` via `submit_execute_review` | Job must be fresh |
 
 Each run exposes exactly one submit tool. Semantic results come only from that tool's native `details`. Final message text is diagnostic only.
@@ -53,6 +54,7 @@ Each run exposes exactly one submit tool. Semantic results come only from that t
   artifacts/plan-attempt-<N>.md          # human-readable; not canonical
   artifacts/plan-review-attempt-<N>.json
   artifacts/implementation-attempt-<N>.json
+  artifacts/direct-implementation-attempt-<N>.json
   artifacts/execute-review-attempt-<N>.json
   adapter/primary/
   adapter/output-recovery/               # at most one missing-output recovery

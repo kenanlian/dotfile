@@ -6,11 +6,14 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Mapping
 
 from .protocol import checks_passed
+from .templates import get_template
 from .types import (
     ALLOWED_TRANSITIONS,
     TERMINAL_JOB_STATUSES,
     TRANSPORT_FAILURE_STATUSES,
+    WORKFLOW_TEMPLATE_ID,
     WorkflowConflict,
+    WorkflowProtocolError,
     WorkflowStatus,
 )
 
@@ -65,6 +68,7 @@ class PolicySnapshot:
     implement_checks: tuple[Mapping[str, Any], ...] | None = None
     review_verdict: str | None = None
     kanban_status: str | None = None
+    template_id: str = WORKFLOW_TEMPLATE_ID
 
 
 def snapshot_from_manifest(
@@ -96,6 +100,7 @@ def snapshot_from_manifest(
         implement_checks=implement_checks,
         review_verdict=review_verdict,
         kanban_status=kanban_status,
+        template_id=str(manifest.get("templateId") or WORKFLOW_TEMPLATE_ID),
     )
 
 
@@ -104,6 +109,17 @@ def next_allowed_transitions(status: WorkflowStatus) -> frozenset[WorkflowStatus
 
 
 def next_action(snapshot: PolicySnapshot) -> WorkflowAction:
+    template = get_template(snapshot.template_id)
+    if snapshot.status not in template.allowed_statuses:
+        raise WorkflowProtocolError(
+            f"workflow status {snapshot.status.value} is not allowed for template {template.id}"
+        )
+    job = snapshot.active_job
+    if job is not None and job.stage not in template.allowed_stages:
+        raise WorkflowProtocolError(
+            f"job stage {job.stage!r} is not allowed for template {template.id}"
+        )
+
     if snapshot.pending_lifecycle:
         return WorkflowAction(
             kind="apply_lifecycle",
@@ -149,10 +165,13 @@ def next_action(snapshot: PolicySnapshot) -> WorkflowAction:
 def _action_for_status(snapshot: PolicySnapshot) -> WorkflowAction:
     status = snapshot.status
     verdict = snapshot.review_verdict
+    template = get_template(snapshot.template_id)
 
     if status is WorkflowStatus.QUEUED:
         return WorkflowAction(
-            kind="create_job", stage="plan", target_status=WorkflowStatus.PLANNING
+            kind="create_job",
+            stage=template.initial_stage,
+            target_status=template.initial_status,
         )
     if status is WorkflowStatus.PLANNING:
         return WorkflowAction(kind="create_job", stage="plan", target_status=WorkflowStatus.PLANNING)
@@ -184,7 +203,7 @@ def _action_for_status(snapshot: PolicySnapshot) -> WorkflowAction:
         if verdict == "approved":
             return WorkflowAction(
                 kind="create_job",
-                stage="implement",
+                stage=template.implement_stage,
                 target_status=WorkflowStatus.IMPLEMENTING,
             )
         return WorkflowAction(
@@ -192,12 +211,14 @@ def _action_for_status(snapshot: PolicySnapshot) -> WorkflowAction:
         )
     if status is WorkflowStatus.IMPLEMENTING:
         return WorkflowAction(
-            kind="create_job", stage="implement", target_status=WorkflowStatus.IMPLEMENTING
+            kind="create_job",
+            stage=template.implement_stage,
+            target_status=WorkflowStatus.IMPLEMENTING,
         )
     if status is WorkflowStatus.IMPLEMENT_REWORK:
         return WorkflowAction(
             kind="create_job",
-            stage="implement",
+            stage=template.implement_stage,
             target_status=WorkflowStatus.IMPLEMENTING,
             reason="implement_rework",
         )
@@ -206,9 +227,9 @@ def _action_for_status(snapshot: PolicySnapshot) -> WorkflowAction:
         if passed:
             return WorkflowAction(
                 kind="apply_lifecycle",
-                target_status=WorkflowStatus.REVIEW_REQUESTED,
+                target_status=template.verifying_passed_status(),
             )
-        return _implement_rework_or_block(snapshot, kind="create_job")
+        return _implement_rework_or_block(snapshot, kind="apply_lifecycle")
     if status is WorkflowStatus.REVIEW_REQUESTED:
         return WorkflowAction(kind="noop")
     if status is WorkflowStatus.CODE_REVIEWING:
@@ -270,6 +291,7 @@ def _action_for_blocked(snapshot: PolicySnapshot) -> WorkflowAction:
 
 
 def _implement_rework_or_block(snapshot: PolicySnapshot, *, kind: ActionKind) -> WorkflowAction:
+    template = get_template(snapshot.template_id)
     if snapshot.implement_rework_count >= MAX_IMPLEMENT_REWORK:
         return WorkflowAction(
             kind="block",
@@ -279,7 +301,7 @@ def _implement_rework_or_block(snapshot: PolicySnapshot, *, kind: ActionKind) ->
     if kind == "create_job":
         return WorkflowAction(
             kind="create_job",
-            stage="implement",
+            stage=template.implement_stage,
             target_status=WorkflowStatus.IMPLEMENTING,
             reason="implement_rework",
         )

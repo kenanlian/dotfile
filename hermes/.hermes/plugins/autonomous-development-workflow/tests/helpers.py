@@ -219,7 +219,14 @@ class SmokeEnv:
             sleep_fn=lambda seconds: __import__("time").sleep(min(float(seconds), 0.05)),
         )
 
-    def enqueue(self, *, title: str = "Smoke card", key: str | None = None) -> dict[str, Any]:
+    def enqueue(
+        self,
+        *,
+        title: str = "Smoke card",
+        key: str | None = None,
+        flow: str = "full",
+        verification: str | None = None,
+    ) -> dict[str, Any]:
         return enqueue_workflow(
             board="project-board",
             repo=str(self.repo),
@@ -230,6 +237,8 @@ class SmokeEnv:
             store=self.store,
             run_argv=self.kanban.run_argv,
             idempotency_key=key,
+            flow=flow,
+            verification=verification,
         )
 
     def harness_env(self) -> dict[str, str]:

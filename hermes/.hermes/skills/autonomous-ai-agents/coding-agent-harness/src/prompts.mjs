@@ -5,6 +5,14 @@ import { STAGE_CONTRACTS } from "./contracts.mjs";
 
 const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "prompts");
 
+const STAGE_TEMPLATES = Object.freeze({
+  plan: "planner.md",
+  plan_review: "plan-reviewer.md",
+  implement: "implementer.md",
+  direct_implement: "direct-implementer.md",
+  execute_review: "execute-reviewer.md",
+});
+
 const PROFILE_TEMPLATES = Object.freeze({
   planner: "planner.md",
   "plan-reviewer": "plan-reviewer.md",
@@ -19,9 +27,9 @@ function formatInputs(inputs) {
 }
 
 export function compileBrief(job, extras = {}) {
-  const templateName = PROFILE_TEMPLATES[job.agent.profile];
+  const templateName = STAGE_TEMPLATES[job.stage];
   if (!templateName) {
-    throw new Error(`unknown profile ${job.agent.profile}`);
+    throw new Error(`unknown stage ${job.stage}`);
   }
   const contract = STAGE_CONTRACTS[job.stage];
   const template = readFileSync(join(PROMPTS_DIR, templateName), "utf8");
@@ -51,4 +59,4 @@ export function compileBrief(job, extras = {}) {
   return brief;
 }
 
-export { PROMPTS_DIR, PROFILE_TEMPLATES };
+export { PROMPTS_DIR, PROFILE_TEMPLATES, STAGE_TEMPLATES };

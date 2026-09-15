@@ -21,6 +21,7 @@ from .harness import (
 from .jobs import (
     build_job,
     consume_result,
+    verification_from_intake_artifact,
     verification_from_plan_input,
     write_job_document,
 )
@@ -39,12 +40,20 @@ from .policy import (
     next_action,
     snapshot_from_manifest,
 )
-from .protocol import parse_manifest, require_absolute_path, result_digest, review_verdict_from_result
+from .protocol import (
+    digest_canonical,
+    parse_manifest,
+    parse_verification_document,
+    require_absolute_path,
+    result_digest,
+    review_verdict_from_result,
+)
 from .store import WorkflowStore, canonical_dumps, sha256_file
+from .templates import get_template, template_for_flow
 from .types import (
     TRANSPORT_FAILURE_STATUSES,
+    VERIFICATION_SCHEMA,
     WORKFLOW_SCHEMA,
-    WORKFLOW_TEMPLATE_ID,
     PluginConfig,
     WorkflowConflict,
     WorkflowProtocolError,
@@ -184,9 +193,12 @@ def enqueue_workflow(
     run_argv: RunArgv,
     idempotency_key: str | None = None,
     inspect_repo: InspectRepo | None = None,
+    flow: str = "full",
+    verification: str | None = None,
 ) -> dict[str, Any]:
     if not board.strip() or not title.strip():
         raise WorkflowProtocolError("board and title must be non-empty")
+    template = template_for_flow(flow)
     requirement_path = Path(require_absolute_path(requirement, "requirement"))
     if not requirement_path.is_file():
         raise WorkflowProtocolError("requirement path does not exist")
@@ -201,20 +213,47 @@ def enqueue_workflow(
         )
     if not snapshot.get("clean"):
         raise WorkflowProtocolError("repository working tree must be clean before enqueue")
+    verification_document = None
+    verification_sha = None
+    if template.verification_source == "intake":
+        if not verification:
+            raise WorkflowProtocolError("direct flow requires --verification")
+        verification_path = Path(require_absolute_path(verification, "verification"))
+        if not verification_path.is_file():
+            raise WorkflowProtocolError("verification path does not exist")
+        try:
+            raw_document = json.loads(verification_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise WorkflowProtocolError("verification is not valid JSON") from exc
+        verification_document = parse_verification_document(raw_document, repo_root=real_repo)
+        verification_sha = digest_canonical(verification_document)
+    elif verification:
+        raise WorkflowProtocolError("verification is only valid for direct flow")
     requirement_sha = sha256_file(requirement_path)
-    key = idempotency_key or _derive_idempotency_key(board, real_repo, title, requirement_sha)
+    key = idempotency_key or _derive_idempotency_key(
+        board,
+        real_repo,
+        title,
+        requirement_sha,
+        template_id=template.id,
+        verification_sha=verification_sha,
+    )
     intake = store.get_intake(key)
+    if intake is not None:
+        _assert_intake_fingerprint(intake, template_id=template.id, verification_sha=verification_sha)
     if intake is not None and intake["status"] == "published" and intake["task_id"]:
-        return {
-            "task_id": intake["task_id"],
-            "status": "published",
-            "predecessor_task_id": intake["predecessor_task_id"],
-            "idempotency_key": key,
-        }
+        return _enqueue_result(intake["task_id"], intake["predecessor_task_id"], key, template)
 
     task_id = intake["task_id"] if intake and intake["task_id"] else None
     if task_id is None:
-        store.put_intake(idempotency_key=key, board=board, repo_root=real_repo, status="started")
+        store.put_intake(
+            idempotency_key=key,
+            board=board,
+            repo_root=real_repo,
+            status="started",
+            template_id=template.id,
+            verification_sha256=verification_sha,
+        )
         code, stdout, stderr = run_argv(
             build_kanban_create_argv(
                 board=board,
@@ -235,16 +274,43 @@ def enqueue_workflow(
             repo_root=real_repo,
             status="card_created",
             task_id=task_id,
+            template_id=template.id,
+            verification_sha256=verification_sha,
         )
 
     if store.get_manifest(board, task_id) is None:
         artifact_path = _write_requirement_artifact(
             store, board=board, task_id=task_id, requirement_path=requirement_path
         )
+        artifacts = [
+            {
+                "job_id": f"intake:{task_id}",
+                "kind": "requirement",
+                "version": 1,
+                "path": str(artifact_path),
+                "sha256": sha256_file(artifact_path),
+            }
+        ]
+        if verification_document is not None:
+            verification_path = _write_verification_artifact(
+                store,
+                board=board,
+                task_id=task_id,
+                document=verification_document,
+            )
+            artifacts.append(
+                {
+                    "job_id": f"intake:{task_id}",
+                    "kind": "verification",
+                    "version": 1,
+                    "path": str(verification_path),
+                    "sha256": sha256_file(verification_path),
+                }
+            )
         store.put_manifest(
             {
                 "schema": WORKFLOW_SCHEMA,
-                "templateId": WORKFLOW_TEMPLATE_ID,
+                "templateId": template.id,
                 "board": board,
                 "taskId": task_id,
                 "repoRoot": real_repo,
@@ -265,21 +331,24 @@ def enqueue_workflow(
                 "resumeStatus": None,
             }
         )
-        store.register_artifact(
-            board=board,
-            task_id=task_id,
-            job_id=f"intake:{task_id}",
-            kind="requirement",
-            version=1,
-            path=str(artifact_path),
-            sha256=sha256_file(artifact_path),
-        )
+        for artifact in artifacts:
+            store.register_artifact(
+                board=board,
+                task_id=task_id,
+                job_id=artifact["job_id"],
+                kind=artifact["kind"],
+                version=artifact["version"],
+                path=artifact["path"],
+                sha256=artifact["sha256"],
+            )
         store.put_intake(
             idempotency_key=key,
             board=board,
             repo_root=real_repo,
             status="bound",
             task_id=task_id,
+            template_id=template.id,
+            verification_sha256=verification_sha,
         )
 
     intake = store.get_intake(key)
@@ -300,6 +369,8 @@ def enqueue_workflow(
             status="linked",
             task_id=task_id,
             predecessor_task_id=predecessor,
+            template_id=template.id,
+            verification_sha256=verification_sha,
         )
         status = "linked"
 
@@ -316,6 +387,8 @@ def enqueue_workflow(
             status="verified",
             task_id=task_id,
             predecessor_task_id=predecessor,
+            template_id=template.id,
+            verification_sha256=verification_sha,
         )
         status = "verified"
 
@@ -330,19 +403,60 @@ def enqueue_workflow(
             status="published",
             task_id=task_id,
             predecessor_task_id=predecessor,
+            template_id=template.id,
+            verification_sha256=verification_sha,
         )
 
+    return _enqueue_result(task_id, predecessor, key, template)
+
+
+def _derive_idempotency_key(
+    board: str,
+    repo: str,
+    title: str,
+    requirement_sha: str,
+    *,
+    template_id: str,
+    verification_sha: str | None,
+) -> str:
+    material = f"{board}\n{repo}\n{title}\n{requirement_sha}\n{template_id}\n{verification_sha or '-'}"
+    return "autodev-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _enqueue_result(task_id: str, predecessor: str | None, key: str, template) -> dict[str, Any]:
     return {
         "task_id": task_id,
         "status": "published",
         "predecessor_task_id": predecessor,
         "idempotency_key": key,
+        "templateId": template.id,
+        "flow": template.flow,
     }
 
 
-def _derive_idempotency_key(board: str, repo: str, title: str, requirement_sha: str) -> str:
-    material = f"{board}\n{repo}\n{title}\n{requirement_sha}"
-    return "autodev-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+def _assert_intake_fingerprint(
+    intake: Mapping[str, Any], *, template_id: str, verification_sha: str | None
+) -> None:
+    stored_template = intake.get("template_id") or "autonomous-development.v1"
+    stored_verification = intake.get("verification_sha256") or None
+    if stored_template != template_id or stored_verification != verification_sha:
+        raise WorkflowConflict(
+            "intake idempotency key is bound to a different flow or verification document"
+        )
+
+
+def _write_verification_artifact(
+    store: WorkflowStore, *, board: str, task_id: str, document: Mapping[str, Any]
+) -> Path:
+    destination = store.state_root / "boards" / board / task_id / "verification"
+    destination.mkdir(parents=True, exist_ok=True)
+    path = destination / "verification-v1.json"
+    payload = {
+        "schema": VERIFICATION_SCHEMA,
+        "checks": list(document["checks"]),
+    }
+    path.write_text(canonical_dumps(payload), encoding="utf-8")
+    return path
 
 
 def _write_requirement_artifact(
@@ -556,8 +670,7 @@ class WorkflowController:
         if manifest is None:
             raise WorkflowProtocolError("no workflow manifest is bound to this task")
         parsed = parse_manifest(manifest)
-        if parsed.template_id != WORKFLOW_TEMPLATE_ID:
-            raise WorkflowProtocolError("manifest template is not autonomous-development.v1")
+        get_template(parsed.template_id)
         return manifest
 
     def _validate_bindings(
@@ -674,36 +787,50 @@ class WorkflowController:
         stage = action.stage
         if not stage:
             raise WorkflowProtocolError("create_job is missing a stage")
+        template = get_template(str(manifest.get("templateId") or ""))
+        if stage not in template.allowed_stages:
+            raise WorkflowProtocolError(f"stage {stage!r} is not allowed for template {template.id}")
         board, task_id = manifest["board"], manifest["taskId"]
         inputs = self._inputs_for_stage(manifest, stage)
         verification = ()
-        if stage == "implement":
+        if template.verification_source == "plan" and stage == "implement":
             verification = verification_from_plan_input(
                 inputs[0], repo_root=str(manifest["repoRoot"])
+            )
+        elif template.verification_source == "intake" and stage == template.implement_stage:
+            row = self.store.latest_artifact(board, task_id, "verification")
+            if row is None:
+                raise WorkflowProtocolError("missing chained verification artifact")
+            verification = verification_from_intake_artifact(
+                {"kind": "verification", "path": row["path"], "sha256": row["sha256"]},
+                repo_root=str(manifest["repoRoot"]),
             )
         session_id = None
         if stage == "plan" and manifest.get("plannerSessionId") and (
             action.reason == "plan_rework" or int(manifest.get("planReworkCount") or 0) > 0
         ):
             session_id = manifest.get("plannerSessionId")
-        if stage == "implement" and manifest.get("implementerSessionId") and (
-            action.reason == "implement_rework" or int(manifest.get("implementReworkCount") or 0) > 0
-        ):
-            session_id = manifest.get("implementerSessionId")
+        saved_implementer = manifest.get("implementerSessionId")
+        if stage == template.implement_stage and saved_implementer:
+            if action.reason == "implement_rework" or int(manifest.get("implementReworkCount") or 0) > 0:
+                session_id = saved_implementer
+            elif action.reason == "transport_retry" and stage == "direct_implement":
+                session_id = saved_implementer
         failures = dict(manifest.get("runFailureCounts") or {})
         transport_retry = int(failures.get(stage, 0)) if action.reason == "transport_retry" else 0
+        implement_rework_count = int(manifest.get("implementReworkCount") or 0)
         business_attempt = (
             int(manifest.get("planReworkCount") or 0) + 1
             if stage in {"plan", "plan_review"}
-            else int(manifest.get("implementReworkCount") or 0) + 1
+            else implement_rework_count + 1
         )
         baseline = manifest.get("baseline") or {}
         workspace = {
             "repoRoot": manifest["repoRoot"],
             "branch": baseline.get("branch") or self.config.main_branch,
             "expectedHead": baseline.get("head") or "0" * 40,
-            "requireCleanAtStart": stage in {"plan", "plan_review"} or (
-                stage == "implement" and int(manifest.get("implementReworkCount") or 0) == 0
+            "requireCleanAtStart": template.require_clean_at_start(
+                stage, implement_rework_count=implement_rework_count
             ),
         }
         job = build_job(
@@ -717,6 +844,7 @@ class WorkflowController:
             inputs=inputs,
             session_id=session_id,
             verification=verification,
+            template_id=template.id,
         )
         run_dir = self.store.state_root / "boards" / board / task_id / "jobs" / job["jobId"]
         written = write_job_document(job, run_dir)
@@ -748,11 +876,6 @@ class WorkflowController:
         )
         updated = dict(manifest)
         updated["activeJobId"] = job["jobId"]
-        if (
-            action.reason == "implement_rework"
-            and manifest.get("workflowStatus") == WorkflowStatus.VERIFYING.value
-        ):
-            updated["implementReworkCount"] = int(manifest.get("implementReworkCount") or 0) + 1
         if stage == "execute_review":
             digest = fingerprint_digest(
                 capture_candidate_fingerprint(
@@ -772,9 +895,12 @@ class WorkflowController:
         return updated
 
     def _inputs_for_stage(self, manifest: Mapping[str, Any], stage: str) -> tuple[dict[str, str], ...]:
+        from .types import STAGE_INPUT_KINDS
+
         board, task_id = manifest["board"], manifest["taskId"]
-        required = {"plan": ("requirement",), "plan_review": ("requirement", "plan"),
-                    "implement": ("plan",), "execute_review": ("requirement", "plan", "implementation")}[stage]
+        if stage not in STAGE_INPUT_KINDS:
+            raise WorkflowProtocolError(f"unknown job stage {stage!r}")
+        required = STAGE_INPUT_KINDS[stage]
         inputs = []
         for kind in required:
             row = self.store.latest_artifact(board, task_id, kind)
@@ -885,12 +1011,22 @@ class WorkflowController:
         result_path = Path(row["run_dir"]) / "result.json"
         result = json.loads(result_path.read_text(encoding="utf-8"))
         job_doc = json.loads(Path(row["job_path"]).read_text(encoding="utf-8"))
+        template = get_template(str(manifest.get("templateId") or ""))
+        if str(job_doc.get("stage") or "") not in template.allowed_stages:
+            raise WorkflowProtocolError(
+                f"job stage {job_doc.get('stage')!r} is not allowed for template {template.id}"
+            )
         previous = None
         if row.get("consumed_at") is not None:
             result_status = str(result.get("status") or "")
             if result_status in TRANSPORT_FAILURE_STATUSES or str(manifest.get("activeJobId")) != str(job_id):
                 previous = result_digest(result)
-        outcome = consume_result(job_doc, result, previously_consumed_sha256=previous)
+        outcome = consume_result(
+            job_doc,
+            result,
+            previously_consumed_sha256=previous,
+            expected_job_sha256=row["job_sha256"],
+        )
         board, task_id = manifest["board"], manifest["taskId"]
         prior_status = str(manifest.get("workflowStatus") or "")
         updated = dict(manifest)
@@ -901,7 +1037,7 @@ class WorkflowController:
             updated["workflowStatus"] = outcome.next_status.value if outcome.next_status else manifest["workflowStatus"]
             if row["stage"] == "plan" and outcome.session_id:
                 updated["plannerSessionId"] = outcome.session_id
-            if row["stage"] == "implement" and outcome.session_id:
+            if row["stage"] in {"implement", "direct_implement"} and outcome.session_id:
                 updated["implementerSessionId"] = outcome.session_id
             if outcome.review_verdict == "request_changes" and row["stage"] == "plan_review":
                 updated["planReworkCount"] = int(manifest.get("planReworkCount") or 0) + 1
@@ -940,10 +1076,27 @@ class WorkflowController:
                     }
                 )
             updated["activeJobId"] = None
+            if (
+                outcome.next_status is WorkflowStatus.BLOCKED
+                and row["stage"] == "direct_implement"
+                and not updated.get("pendingLifecycle")
+            ):
+                updated["pendingLifecycle"] = make_pending_lifecycle(
+                    target_status=WorkflowStatus.BLOCKED.value,
+                    run_id=run_id,
+                    workflow_revision=updated["revision"],
+                    args={"reason": "structured outcome blocked"},
+                )
         elif outcome.kind == "transport_failure":
             failures = dict(manifest.get("runFailureCounts") or {})
             failures[row["stage"]] = int(failures.get(row["stage"], 0)) + 1
             updated["runFailureCounts"] = failures
+            if (
+                row["stage"] == "direct_implement"
+                and isinstance(outcome.session_id, str)
+                and outcome.session_id.strip()
+            ):
+                updated["implementerSessionId"] = outcome.session_id.strip()
         elif outcome.kind == "protocol_failure":
             updated["workflowStatus"] = WorkflowStatus.BLOCKED.value
             updated["pendingLifecycle"] = make_pending_lifecycle(
@@ -972,7 +1125,7 @@ class WorkflowController:
         if updated.get("pendingLifecycle"):
             return self._apply_pending(updated, run_id=run_id)
         snapshot = self._snapshot(updated)
-        if row["stage"] == "implement" and isinstance(result.get("checks"), list):
+        if row["stage"] in {"implement", "direct_implement"} and isinstance(result.get("checks"), list):
             from dataclasses import replace
 
             snapshot = replace(
@@ -996,6 +1149,10 @@ class WorkflowController:
             return self._write_and_apply_lifecycle(
                 updated, WorkflowStatus.BLOCKED, run_id=run_id, reason=action.reason
             )
+        if action.kind == "create_job":
+            created = self._create_or_reuse_job(updated, action)
+            created_action = next_action(self._snapshot(created))
+            return self._summary(created, created_action, in_progress=True)
         return self._summary(updated, action)
 
     def _write_and_apply_lifecycle(
@@ -1007,6 +1164,9 @@ class WorkflowController:
         reason: str | None = None,
     ) -> dict[str, Any]:
         args = {"reason": reason} if reason and target is WorkflowStatus.BLOCKED else None
+        if target is WorkflowStatus.COMPLETED:
+            template = get_template(str(manifest.get("templateId") or ""))
+            args = {"summary": template.completion_summary}
         pending = make_pending_lifecycle(
             target_status=target.value,
             run_id=run_id,
@@ -1018,6 +1178,11 @@ class WorkflowController:
         updated["revision"] = int(manifest["revision"]) + 1
         updated["workflowStatus"] = target.value
         updated["pendingLifecycle"] = pending
+        if (
+            previous == WorkflowStatus.VERIFYING.value
+            and target is WorkflowStatus.IMPLEMENT_REWORK
+        ):
+            updated["implementReworkCount"] = int(manifest.get("implementReworkCount") or 0) + 1
         if target is WorkflowStatus.BLOCKED and previous not in {
             WorkflowStatus.BLOCKED.value,
             WorkflowStatus.COMPLETED.value,
@@ -1087,6 +1252,7 @@ class WorkflowController:
                 outcome = "in_progress"
             else:
                 outcome = "ok"
+        template = get_template(str(manifest.get("templateId") or ""))
         return {
             "ok": True,
             "workflowStatus": status,
@@ -1097,6 +1263,8 @@ class WorkflowController:
             "inProgress": in_progress,
             "pendingLifecycle": manifest.get("pendingLifecycle"),
             "outcome": outcome,
+            "templateId": template.id,
+            "flow": template.flow,
         }
 
     def reconcile(self, *, board: str, task_id: str, run_id: str | None = None) -> dict[str, Any]:
@@ -1230,20 +1398,9 @@ def _doctor_manifest(
                     "message": "Kanban workspace does not match Manifest repoRoot",
                 }
             )
-        expected_lane = {
-            "queued": {"ready", "todo"},
-            "planning": {"running"},
-            "plan_reviewing": {"running"},
-            "plan_rework": {"running", "todo"},
-            "implementing": {"running"},
-            "verifying": {"running"},
-            "review_requested": {"review"},
-            "implement_rework": {"todo", "running"},
-            "code_reviewing": {"running"},
-            "product_acceptance": {"running"},
-            "blocked": {"blocked", "todo"},
-            "completed": {"done"},
-        }.get(str(manifest.get("workflowStatus")), set())
+        expected_lane = get_template(str(manifest.get("templateId") or "")).expected_kanban_lanes.get(
+            str(manifest.get("workflowStatus")), set()
+        )
         if kanban_status and expected_lane and kanban_status not in expected_lane:
             findings.append(
                 {
@@ -1304,7 +1461,16 @@ def _doctor_manifest(
                         "message": "active Job has no Result and no live process",
                     }
                 )
-    for kind in ("requirement", "plan", "implementation", "plan-review", "execute-review", "product-acceptance"):
+    for kind in (
+        "requirement",
+        "verification",
+        "plan",
+        "implementation",
+        "direct-implementation",
+        "plan-review",
+        "execute-review",
+        "product-acceptance",
+    ):
         artifact = store.latest_artifact(board, task_id, kind)
         if artifact is None:
             continue

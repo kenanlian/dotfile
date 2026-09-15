@@ -9,11 +9,14 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
 from .protocol import (
+    bind_authoritative_job_hash,
     bind_result,
     checks_passed,
+    digest_canonical,
     expectation_from_job,
     harness_canonical_json,
     job_document_sha256,
+    parse_verification_document,
     require_absolute_path,
     require_sha256,
     result_digest,
@@ -30,6 +33,7 @@ from .types import (
     STAGE_PERMISSIONS,
     STAGE_PROFILES,
     TRANSPORT_FAILURE_STATUSES,
+    VERIFICATION_STAGES,
     ArtifactRef,
     WorkflowConflict,
     WorkflowProtocolError,
@@ -86,19 +90,26 @@ def build_job(
     session_id: str | None,
     verification: Sequence[Mapping[str, Any]] = (),
     timeout_seconds: int | None = None,
+    template_id: str | None = None,
 ) -> dict[str, Any]:
     if stage not in STAGE_OUTPUT:
         raise WorkflowProtocolError(f"unknown job stage {stage!r}")
+    if template_id is not None:
+        from .templates import get_template
+
+        template = get_template(template_id)
+        if stage not in template.allowed_stages:
+            raise WorkflowProtocolError(f"stage {stage!r} is not allowed for template {template_id}")
     if business_attempt < 1 or transport_retry < 0:
         raise WorkflowProtocolError("business_attempt must be >= 1 and transport_retry >= 0")
-    if stage == "implement" and not verification:
-        raise WorkflowProtocolError("implement jobs require at least one verification check")
+    if stage in VERIFICATION_STAGES and not verification:
+        raise WorkflowProtocolError(f"{stage} jobs require at least one verification check")
     profile = STAGE_PROFILES[stage]
     agent_spec = agents.get(profile)
     if not isinstance(agent_spec, Mapping) or not agent_spec.get("model") or not agent_spec.get("thinking"):
         raise WorkflowProtocolError(f"missing model/thinking for profile {profile}")
-    if verification and stage != "implement":
-        raise WorkflowProtocolError("verification is only allowed on implement jobs")
+    if verification and stage not in VERIFICATION_STAGES:
+        raise WorkflowProtocolError("verification is only allowed on implement and direct_implement jobs")
     bound_inputs = tuple(_bind_input(item, index) for index, item in enumerate(inputs))
     required = STAGE_INPUT_KINDS[stage]
     kinds = tuple(item["kind"] for item in bound_inputs)
@@ -107,7 +118,16 @@ def build_job(
     output_kind, output_schema = STAGE_OUTPUT[stage]
     reviewer = stage in {"plan_review", "execute_review"}
     agent_session = None if reviewer else session_id
-    prefix = input_sha_prefix(bound_inputs)
+    identity_inputs = list(bound_inputs)
+    if stage == "direct_implement":
+        identity_inputs.append(
+            {
+                "kind": "verification",
+                "path": "verification",
+                "sha256": digest_canonical(list(verification)),
+            }
+        )
+    prefix = input_sha_prefix(identity_inputs)
     idempotency_key = make_idempotency_key(
         board=board,
         task_id=task_id,
@@ -189,6 +209,7 @@ def consume_result(
     result: Mapping[str, Any],
     *,
     previously_consumed_sha256: str | None = None,
+    expected_job_sha256: str | None = None,
 ) -> ConsumeOutcome:
     digest = result_digest(result)
     if previously_consumed_sha256 is not None:
@@ -196,7 +217,8 @@ def consume_result(
             return ConsumeOutcome(kind="noop", result_sha256=digest)
         raise WorkflowConflict("different Result bound to the same Job")
     try:
-        expectation = expectation_from_job(job)
+        bound_job_sha256 = bind_authoritative_job_hash(job, expected_job_sha256)
+        expectation = expectation_from_job(job, job_sha256=bound_job_sha256)
         bind_result(expectation, result)
     except WorkflowProtocolError as exc:
         return ConsumeOutcome(
@@ -210,10 +232,15 @@ def consume_result(
             kind="transport_failure",
             result_sha256=digest,
             reason=str(status),
-            session_id=result.get("sessionId") if isinstance(result.get("sessionId"), str) else None,
+            session_id=result.get("sessionId") if isinstance(result.get("sessionId"), str) and result.get("sessionId").strip() else None,
         )
     try:
-        validate_completed_result(expectation, result)
+        validate_completed_result(
+            expectation,
+            result,
+            job=job,
+            expected_job_sha256=bound_job_sha256,
+        )
     except WorkflowProtocolError as exc:
         return ConsumeOutcome(
             kind="protocol_failure",
@@ -225,7 +252,8 @@ def consume_result(
     if not isinstance(session_id, str) or not session_id:
         session_id = None
     verdict = review_verdict_from_result(result)
-    next_status = _next_status_for_completed(job["stage"], verdict)
+    payload_outcome = _payload_outcome(result)
+    next_status = _next_status_for_completed(job["stage"], verdict, outcome=payload_outcome)
     return ConsumeOutcome(
         kind="consumed",
         next_status=next_status,
@@ -328,6 +356,35 @@ def verification_from_plan_input(
     return tuple(checks)
 
 
+def verification_from_intake_artifact(
+    verification_input: Mapping[str, Any],
+    *,
+    repo_root: str,
+) -> tuple[dict[str, Any], ...]:
+    bound = _bind_input(verification_input, 0)
+    if bound["kind"] != "verification":
+        raise WorkflowProtocolError("direct verification requires a verification Artifact")
+    document = json_load_if_possible(Path(bound["path"]))
+    if document is None:
+        raise WorkflowProtocolError("verification Artifact is not valid JSON")
+    parsed = parse_verification_document(document, repo_root=repo_root)
+    root = Path(require_absolute_path(repo_root, "repo_root")).resolve()
+    checks: list[dict[str, Any]] = []
+    for item in parsed["checks"]:
+        raw_cwd = item["cwd"]
+        cwd = root if raw_cwd == "." else (root / raw_cwd).resolve()
+        checks.append(
+            {
+                "id": item["id"],
+                "argv": list(item["argv"]),
+                "cwd": str(cwd),
+                "timeoutSeconds": item["timeoutSeconds"],
+                "expectedExitCode": item["expectedExitCode"],
+            }
+        )
+    return tuple(checks)
+
+
 def _canonical_artifacts(result: Mapping[str, Any]) -> tuple[ArtifactRef, ...]:
     from .protocol import parse_artifact_ref
 
@@ -337,21 +394,21 @@ def _canonical_artifacts(result: Mapping[str, Any]) -> tuple[ArtifactRef, ...]:
     return tuple(item for item in (parse_artifact_ref(entry) for entry in raw) if item.canonical)
 
 
-def _next_status_for_completed(stage: str, verdict: str | None) -> WorkflowStatus:
-    if stage == "plan":
-        return WorkflowStatus.PLAN_REVIEWING
-    if stage == "implement":
-        return WorkflowStatus.VERIFYING
-    if stage == "plan_review":
-        if verdict == "approved":
-            return WorkflowStatus.IMPLEMENTING
-        if verdict == "request_changes":
-            return WorkflowStatus.PLAN_REWORK
-        return WorkflowStatus.BLOCKED
-    if stage == "execute_review":
-        if verdict == "approved":
-            return WorkflowStatus.PRODUCT_ACCEPTANCE
-        if verdict == "request_changes":
-            return WorkflowStatus.IMPLEMENT_REWORK
-        return WorkflowStatus.BLOCKED
-    raise WorkflowProtocolError(f"cannot consume stage {stage}")
+def _payload_outcome(result: Mapping[str, Any]) -> str | None:
+    output = result.get("structuredOutput")
+    if not isinstance(output, Mapping):
+        return None
+    payload = output.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    outcome = payload.get("outcome")
+    return outcome if isinstance(outcome, str) else None
+
+
+def _next_status_for_completed(
+    stage: str, verdict: str | None, *, outcome: str | None = None
+) -> WorkflowStatus:
+    from .templates import DIRECT_TEMPLATE, FULL_TEMPLATE
+
+    template = DIRECT_TEMPLATE if stage == "direct_implement" else FULL_TEMPLATE
+    return template.completed_next_status(stage, verdict=verdict, outcome=outcome)

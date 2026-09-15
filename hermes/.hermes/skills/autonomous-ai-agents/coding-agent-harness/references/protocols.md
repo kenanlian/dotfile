@@ -4,13 +4,14 @@ Runtime validators in `src/contracts.mjs` are authoritative. JSON Schema files d
 
 ## C2 Job (`coding-agent.job.v1`)
 
-Every object is `additionalProperties: false`. The caller must supply identity, workspace, adapter/profile/model/thinking/session, permissions, inputs with hashes, expected output, verification, and limits. The Harness does not guess defaults. Stage/profile/permission/output/session/input-cardinality must match the stage matrix in `SKILL.md`. `verification` is allowed only on `implement`. Reviewer Jobs require `sessionId: null`. SHA-1 or SHA-256 is accepted only for `expectedHead`; content digests are SHA-256.
+Every object is `additionalProperties: false`. The caller must supply identity, workspace, adapter/profile/model/thinking/session, permissions, inputs with hashes, expected output, verification, and limits. The Harness does not guess defaults. Stage/profile/permission/output/session/input-cardinality must match the stage matrix in `SKILL.md`. `verification` is allowed only on `implement` (optional) and `direct_implement` (required, non-empty). Reviewer Jobs require `sessionId: null`. SHA-1 or SHA-256 is accepted only for `expectedHead`; content digests are SHA-256. `direct_implement` inputs are exactly one `requirement` and no plan. Do not reuse the `implement` / `implementation.v1` contract for direct mode.
 
 ## C3 Stage submit payloads
 
 - `plan.v1` via `submit_plan`: graph uniqueness, acyclic `dependsOn`, coverage, and repo-relative paths. `completed` requires non-empty R/C/WP/V and empty blockers; `blocked` requires blockers.
 - `plan-review.v1` via `submit_plan_review`: `approved` has no blocking findings; `request_changes`/`blocked` require at least one.
 - `implementation.v1` via `submit_implementation`: work-package ids are checked against the canonical plan. Touched files and checks are host-authored, not part of this payload.
+- `direct-implementation.v1` via `submit_direct_implementation`: exact keys `schema`, `outcome`, `summary`, `residualRisks`, `blockingIssues`. `completed` requires `blockingIssues=[]`; `blocked` requires a non-empty list. No Plan artifact.
 - `execute-review.v1` via `submit_execute_review`: repo-relative `file` paths, `line >= 0`, same verdict/finding rules.
 
 ## C4 Canonical Artifacts
@@ -35,7 +36,7 @@ Preflight: git top-level, symbolic branch, HEAD, optional clean tree, input hash
 
 ## C9 Deterministic checks
 
-Only after a valid `submit_implementation`. Sequential `spawn(argv, {shell:false})`. Per-check stdout/stderr files. One failure does not skip later checks. Transport `status` stays `completed`.
+Only after a valid `submit_implementation` or `submit_direct_implementation`. Sequential `spawn(argv, {shell:false})`. Per-check stdout/stderr files. One failure does not skip later checks. Transport `status` stays `completed`.
 
 ## C10 Events
 

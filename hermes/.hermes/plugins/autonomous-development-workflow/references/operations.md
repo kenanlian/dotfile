@@ -24,6 +24,16 @@ hermes -p <control-profile> autodev enqueue \
   --profile autodev
 ```
 
+`--flow` is `full` or `direct` (default `full`). Direct mode also requires
+`--verification /absolute/autodev.verification.v1.json` with a non-empty
+`checks` array using Harness job-check fields. Full mode derives verification
+from the approved Plan and must not pass `--verification`.
+
+Templates:
+
+- `full` → `autonomous-development.v1`: Plan → Plan Review → Implement → Verify → Execute Review → Product Acceptance.
+- `direct` → `direct-implementation.v1`: Requirement → coding-agent implementation → host checks → Complete. No planner, reviewers, Hermes review lane, or product acceptance.
+
 Rules:
 
 - `--repo` must be the git root, on `main_branch`, with a clean worktree.
@@ -38,8 +48,8 @@ Rules:
 hermes -p <control-profile> autodev status --board <board> <task-id>
 ```
 
-Prints the Manifest checkpoint (`workflowStatus`, `revision`, `nextAction`,
-`inProgress`, `pendingLifecycle`) plus the current Kanban status. It does not
+Prints the Manifest checkpoint (`templateId`, `flow`, `workflowStatus`, `revision`,
+`nextAction`, `inProgress`, `pendingLifecycle`) plus the current Kanban status. It does not
 advance the workflow or dispatch lifecycle tools.
 
 Worker-side equivalent: `autodev_workflow_status` inside a claimed run.

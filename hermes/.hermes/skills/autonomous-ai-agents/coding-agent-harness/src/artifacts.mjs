@@ -8,6 +8,7 @@ const KIND_FILES = Object.freeze({
   "plan-review": "plan-review",
   implementation: "implementation",
   "execute-review": "execute-review",
+  "direct-implementation": "direct-implementation",
 });
 
 export function renderPlanMarkdown(payload) {

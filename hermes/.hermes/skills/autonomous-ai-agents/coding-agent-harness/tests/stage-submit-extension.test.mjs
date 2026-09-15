@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   EXECUTE_REVIEW_FIELD_KEYS as CONTRACT_EXECUTE_REVIEW_KEYS,
   IMPLEMENTATION_FIELD_KEYS as CONTRACT_IMPLEMENTATION_KEYS,
+  DIRECT_IMPLEMENTATION_FIELD_KEYS as CONTRACT_DIRECT_IMPLEMENTATION_KEYS,
   PLAN_FIELD_KEYS as CONTRACT_PLAN_KEYS,
   PLAN_REVIEW_FIELD_KEYS as CONTRACT_PLAN_REVIEW_KEYS,
   STAGE_CONTRACTS,
@@ -14,10 +15,12 @@ import {
 } from "../src/contracts.mjs";
 import { compileBrief } from "../src/prompts.mjs";
 import {
+  DIRECT_IMPLEMENTATION_FIELD_KEYS,
   EXECUTE_REVIEW_FIELD_KEYS,
   IMPLEMENTATION_FIELD_KEYS,
   PLAN_FIELD_KEYS,
   PLAN_REVIEW_FIELD_KEYS,
+  SUBMIT_DIRECT_IMPLEMENTATION,
   SUBMIT_EXECUTE_REVIEW,
   SUBMIT_IMPLEMENTATION,
   SUBMIT_PLAN,
@@ -105,6 +108,16 @@ function validImplementationPayload() {
   };
 }
 
+function validDirectImplementationPayload() {
+  return {
+    schema: "direct-implementation.v1",
+    outcome: "completed",
+    summary: "Implemented the requirement.",
+    residualRisks: [],
+    blockingIssues: [],
+  };
+}
+
 function validExecuteReviewPayload() {
   return {
     schema: "execute-review.v1",
@@ -126,6 +139,8 @@ function sampleJob(stage) {
       ]
       : stage === "implement"
         ? [{ kind: "plan", path: "/abs/plan.json", sha256: "c".repeat(64) }]
+        : stage === "direct_implement"
+          ? [{ kind: "requirement", path: "/abs/requirement.md", sha256: "b".repeat(64) }]
         : [
           { kind: "requirement", path: "/abs/requirement.md", sha256: "b".repeat(64) },
           { kind: "plan", path: "/abs/plan.json", sha256: "c".repeat(64) },
@@ -152,15 +167,25 @@ function sampleJob(stage) {
   };
 }
 
-test("stage-submit extension loads four terminating tools", async () => {
+test("stage-submit extension loads five terminating tools", async () => {
   const loaded = await loadStageSubmit();
   assert.deepEqual(loaded.errors, []);
   assert.equal(loaded.extensions.length, 1);
   const tools = loaded.extensions[0].tools;
-  for (const name of [SUBMIT_PLAN, SUBMIT_PLAN_REVIEW, SUBMIT_IMPLEMENTATION, SUBMIT_EXECUTE_REVIEW]) {
+  for (const name of [
+    SUBMIT_PLAN,
+    SUBMIT_PLAN_REVIEW,
+    SUBMIT_IMPLEMENTATION,
+    SUBMIT_EXECUTE_REVIEW,
+    SUBMIT_DIRECT_IMPLEMENTATION,
+  ]) {
     assert.ok(tools.has(name), name);
     const tool = tools.get(name);
-    assert.equal(tool.definition.parameters.additionalProperties, false);
+    const parameters = tool.definition.parameters;
+    const arms = parameters.anyOf || parameters.oneOf || [parameters];
+    for (const arm of arms) {
+      assert.equal(arm.additionalProperties, false, name);
+    }
   }
 });
 
@@ -168,11 +193,13 @@ test("keys match contracts and JSON schema property order", () => {
   assert.deepEqual([...PLAN_FIELD_KEYS], [...CONTRACT_PLAN_KEYS]);
   assert.deepEqual([...PLAN_REVIEW_FIELD_KEYS], [...CONTRACT_PLAN_REVIEW_KEYS]);
   assert.deepEqual([...IMPLEMENTATION_FIELD_KEYS], [...CONTRACT_IMPLEMENTATION_KEYS]);
+  assert.deepEqual([...DIRECT_IMPLEMENTATION_FIELD_KEYS], [...CONTRACT_DIRECT_IMPLEMENTATION_KEYS]);
   assert.deepEqual([...EXECUTE_REVIEW_FIELD_KEYS], [...CONTRACT_EXECUTE_REVIEW_KEYS]);
   assert.equal(SUBMIT_PLAN, SUBMIT_TOOLS.plan);
   assert.equal(SUBMIT_PLAN_REVIEW, SUBMIT_TOOLS.plan_review);
   assert.equal(SUBMIT_IMPLEMENTATION, SUBMIT_TOOLS.implement);
   assert.equal(SUBMIT_EXECUTE_REVIEW, SUBMIT_TOOLS.execute_review);
+  assert.equal(SUBMIT_DIRECT_IMPLEMENTATION, SUBMIT_TOOLS.direct_implement);
   const planSchema = JSON.parse(readFileSync(join(SCHEMA_DIR, "plan.v1.schema.json"), "utf8"));
   assert.deepEqual(Object.keys(planSchema.properties), [...PLAN_FIELD_KEYS]);
 });
@@ -184,11 +211,16 @@ test("valid payloads terminate and round-trip details, including unicode", async
     [SUBMIT_PLAN, validPlanPayload(), PLAN_FIELD_KEYS],
     [SUBMIT_PLAN_REVIEW, validPlanReviewPayload(), PLAN_REVIEW_FIELD_KEYS],
     [SUBMIT_IMPLEMENTATION, validImplementationPayload(), IMPLEMENTATION_FIELD_KEYS],
+    [SUBMIT_DIRECT_IMPLEMENTATION, validDirectImplementationPayload(), DIRECT_IMPLEMENTATION_FIELD_KEYS],
     [SUBMIT_EXECUTE_REVIEW, validExecuteReviewPayload(), EXECUTE_REVIEW_FIELD_KEYS],
   ];
   for (const [name, payload, keys] of cases) {
     const tool = tools.get(name);
-    assert.deepEqual(Object.keys(tool.definition.parameters.properties), [...keys]);
+    const parameters = tool.definition.parameters;
+    const properties = parameters.properties
+      || (parameters.anyOf && parameters.anyOf[0].properties)
+      || (parameters.oneOf && parameters.oneOf[0].properties);
+    assert.deepEqual(Object.keys(properties), [...keys]);
     const result = await tool.definition.execute("call-1", payload);
     assert.equal(result.terminate, true);
     assert.deepEqual(result.details, payload);
@@ -214,6 +246,37 @@ test("schema-invalid payloads do not execute", async () => {
   assert.equal(executed, false);
 });
 
+test("direct implementation TypeBox rejects payloads runtime rejects", async () => {
+  const loaded = await loadStageSubmit();
+  const Check = await typeboxCheck();
+  const tool = loaded.extensions[0].tools.get(SUBMIT_DIRECT_IMPLEMENTATION);
+  const schema = tool.definition.parameters;
+  assert.equal(Check(schema, validDirectImplementationPayload()), true);
+  const blockedOk = {
+    ...validDirectImplementationPayload(),
+    outcome: "blocked",
+    blockingIssues: ["cannot proceed"],
+  };
+  assert.equal(Check(schema, blockedOk), true);
+  const completedWithBlockers = {
+    ...validDirectImplementationPayload(),
+    blockingIssues: ["still blocked"],
+  };
+  const blockedEmpty = { ...validDirectImplementationPayload(), outcome: "blocked" };
+  const emptySummary = { ...validDirectImplementationPayload(), summary: "" };
+  const emptyResidual = { ...validDirectImplementationPayload(), residualRisks: [""] };
+  const emptyBlocker = {
+    ...validDirectImplementationPayload(),
+    outcome: "blocked",
+    blockingIssues: [""],
+  };
+  assert.equal(Check(schema, completedWithBlockers), false);
+  assert.equal(Check(schema, blockedEmpty), false);
+  assert.equal(Check(schema, emptySummary), false);
+  assert.equal(Check(schema, emptyResidual), false);
+  assert.equal(Check(schema, emptyBlocker), false);
+});
+
 test("compileBrief interpolates job fields and does not invent workflow decisions", () => {
   const plan = compileBrief(sampleJob("plan"));
   assert.match(plan, /submit_plan/);
@@ -229,4 +292,9 @@ test("compileBrief interpolates job fields and does not invent workflow decision
   assert.match(review, /workspace-evidence\.json/);
   assert.match(review, /candidate\.patch/);
   assert.match(review, /every delegated child must remain read-only/);
+  const direct = compileBrief(sampleJob("direct_implement"));
+  assert.match(direct, /submit_direct_implementation/);
+  assert.match(direct, /Implement the Requirement directly/);
+  assert.doesNotMatch(direct, /accepted plan/);
+  assert.doesNotMatch(direct, /kanban|ready\/running|Workflow Manifest/i);
 });

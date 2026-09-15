@@ -10,14 +10,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
-from .protocol import parse_manifest, require_absolute_path, require_sha256
+from .protocol import assert_allowed_transition, parse_manifest, require_absolute_path, require_sha256
+from .templates import get_template
 from .types import (
     LEASE_RELEASE_REASONS,
     WorkflowConflict,
     WorkflowProtocolError,
+    WorkflowStatus,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATIONS: tuple[str, ...] = (
     """
@@ -87,6 +89,10 @@ CREATE TABLE IF NOT EXISTS workflow_intake (
   updated_at INTEGER NOT NULL
 );
 """,
+    """
+ALTER TABLE workflow_intake ADD COLUMN template_id TEXT;
+ALTER TABLE workflow_intake ADD COLUMN verification_sha256 TEXT;
+""",
 )
 
 
@@ -113,10 +119,56 @@ def _exec_statements(conn: sqlite3.Connection, sql: str) -> None:
             conn.execute(statement)
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    if column not in _table_columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     return {key: row[key] for key in row.keys()}
+
+
+def _load_cas_manifest_row(
+    conn: sqlite3.Connection, board: str, task_id: str, expected_revision: int
+) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM workflow_manifests WHERE board = ? AND task_id = ? AND revision = ?",
+        (board, task_id, expected_revision),
+    ).fetchone()
+    loaded = _row_dict(row)
+    if loaded is None:
+        raise WorkflowConflict(f"CAS failed for {board}/{task_id} at revision {expected_revision}")
+    return loaded
+
+
+def _assert_manifest_identity_and_transition(existing_json: str, parsed_new: Any) -> None:
+    old = parse_manifest(json.loads(existing_json))
+    if (
+        old.schema != parsed_new.schema
+        or old.template_id != parsed_new.template_id
+        or old.repo_root != parsed_new.repo_root
+        or old.board != parsed_new.board
+        or old.task_id != parsed_new.task_id
+    ):
+        raise WorkflowProtocolError(
+            "manifest schema, templateId, repoRoot, and task identity cannot change"
+        )
+    if old.status is parsed_new.status:
+        return
+    template = get_template(old.template_id)
+    if parsed_new.status is WorkflowStatus.BLOCKED and old.status is not WorkflowStatus.COMPLETED:
+        return
+    if old.status is WorkflowStatus.BLOCKED and parsed_new.status in template.allowed_statuses:
+        if parsed_new.status is not WorkflowStatus.COMPLETED:
+            return
+    assert_allowed_transition(old.status, parsed_new.status, template_id=old.template_id)
 
 
 class WorkflowStore:
@@ -223,6 +275,8 @@ class WorkflowStore:
             raise WorkflowProtocolError("stored revision must match JSON revision")
         now = _now()
         with self._transaction() as conn:
+            existing = _load_cas_manifest_row(conn, board, task_id, expected_revision)
+            _assert_manifest_identity_and_transition(existing["manifest_json"], parsed)
             cursor = conn.execute(
                 """
                 UPDATE workflow_manifests
@@ -279,6 +333,18 @@ class WorkflowStore:
                 if current != record:
                     raise WorkflowConflict("job identity conflict")
                 return current
+            bound = conn.execute(
+                "SELECT manifest_json FROM workflow_manifests WHERE board = ? AND task_id = ?",
+                (record["board"], record["task_id"]),
+            ).fetchone()
+            if bound is None:
+                raise WorkflowProtocolError("cannot insert a Job without a bound Manifest")
+            manifest = parse_manifest(json.loads(bound["manifest_json"]))
+            template = get_template(manifest.template_id)
+            if record["stage"] not in template.allowed_stages:
+                raise WorkflowProtocolError(
+                    f"job stage {record['stage']!r} is not allowed for template {template.id}"
+                )
             conn.execute(
                 """
                 INSERT INTO workflow_jobs(
@@ -387,6 +453,8 @@ class WorkflowStore:
         stored = json.loads(text)
         now = _now()
         with self._transaction() as conn:
+            existing = _load_cas_manifest_row(conn, board, task_id, expected_revision)
+            _assert_manifest_identity_and_transition(existing["manifest_json"], parsed)
             if job_patch:
                 job_id = job_patch["job_id"]
                 updates = {
@@ -628,6 +696,8 @@ class WorkflowStore:
         status: str,
         task_id: str | None = None,
         predecessor_task_id: str | None = None,
+        template_id: str | None = None,
+        verification_sha256: str | None = None,
     ) -> dict[str, Any]:
         now = _now()
         with self._transaction() as conn:
@@ -635,13 +705,27 @@ class WorkflowStore:
                 "SELECT * FROM workflow_intake WHERE idempotency_key = ?",
                 (idempotency_key,),
             ).fetchone()
+            if existing is not None:
+                current = _row_dict(existing)
+                stored_template = current.get("template_id") or "autonomous-development.v1"
+                stored_verification = current.get("verification_sha256") or None
+                requested_template = template_id or stored_template
+                requested_verification = verification_sha256 if verification_sha256 is not None else stored_verification
+                if stored_template != requested_template or stored_verification != requested_verification:
+                    raise WorkflowConflict(
+                        "intake idempotency key is bound to a different flow or verification document"
+                    )
+                if template_id is None:
+                    template_id = stored_template
+                if verification_sha256 is None:
+                    verification_sha256 = stored_verification
             if existing is None:
                 conn.execute(
                     """
                     INSERT INTO workflow_intake(
                       idempotency_key, board, task_id, repo_root, predecessor_task_id,
-                      status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                      status, created_at, updated_at, template_id, verification_sha256
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         idempotency_key,
@@ -652,6 +736,8 @@ class WorkflowStore:
                         status,
                         now,
                         now,
+                        template_id,
+                        verification_sha256,
                     ),
                 )
             else:
@@ -659,7 +745,7 @@ class WorkflowStore:
                     """
                     UPDATE workflow_intake
                     SET board = ?, task_id = ?, repo_root = ?, predecessor_task_id = ?,
-                        status = ?, updated_at = ?
+                        status = ?, updated_at = ?, template_id = ?, verification_sha256 = ?
                     WHERE idempotency_key = ?
                     """,
                     (
@@ -669,6 +755,8 @@ class WorkflowStore:
                         predecessor_task_id,
                         status,
                         now,
+                        template_id,
+                        verification_sha256,
                         idempotency_key,
                     ),
                 )
@@ -718,7 +806,11 @@ class WorkflowStore:
             for version, sql in enumerate(MIGRATIONS, start=1):
                 if current >= version:
                     continue
-                _exec_statements(conn, sql)
+                if version == 2:
+                    _add_column_if_missing(conn, "workflow_intake", "template_id", "TEXT")
+                    _add_column_if_missing(conn, "workflow_intake", "verification_sha256", "TEXT")
+                else:
+                    _exec_statements(conn, sql)
                 conn.execute(
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (version, now),

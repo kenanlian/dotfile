@@ -8,15 +8,19 @@ export const EVENT_SCHEMA_ID = "coding-agent.event.v1";
 export const PLAN_SCHEMA_ID = "plan.v1";
 export const PLAN_REVIEW_SCHEMA_ID = "plan-review.v1";
 export const IMPLEMENTATION_SCHEMA_ID = "implementation.v1";
+export const DIRECT_IMPLEMENTATION_SCHEMA_ID = "direct-implementation.v1";
 export const EXECUTE_REVIEW_SCHEMA_ID = "execute-review.v1";
 
-export const STAGES = Object.freeze(["plan", "plan_review", "implement", "execute_review"]);
+export const STAGES = Object.freeze([
+  "plan", "plan_review", "implement", "execute_review", "direct_implement",
+]);
 
 export const SUBMIT_TOOLS = Object.freeze({
   plan: "submit_plan",
   plan_review: "submit_plan_review",
   implement: "submit_implementation",
   execute_review: "submit_execute_review",
+  direct_implement: "submit_direct_implementation",
 });
 
 export const STAGE_CONTRACTS = Object.freeze({
@@ -29,6 +33,7 @@ export const STAGE_CONTRACTS = Object.freeze({
     submitTool: SUBMIT_TOOLS.plan,
     session: "fresh_or_resume",
     verificationAllowed: false,
+    verificationRequired: false,
   }),
   plan_review: Object.freeze({
     stage: "plan_review",
@@ -39,6 +44,7 @@ export const STAGE_CONTRACTS = Object.freeze({
     submitTool: SUBMIT_TOOLS.plan_review,
     session: "fresh",
     verificationAllowed: false,
+    verificationRequired: false,
   }),
   implement: Object.freeze({
     stage: "implement",
@@ -49,6 +55,7 @@ export const STAGE_CONTRACTS = Object.freeze({
     submitTool: SUBMIT_TOOLS.implement,
     session: "fresh_or_resume",
     verificationAllowed: true,
+    verificationRequired: false,
   }),
   execute_review: Object.freeze({
     stage: "execute_review",
@@ -59,6 +66,18 @@ export const STAGE_CONTRACTS = Object.freeze({
     submitTool: SUBMIT_TOOLS.execute_review,
     session: "fresh",
     verificationAllowed: false,
+    verificationRequired: false,
+  }),
+  direct_implement: Object.freeze({
+    stage: "direct_implement",
+    profile: "implementer",
+    permission: "write",
+    outputKind: "direct-implementation",
+    outputSchema: DIRECT_IMPLEMENTATION_SCHEMA_ID,
+    submitTool: SUBMIT_TOOLS.direct_implement,
+    session: "fresh_or_resume",
+    verificationAllowed: true,
+    verificationRequired: true,
   }),
 });
 
@@ -123,6 +142,7 @@ export const OUTPUT_KIND_TO_STAGE = Object.freeze({
   "plan-review": "plan_review",
   implementation: "implement",
   "execute-review": "execute_review",
+  "direct-implementation": "direct_implement",
 });
 
 export const PLAN_FIELD_KEYS = Object.freeze([
@@ -153,6 +173,9 @@ export const IMPLEMENTATION_FIELD_KEYS = Object.freeze([
   "schema", "outcome", "summary", "completedWorkPackages", "deviations",
   "residualRisks", "blockingIssues",
 ]);
+export const DIRECT_IMPLEMENTATION_FIELD_KEYS = Object.freeze([
+  "schema", "outcome", "summary", "residualRisks", "blockingIssues",
+]);
 export const DEVIATION_FIELD_KEYS = Object.freeze(["workPackageId", "summary"]);
 
 export const EXECUTE_REVIEW_FIELD_KEYS = Object.freeze([
@@ -166,7 +189,7 @@ export const INPUT_KINDS = Object.freeze([
   "requirement", "plan", "plan-review", "implementation", "evidence",
 ]);
 export const OUTPUT_KINDS = Object.freeze([
-  "plan", "plan-review", "implementation", "execute-review",
+  "plan", "plan-review", "implementation", "execute-review", "direct-implementation",
 ]);
 export const THINKING_LEVELS = Object.freeze([
   "off", "minimal", "low", "medium", "high", "xhigh", "max",
@@ -456,7 +479,10 @@ export function validateJob(value) {
 
   if (!Array.isArray(value.verification)) return fail("/verification", "expected array");
   if (!contract.verificationAllowed && value.verification.length > 0) {
-    return fail("/verification", "verification is only allowed on implement jobs");
+    return fail("/verification", "verification is only allowed on implement and direct_implement jobs");
+  }
+  if (contract.verificationRequired && value.verification.length === 0) {
+    return fail("/verification", `${value.stage} jobs require a non-empty verification array`);
   }
   const checkIds = new Set();
   for (let i = 0; i < value.verification.length; i += 1) {
@@ -510,6 +536,12 @@ function validateInputCardinality(stage, counts) {
   if (stage === "implement" && plan !== 1) {
     return fail("/inputs", "implement jobs require exactly 1 plan input");
   }
+  if (stage === "direct_implement") {
+    const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+    if (requirement !== 1 || total !== 1) {
+      return fail("/inputs", "direct_implement jobs require exactly 1 requirement input and no plan");
+    }
+  }
   if (stage === "execute_review") {
     if (requirement < 1 || plan !== 1 || implementation !== 1) {
       return fail("/inputs", "execute_review jobs require >=1 requirement, exactly 1 plan, and exactly 1 implementation");
@@ -522,6 +554,7 @@ export function validatePayload(kind, value, options = {}) {
   if (kind === "plan") return validatePlanPayload(value);
   if (kind === "plan-review") return validatePlanReviewPayload(value);
   if (kind === "implementation") return validateImplementationPayload(value, options.planPayload);
+  if (kind === "direct-implementation") return validateDirectImplementationPayload(value);
   if (kind === "execute-review") return validateExecuteReviewPayload(value);
   return fail("/kind", `unknown payload kind ${kind}`);
 }
@@ -900,6 +933,30 @@ function validateImplementationPayload(value, planPayload) {
     }
   } else if (value.blockingIssues.length === 0) {
     return fail("/blockingIssues", "blocked implementations require a non-empty blockingIssues list");
+  }
+  return ok(value);
+}
+
+function validateDirectImplementationPayload(value) {
+  const objectError = exactObject(value, DIRECT_IMPLEMENTATION_FIELD_KEYS, "");
+  if (objectError) return objectError;
+  if (value.schema !== DIRECT_IMPLEMENTATION_SCHEMA_ID) {
+    return fail("/schema", `expected ${DIRECT_IMPLEMENTATION_SCHEMA_ID}`);
+  }
+  const outcomeErr = enumValue(value.outcome, "/outcome", OUTCOMES);
+  if (outcomeErr) return outcomeErr;
+  const summaryErr = nonEmptyString(value.summary, "/summary");
+  if (summaryErr) return summaryErr;
+  const residualErr = stringArray(value.residualRisks, "/residualRisks");
+  if (residualErr) return residualErr;
+  const blockersErr = stringArray(value.blockingIssues, "/blockingIssues", { nonEmptyItems: true });
+  if (blockersErr) return blockersErr;
+  if (value.outcome === "completed") {
+    if (value.blockingIssues.length !== 0) {
+      return fail("/blockingIssues", "completed direct implementations require blockingIssues=[]");
+    }
+  } else if (value.blockingIssues.length === 0) {
+    return fail("/blockingIssues", "blocked direct implementations require a non-empty blockingIssues list");
   }
   return ok(value);
 }

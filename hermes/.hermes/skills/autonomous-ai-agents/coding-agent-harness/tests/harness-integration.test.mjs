@@ -90,6 +90,16 @@ function implementationPayload() {
   };
 }
 
+function directImplementationPayload() {
+  return {
+    schema: "direct-implementation.v1",
+    outcome: "completed",
+    summary: "done",
+    residualRisks: [],
+    blockingIssues: [],
+  };
+}
+
 function writeCanonicalArtifact(world, { stage, payload, extraInputs = [] }) {
   const outDir = mkdtempSync(join(world.tmp, `${stage}-artifact-`));
   const written = writeStageArtifacts({
@@ -451,6 +461,42 @@ test("V9.3 Implementer records git touched files and check results", () => {
     assert.ok(run.result.touchedFiles.includes("src/greet.mjs"));
     assert.equal(run.result.checks.find((item) => item.id === "check-unit").status, "passed");
     assert.equal(run.result.checks.find((item) => item.id === "always-fail").status, "failed");
+  } finally {
+    world.cleanup();
+  }
+});
+
+test("direct_implement uses requirement-only input, typed submit, and host checks", () => {
+  const world = setupWorld();
+  try {
+    const { job, jobPath } = materialize("direct-implement.job.template.json", world);
+    assert.equal(job.stage, "direct_implement");
+    assert.deepEqual(job.inputs.map((item) => item.kind), ["requirement"]);
+    assert.equal(job.expectedOutput.kind, "direct-implementation");
+    job.verification.push({
+      id: "always-fail",
+      argv: [process.execPath, "-e", "process.exit(2)"],
+      cwd: world.repoRoot,
+      timeoutSeconds: 10,
+      expectedExitCode: 0,
+    });
+    writeFileSync(jobPath, `${JSON.stringify(job, null, 2)}\n`);
+    const run = runHarness(world, jobPath, join(world.outRoot, "direct-implement"), {
+      PI_STUB_WRITE_RELPATH: "src/greet.mjs",
+      PI_STUB_WRITE_CONTENTS: "export function greet(name) { return `Hello, ${name}`; }\n",
+      PI_STUB_EVENTS: JSON.stringify([toolEnd("submit_direct_implementation", directImplementationPayload())]),
+    });
+    assert.equal(run.spawned.status, 0, run.spawned.stderr);
+    assert.equal(run.result.status, "completed");
+    assert.equal(run.result.stage, "direct_implement");
+    assert.equal(run.result.structuredOutput.kind, "direct-implementation");
+    assert.equal(run.result.structuredOutput.payload.schema, "direct-implementation.v1");
+    assert.ok(run.result.artifacts.some((item) => item.canonical && item.path.includes("direct-implementation")));
+    assert.ok(run.result.touchedFiles.includes("src/greet.mjs"));
+    assert.equal(run.result.checks.find((item) => item.id === "check-unit").status, "passed");
+    assert.equal(run.result.checks.find((item) => item.id === "always-fail").status, "failed");
+    assert.match(readFileSync(join(world.outRoot, "direct-implement", "brief.txt"), "utf8"), /submit_direct_implementation/);
+    assert.doesNotMatch(JSON.stringify(job.inputs), /"kind":"plan"/);
   } finally {
     world.cleanup();
   }

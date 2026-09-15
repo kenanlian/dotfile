@@ -11,6 +11,7 @@ from .lifecycle import apply_pending_lifecycle, make_pending_lifecycle
 from .policy import MAX_IMPLEMENT_REWORK
 from .protocol import parse_acceptance, require_absolute_path, sha256_file_if_exists
 from .store import WorkflowStore, canonical_dumps, sha256_file
+from .templates import get_template
 from .types import PluginConfig, WorkflowProtocolError, WorkflowStatus
 
 DispatchFn = Callable[..., str]
@@ -57,6 +58,9 @@ def submit_typed_acceptance(
     manifest = store.get_manifest(board, task_id)
     if manifest is None:
         raise WorkflowProtocolError("no workflow manifest is bound to this task")
+    template = get_template(str(manifest.get("templateId") or ""))
+    if not template.uses_product_acceptance:
+        raise WorkflowProtocolError("product acceptance is not part of this workflow template")
     if manifest.get("workflowStatus") != WorkflowStatus.PRODUCT_ACCEPTANCE.value:
         raise WorkflowProtocolError("product acceptance is only available in product_acceptance")
     if not is_review_lane(shown, run_id):

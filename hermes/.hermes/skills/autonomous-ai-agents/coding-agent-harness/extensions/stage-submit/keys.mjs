@@ -6,11 +6,13 @@ export const SUBMIT_PLAN = "submit_plan";
 export const SUBMIT_PLAN_REVIEW = "submit_plan_review";
 export const SUBMIT_IMPLEMENTATION = "submit_implementation";
 export const SUBMIT_EXECUTE_REVIEW = "submit_execute_review";
+export const SUBMIT_DIRECT_IMPLEMENTATION = "submit_direct_implementation";
 
 export const PLAN_SCHEMA_ID = "plan.v1";
 export const PLAN_REVIEW_SCHEMA_ID = "plan-review.v1";
 export const IMPLEMENTATION_SCHEMA_ID = "implementation.v1";
 export const EXECUTE_REVIEW_SCHEMA_ID = "execute-review.v1";
+export const DIRECT_IMPLEMENTATION_SCHEMA_ID = "direct-implementation.v1";
 
 export const PLAN_FIELD_KEYS = Object.freeze([
   "schema",
@@ -40,6 +42,14 @@ export const IMPLEMENTATION_FIELD_KEYS = Object.freeze([
   "summary",
   "completedWorkPackages",
   "deviations",
+  "residualRisks",
+  "blockingIssues",
+]);
+
+export const DIRECT_IMPLEMENTATION_FIELD_KEYS = Object.freeze([
+  "schema",
+  "outcome",
+  "summary",
   "residualRisks",
   "blockingIssues",
 ]);

@@ -12,18 +12,35 @@ WORKFLOW_SCHEMA = "autonomous-development.workflow.v1"
 JOB_SCHEMA = "coding-agent.job.v1"
 RESULT_SCHEMA = "coding-agent.result.v1"
 ARTIFACT_SCHEMA = "coding-agent.artifact.v1"
+VERIFICATION_SCHEMA = "autodev.verification.v1"
+VERIFICATION_CHECK_FIELDS = ("id", "argv", "cwd", "timeoutSeconds", "expectedExitCode")
+RESULT_CHECK_FIELD_KEYS = (
+    "id",
+    "status",
+    "argv",
+    "cwd",
+    "expectedExitCode",
+    "exitCode",
+    "signal",
+    "startedAt",
+    "finishedAt",
+    "stdoutPath",
+    "stderrPath",
+)
 
 SHA256_PATTERN = r"^[a-f0-9]{64}$"
 GIT_HEAD_PATTERN = r"^[a-f0-9]{40}$|^[a-f0-9]{64}$"
+ISO_TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"
 
 STAGE_OUTPUT = {
     "plan": ("plan", "plan.v1"),
     "plan_review": ("plan-review", "plan-review.v1"),
     "implement": ("implementation", "implementation.v1"),
     "execute_review": ("execute-review", "execute-review.v1"),
+    "direct_implement": ("direct-implementation", "direct-implementation.v1"),
 }
 REVIEWER_STAGES = frozenset({"plan_review", "execute_review"})
-RESUME_STAGES = frozenset({"plan", "implement"})
+RESUME_STAGES = frozenset({"plan", "implement", "direct_implement"})
 REVIEW_OUTPUT_KINDS = frozenset({"plan-review", "execute-review"})
 TRANSPORT_FAILURE_STATUSES = frozenset({"failed", "timed_out", "aborted", "unavailable"})
 TERMINAL_JOB_STATUSES = frozenset({"completed", *TRANSPORT_FAILURE_STATUSES})
@@ -32,19 +49,23 @@ STAGE_PROFILES = {
     "plan_review": "plan-reviewer",
     "implement": "implementer",
     "execute_review": "execute-reviewer",
+    "direct_implement": "implementer",
 }
 STAGE_PERMISSIONS = {
     "plan": "read-only",
     "plan_review": "read-only",
     "implement": "write",
     "execute_review": "read-only",
+    "direct_implement": "write",
 }
 STAGE_INPUT_KINDS = {
     "plan": ("requirement",),
     "plan_review": ("requirement", "plan"),
     "implement": ("plan",),
     "execute_review": ("requirement", "plan", "implementation"),
+    "direct_implement": ("requirement",),
 }
+VERIFICATION_STAGES = frozenset({"implement", "direct_implement"})
 
 
 class WorkflowStatus(str, Enum):

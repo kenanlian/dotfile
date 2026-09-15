@@ -203,6 +203,47 @@ class ArgvBuilderTests(unittest.TestCase):
         self.assertEqual(args.autodev_command, "enqueue")
         self.assertEqual(args.board, "proj")
         self.assertEqual(args.idempotency_key, "k1")
+        self.assertEqual(args.flow, "full")
+        self.assertIsNone(args.verification)
+
+    def test_cli_parser_accepts_explicit_direct_flow_and_verification(self) -> None:
+        parser = argparse.ArgumentParser()
+        setup_autodev_cli(parser)
+        args = parser.parse_args(
+            [
+                "enqueue",
+                "--board",
+                "proj",
+                "--repo",
+                "/abs/repo",
+                "--title",
+                "Ship login",
+                "--requirement",
+                "/abs/requirement.md",
+                "--flow",
+                "direct",
+                "--verification",
+                "/abs/verification.json",
+            ]
+        )
+        self.assertEqual(args.flow, "direct")
+        self.assertEqual(args.verification, "/abs/verification.json")
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "enqueue",
+                    "--board",
+                    "proj",
+                    "--repo",
+                    "/abs/repo",
+                    "--title",
+                    "Ship login",
+                    "--requirement",
+                    "/abs/requirement.md",
+                    "--flow",
+                    "review",
+                ]
+            )
 
 
 class EnqueueWorkflowTests(unittest.TestCase):
@@ -385,6 +426,147 @@ class EnqueueWorkflowTests(unittest.TestCase):
         with self.assertRaises(WorkflowProtocolError):
             self._enqueue(requirement="requirement.md")
         self.assertEqual(self.kanban.calls, [])
+
+    def _write_verification(self, *, checks=None, extra=None) -> Path:
+        payload = {
+            "schema": "autodev.verification.v1",
+            "checks": checks
+            if checks is not None
+            else [
+                {
+                    "id": "unit",
+                    "argv": ["true"],
+                    "cwd": ".",
+                    "timeoutSeconds": 30,
+                    "expectedExitCode": 0,
+                }
+            ],
+        }
+        if extra:
+            payload.update(extra)
+        path = self.root / "verification.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_full_enqueue_output_includes_template_and_does_not_need_verification(self) -> None:
+        result = self._enqueue()
+        self.assertEqual(result["flow"], "full")
+        self.assertEqual(result["templateId"], "autonomous-development.v1")
+        manifest = self.store.get_manifest("proj", result["task_id"])
+        self.assertEqual(manifest["templateId"], "autonomous-development.v1")
+        self.assertIsNone(self.store.latest_artifact("proj", result["task_id"], "verification"))
+
+    def test_direct_without_verification_fails_before_card_publication(self) -> None:
+        with self.assertRaises(WorkflowProtocolError):
+            self._enqueue(flow="direct")
+        self.assertEqual(self.kanban.calls, [])
+        self.assertIsNone(self.store.get_intake("key-1"))
+
+    def test_direct_missing_verification_file_fails_before_create(self) -> None:
+        with self.assertRaises(WorkflowProtocolError):
+            self._enqueue(flow="direct", verification=str(self.root / "missing.json"))
+        self.assertEqual(self.kanban.calls, [])
+
+    def test_direct_invalid_and_escaping_and_duplicate_verification_fail_before_create(self) -> None:
+        unknown = self._write_verification(extra={"bonus": True})
+        with self.assertRaises(WorkflowProtocolError):
+            self._enqueue(flow="direct", verification=str(unknown))
+        empty = self._write_verification(checks=[])
+        with self.assertRaises(WorkflowProtocolError):
+            self._enqueue(flow="direct", verification=str(empty))
+        escaping = self._write_verification(
+            checks=[
+                {
+                    "id": "unit",
+                    "argv": ["true"],
+                    "cwd": "../outside",
+                    "timeoutSeconds": 30,
+                    "expectedExitCode": 0,
+                }
+            ]
+        )
+        with self.assertRaises(WorkflowProtocolError):
+            self._enqueue(flow="direct", verification=str(escaping))
+        absolute = self._write_verification(
+            checks=[
+                {
+                    "id": "unit",
+                    "argv": ["true"],
+                    "cwd": "/tmp",
+                    "timeoutSeconds": 30,
+                    "expectedExitCode": 0,
+                }
+            ]
+        )
+        with self.assertRaises(WorkflowProtocolError):
+            self._enqueue(flow="direct", verification=str(absolute))
+        duplicates = self._write_verification(
+            checks=[
+                {
+                    "id": "unit",
+                    "argv": ["true"],
+                    "cwd": ".",
+                    "timeoutSeconds": 30,
+                    "expectedExitCode": 0,
+                },
+                {
+                    "id": "unit",
+                    "argv": ["false"],
+                    "cwd": ".",
+                    "timeoutSeconds": 5,
+                    "expectedExitCode": 1,
+                },
+            ]
+        )
+        with self.assertRaises(WorkflowProtocolError):
+            self._enqueue(flow="direct", verification=str(duplicates))
+        self.assertEqual(self.kanban.calls, [])
+
+    def test_direct_happy_intake_binds_verification_artifact_and_reports_flow(self) -> None:
+        verification = self._write_verification()
+        result = self._enqueue(flow="direct", verification=str(verification))
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(result["flow"], "direct")
+        self.assertEqual(result["templateId"], "direct-implementation.v1")
+        manifest = self.store.get_manifest("proj", result["task_id"])
+        self.assertEqual(manifest["templateId"], "direct-implementation.v1")
+        artifact = self.store.get_artifact("proj", result["task_id"], "verification", 1)
+        self.assertIsNotNone(artifact)
+        self.assertTrue(Path(artifact["path"]).is_file())
+        payload = json.loads(Path(artifact["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["schema"], "autodev.verification.v1")
+        self.assertEqual(payload["checks"][0]["id"], "unit")
+
+    def test_flow_and_verification_hash_participate_in_idempotency(self) -> None:
+        verification = self._write_verification()
+        first = self._enqueue(flow="direct", verification=str(verification), idempotency_key=None)
+        replay = self._enqueue(flow="direct", verification=str(verification), idempotency_key=None)
+        self.assertEqual(replay["task_id"], first["task_id"])
+        self.assertEqual(len(self.kanban.cards_by_id), 1)
+        other_path = self.root / "verification-other.json"
+        other_path.write_text(
+            json.dumps(
+                {
+                    "schema": "autodev.verification.v1",
+                    "checks": [
+                        {
+                            "id": "lint",
+                            "argv": ["true"],
+                            "cwd": ".",
+                            "timeoutSeconds": 10,
+                            "expectedExitCode": 0,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        other = self._enqueue(flow="direct", verification=str(other_path), idempotency_key=None)
+        self.assertNotEqual(other["task_id"], first["task_id"])
+        full = self._enqueue(flow="full", idempotency_key=None)
+        self.assertNotEqual(full["task_id"], first["task_id"])
+        with self.assertRaises(WorkflowConflict):
+            self._enqueue(flow="full", idempotency_key=first["idempotency_key"])
 
 
 if __name__ == "__main__":

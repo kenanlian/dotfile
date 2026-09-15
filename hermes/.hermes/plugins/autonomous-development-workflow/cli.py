@@ -43,6 +43,17 @@ def setup_autodev_cli(parser) -> None:
     enqueue.add_argument("--requirement", required=True, help="Absolute requirement markdown path")
     enqueue.add_argument("--profile", default="autodev", help="Worker profile assignee")
     enqueue.add_argument("--idempotency-key", default=None, help="Stable replay key")
+    enqueue.add_argument(
+        "--flow",
+        choices=("full", "direct"),
+        default="full",
+        help="Allowlisted workflow template: full or direct",
+    )
+    enqueue.add_argument(
+        "--verification",
+        default=None,
+        help="Absolute autodev.verification.v1 JSON path (required for --flow direct)",
+    )
 
     status = sub.add_parser("status", help="Show the external workflow checkpoint")
     status.add_argument("--board", required=True, help="Kanban board slug")
@@ -88,6 +99,8 @@ def handle_autodev(
             requirement=args.requirement,
             profile=args.profile or config.profile,
             idempotency_key=args.idempotency_key,
+            flow=getattr(args, "flow", "full"),
+            verification=getattr(args, "verification", None),
             config=config,
             store=store,
             run_argv=run_command,

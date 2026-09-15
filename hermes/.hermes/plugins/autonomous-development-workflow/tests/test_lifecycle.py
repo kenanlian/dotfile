@@ -14,6 +14,7 @@ from plugin_imports import import_plugin
 
 _jobs = import_plugin("controller.jobs")
 _lifecycle = import_plugin("controller.lifecycle")
+_protocol = import_plugin("controller.protocol")
 _service = import_plugin("controller.service")
 _store = import_plugin("controller.store")
 _types = import_plugin("controller.types")
@@ -30,6 +31,7 @@ apply_pending_lifecycle = _lifecycle.apply_pending_lifecycle
 make_pending_lifecycle = _lifecycle.make_pending_lifecycle
 build_job = _jobs.build_job
 write_job_document = _jobs.write_job_document
+job_document_sha256 = _protocol.job_document_sha256
 
 AGENTS = {
     "planner": {"model": "planner-model", "thinking": "high"},
@@ -40,6 +42,37 @@ AGENTS = {
 
 
 def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _write_canonical_plan(path: Path, *, job: dict[str, Any], job_sha256: str, session_id: str) -> str:
+    payload = {"schema": "plan.v1", "title": "ok"}
+    wrapper = {
+        "schema": ARTIFACT_SCHEMA,
+        "kind": "plan",
+        "job": {
+            "jobId": job["jobId"],
+            "idempotencyKey": job["idempotencyKey"],
+            "taskId": job["taskId"],
+            "stage": job["stage"],
+            "attempt": job["attempt"],
+            "jobSha256": job_sha256,
+        },
+        "sessionId": session_id,
+        "inputs": [
+            {"kind": item["kind"], "path": item["path"], "sha256": item["sha256"]}
+            for item in job["inputs"]
+        ],
+        "workspace": {
+            "repoRoot": job["workspace"]["repoRoot"],
+            "branch": job["workspace"]["branch"],
+            "head": job["workspace"]["expectedHead"],
+            "baselineSnapshotSha256": "0" * 64,
+        },
+        "payload": payload,
+    }
+    text = json.dumps(wrapper, indent=2, ensure_ascii=False) + "\n"
+    path.write_text(text, encoding="utf-8")
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -144,7 +177,10 @@ def _plant_completed_plan(store: WorkflowStore, state_root: Path, *, consumed: b
         }
     )
     plan_path = state_root / "plan.json"
-    plan_path.write_text('{"schema":"plan.v1","title":"ok"}', encoding="utf-8")
+    payload = {"schema": "plan.v1", "title": "ok"}
+    digest = _write_canonical_plan(
+        plan_path, job=job, job_sha256=written["job_sha256"], session_id="sess_plan"
+    )
     result = {
         "schema": RESULT_SCHEMA,
         "jobId": job["jobId"],
@@ -157,12 +193,12 @@ def _plant_completed_plan(store: WorkflowStore, state_root: Path, *, consumed: b
         "sessionId": "sess_plan",
         "startedAt": "2026-09-14T00:00:00Z",
         "finishedAt": "2026-09-14T00:01:00Z",
-        "structuredOutput": {"kind": "plan", "payload": {"schema": "plan.v1", "title": "ok"}},
+        "structuredOutput": {"kind": "plan", "payload": payload},
         "artifacts": [
             {
                 "kind": "plan",
                 "path": str(plan_path),
-                "sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+                "sha256": digest,
                 "schema": ARTIFACT_SCHEMA,
                 "canonical": True,
             }
@@ -369,7 +405,10 @@ class LifecycleSagaTests(unittest.TestCase):
             }
         )
         plan_path = self.state_root / "plan.json"
-        plan_path.write_text('{"schema":"plan.v1","title":"ok"}', encoding="utf-8")
+        payload = {"schema": "plan.v1", "title": "ok"}
+        digest = _write_canonical_plan(
+            plan_path, job=job, job_sha256=written["job_sha256"], session_id="sess_plan"
+        )
         result = {
             "schema": RESULT_SCHEMA,
             "jobId": job["jobId"],
@@ -382,12 +421,12 @@ class LifecycleSagaTests(unittest.TestCase):
             "sessionId": "sess_plan",
             "startedAt": "2026-09-14T00:00:00Z",
             "finishedAt": "2026-09-14T00:01:00Z",
-            "structuredOutput": {"kind": "plan", "payload": {"schema": "plan.v1", "title": "ok"}},
+            "structuredOutput": {"kind": "plan", "payload": payload},
             "artifacts": [
                 {
                     "kind": "plan",
                     "path": str(plan_path),
-                    "sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+                    "sha256": digest,
                     "schema": ARTIFACT_SCHEMA,
                     "canonical": True,
                 }
@@ -432,6 +471,144 @@ class LifecycleSagaTests(unittest.TestCase):
         self.assertEqual(outcome["workflowStatus"], "plan_reviewing")
         loaded = self.store.get_job(job["jobId"])
         self.assertIsNotNone(loaded["consumed_at"])
+
+    def test_replaced_job_json_cannot_complete_even_with_matching_forged_result(self) -> None:
+        requirement = self.state_root / "requirement.json"
+        requirement.write_text('{"schema":"autonomous-development.requirement.v1"}', encoding="utf-8")
+        self.store.put_manifest(
+            _manifest(
+                workflowStatus="planning",
+                revision=1,
+                activeJobId=None,
+                lastConsumedJobId=None,
+                pendingLifecycle=None,
+            )
+        )
+        self.store.register_artifact(
+            board="project-board",
+            task_id="t_abc",
+            job_id="intake:t_abc",
+            kind="requirement",
+            version=1,
+            path=str(requirement),
+            sha256=_sha(requirement.read_text(encoding="utf-8")),
+        )
+        job = build_job(
+            board="project-board",
+            task_id="t_abc",
+            stage="plan",
+            business_attempt=1,
+            transport_retry=0,
+            workspace={
+                "repoRoot": "/abs/repo",
+                "branch": "main",
+                "expectedHead": "a" * 40,
+                "requireCleanAtStart": True,
+            },
+            agents=AGENTS,
+            inputs=(
+                {
+                    "kind": "requirement",
+                    "path": str(requirement),
+                    "sha256": _sha(requirement.read_text(encoding="utf-8")),
+                },
+            ),
+            session_id=None,
+        )
+        run_dir = self.state_root / "boards" / "project-board" / "t_abc" / "jobs" / job["jobId"]
+        written = write_job_document(job, run_dir)
+        self.store.put_job(
+            {
+                "job_id": job["jobId"],
+                "board": "project-board",
+                "task_id": "t_abc",
+                "stage": "plan",
+                "business_attempt": 1,
+                "transport_retry": 0,
+                "idempotency_key": job["idempotencyKey"],
+                "job_path": written["job_path"],
+                "run_dir": written["run_dir"],
+                "job_sha256": written["job_sha256"],
+                "harness_pid": None,
+                "process_identity": None,
+                "status": "pending",
+                "result_path": None,
+                "started_at": None,
+                "finished_at": None,
+                "consumed_at": None,
+            }
+        )
+        forged = json.loads(Path(written["job_path"]).read_text(encoding="utf-8"))
+        forged["agent"]["model"] = "forged-model"
+        Path(written["job_path"]).write_text(json.dumps(forged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        forged_sha = job_document_sha256(forged)
+        self.assertNotEqual(forged_sha, written["job_sha256"])
+        payload = {"schema": "plan.v1", "title": "ok"}
+        plan_path = self.state_root / "plan.json"
+        digest = _write_canonical_plan(
+            plan_path, job=forged, job_sha256=forged_sha, session_id="sess_plan"
+        )
+        result = {
+            "schema": RESULT_SCHEMA,
+            "jobId": forged["jobId"],
+            "idempotencyKey": forged["idempotencyKey"],
+            "jobSha256": forged_sha,
+            "taskId": "t_abc",
+            "stage": "plan",
+            "status": "completed",
+            "adapter": "pi",
+            "sessionId": "sess_plan",
+            "startedAt": "2026-09-14T00:00:00Z",
+            "finishedAt": "2026-09-14T00:01:00Z",
+            "structuredOutput": {"kind": "plan", "payload": payload},
+            "artifacts": [
+                {
+                    "kind": "plan",
+                    "path": str(plan_path),
+                    "sha256": digest,
+                    "schema": ARTIFACT_SCHEMA,
+                    "canonical": True,
+                }
+            ],
+            "touchedFiles": [],
+            "checks": [],
+            "usage": {},
+            "workspace": {
+                "repoRoot": "/abs/repo",
+                "branchBefore": "main",
+                "branchAfter": "main",
+                "headBefore": "a" * 40,
+                "headAfter": "a" * 40,
+                "snapshotBeforeSha256": "c" * 64,
+                "snapshotAfterSha256": "c" * 64,
+            },
+            "error": None,
+            "paths": {
+                "events": "/abs/events.jsonl",
+                "stderr": "/abs/stderr.log",
+                "final": "/abs/final.txt",
+                "adapterRuns": [],
+            },
+        }
+        (run_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        current = self.store.get_manifest("project-board", "t_abc")
+        current["activeJobId"] = job["jobId"]
+        current["revision"] = 2
+        self.store.cas_update_manifest(
+            "project-board", "t_abc", expected_revision=1, manifest=current
+        )
+        controller = WorkflowController(
+            store=self.store,
+            config=_config(self.state_root),
+            dispatch_tool=self.kanban,
+            agents=AGENTS,
+            popen=Mock(side_effect=AssertionError("must not start harness")),
+        )
+        outcome = controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        self.assertEqual(outcome["workflowStatus"], "blocked")
+        self.assertNotEqual(outcome["workflowStatus"], "plan_reviewing")
+        self.assertNotEqual(outcome["workflowStatus"], "completed")
+        self.assertIsNone(self.store.latest_artifact("project-board", "t_abc", "plan"))
 
     def test_protocol_failure_blocks_then_reconsumes_without_harness_after_unblock(self) -> None:
         planted = _plant_completed_plan(self.store, self.state_root, consumed=False)

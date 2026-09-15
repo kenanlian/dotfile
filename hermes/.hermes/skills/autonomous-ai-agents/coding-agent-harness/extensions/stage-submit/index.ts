@@ -1,8 +1,9 @@
 /**
  * stage-submit — terminating tools for coding-agent-harness Pi runs.
  *
- * Registers submit_plan, submit_plan_review, submit_implementation, and
- * submit_execute_review. The relay allowlist exposes exactly one per run.
+ * Registers submit_plan, submit_plan_review, submit_implementation,
+ * submit_execute_review, and submit_direct_implementation. The relay allowlist
+ * exposes exactly one per run.
  * Each tool validates its payload against a TypeBox schema that mirrors the
  * harness contracts, returns terminate:true, and exposes the validated
  * payload as tool-result details.
@@ -16,6 +17,8 @@ import { Type, type TSchema } from "typebox";
 import {
   CONTRACT_FIELD_KEYS,
   DEVIATION_FIELD_KEYS,
+  DIRECT_IMPLEMENTATION_FIELD_KEYS,
+  DIRECT_IMPLEMENTATION_SCHEMA_ID,
   EXECUTE_REVIEW_FIELD_KEYS,
   EXECUTE_REVIEW_FINDING_FIELD_KEYS,
   EXECUTE_REVIEW_SCHEMA_ID,
@@ -30,6 +33,7 @@ import {
   PLAN_VERIFICATION_FIELD_KEYS,
   REQUIREMENT_FIELD_KEYS,
   RISK_FIELD_KEYS,
+  SUBMIT_DIRECT_IMPLEMENTATION,
   SUBMIT_EXECUTE_REVIEW,
   SUBMIT_IMPLEMENTATION,
   SUBMIT_PLAN,
@@ -165,6 +169,45 @@ const ImplementationParams = Type.Object(
   { additionalProperties: false },
 );
 
+const NonEmptyString = (description: string) => Type.String({ minLength: 1, description });
+
+const DirectImplementationCompleted = Type.Object(
+  {
+    schema: StringEnum([DIRECT_IMPLEMENTATION_SCHEMA_ID] as const, {
+      description: "direct-implementation.v1 schema id",
+    }),
+    outcome: StringEnum(["completed"] as const, { description: "Direct implementation outcome" }),
+    summary: NonEmptyString("Summary"),
+    residualRisks: Type.Array(NonEmptyString("Residual risk"), { description: "Residual risks" }),
+    blockingIssues: Type.Array(NonEmptyString("Blocking issue"), {
+      description: "Blocking issues",
+      maxItems: 0,
+    }),
+  },
+  { additionalProperties: false },
+);
+
+const DirectImplementationBlocked = Type.Object(
+  {
+    schema: StringEnum([DIRECT_IMPLEMENTATION_SCHEMA_ID] as const, {
+      description: "direct-implementation.v1 schema id",
+    }),
+    outcome: StringEnum(["blocked"] as const, { description: "Direct implementation outcome" }),
+    summary: NonEmptyString("Summary"),
+    residualRisks: Type.Array(NonEmptyString("Residual risk"), { description: "Residual risks" }),
+    blockingIssues: Type.Array(NonEmptyString("Blocking issue"), {
+      description: "Blocking issues",
+      minItems: 1,
+    }),
+  },
+  { additionalProperties: false },
+);
+
+const DirectImplementationParams = Type.Union([
+  DirectImplementationCompleted,
+  DirectImplementationBlocked,
+]);
+
 const ExecuteReviewFinding = Type.Object(
   {
     severity: StringEnum(["blocking", "warning"] as const, { description: "Finding severity" }),
@@ -192,6 +235,17 @@ const ExecuteReviewParams = Type.Object(
 );
 
 function schemaKeys(schema: TSchema): string[] {
+  const union = (schema as { anyOf?: TSchema[]; oneOf?: TSchema[] }).anyOf
+    ?? (schema as { anyOf?: TSchema[]; oneOf?: TSchema[] }).oneOf;
+  if (union && union.length > 0) {
+    const keys = schemaKeys(union[0]);
+    for (const arm of union) {
+      if (schemaKeys(arm).join("\0") !== keys.join("\0")) {
+        throw new Error("union arm schema keys drifted");
+      }
+    }
+    return keys;
+  }
   const properties = (schema as { properties?: Record<string, unknown> }).properties;
   return Object.keys(properties ?? {});
 }
@@ -258,6 +312,14 @@ const submitImplementation = submitTool(
   "implementation.v1 fields: schema, outcome, summary, completedWorkPackages[], deviations[{workPackageId,summary}], residualRisks[], blockingIssues[].",
 );
 
+const submitDirectImplementation = submitTool(
+  SUBMIT_DIRECT_IMPLEMENTATION,
+  "Submit direct implementation",
+  "Submit the completed direct-implementation payload and end the implementer run. Call this once as the final action.",
+  DirectImplementationParams,
+  "direct-implementation.v1 fields: schema, outcome, summary, residualRisks[], blockingIssues[].",
+);
+
 const submitExecuteReview = submitTool(
   SUBMIT_EXECUTE_REVIEW,
   "Submit execute review",
@@ -278,10 +340,12 @@ export default function stageSubmitExtension(pi: ExtensionAPI) {
   assertSchemaKeys(PlanReviewParams, PLAN_REVIEW_FIELD_KEYS, SUBMIT_PLAN_REVIEW);
   assertSchemaKeys(Deviation, DEVIATION_FIELD_KEYS, "deviation");
   assertSchemaKeys(ImplementationParams, IMPLEMENTATION_FIELD_KEYS, SUBMIT_IMPLEMENTATION);
+  assertSchemaKeys(DirectImplementationParams, DIRECT_IMPLEMENTATION_FIELD_KEYS, SUBMIT_DIRECT_IMPLEMENTATION);
   assertSchemaKeys(ExecuteReviewFinding, EXECUTE_REVIEW_FINDING_FIELD_KEYS, "executeReviewFinding");
   assertSchemaKeys(ExecuteReviewParams, EXECUTE_REVIEW_FIELD_KEYS, SUBMIT_EXECUTE_REVIEW);
   pi.registerTool(submitPlan);
   pi.registerTool(submitPlanReview);
   pi.registerTool(submitImplementation);
+  pi.registerTool(submitDirectImplementation);
   pi.registerTool(submitExecuteReview);
 }

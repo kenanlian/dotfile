@@ -30,6 +30,7 @@ make_job_id = _jobs.make_job_id
 write_job_document = _jobs.write_job_document
 parse_job_expectation = _protocol.parse_job_expectation
 validate_completed_result = _protocol.validate_completed_result
+job_document_sha256 = _protocol.job_document_sha256
 canonical_dumps = _store.canonical_dumps
 
 AGENTS = {
@@ -65,6 +66,94 @@ def _workspace(repo: str = "/abs/repo", head: str = "a" * 40) -> dict:
         "expectedHead": head,
         "requireCleanAtStart": True,
     }
+
+
+def _write_canonical_artifact(
+    path: Path,
+    *,
+    kind: str,
+    job: dict,
+    job_sha256: str,
+    session_id: str | None,
+    payload: dict,
+    inputs: list[dict] | None = None,
+    workspace: dict | None = None,
+    job_identity: dict | None = None,
+) -> str:
+    identity = {
+        "jobId": job["jobId"],
+        "idempotencyKey": job["idempotencyKey"],
+        "taskId": job["taskId"],
+        "stage": job["stage"],
+        "attempt": job["attempt"],
+        "jobSha256": job_sha256,
+    }
+    if job_identity:
+        identity.update(job_identity)
+    wrapper = {
+        "schema": ARTIFACT_SCHEMA,
+        "kind": kind,
+        "job": identity,
+        "sessionId": session_id,
+        "inputs": [
+            {"kind": item["kind"], "path": item["path"], "sha256": item["sha256"]}
+            for item in (inputs if inputs is not None else job["inputs"])
+        ],
+        "workspace": workspace
+        or {
+            "repoRoot": job["workspace"]["repoRoot"],
+            "branch": job["workspace"]["branch"],
+            "head": job["workspace"]["expectedHead"],
+            "baselineSnapshotSha256": "0" * 64,
+        },
+        "payload": payload,
+    }
+    text = json.dumps(wrapper, indent=2, ensure_ascii=False) + "\n"
+    path.write_text(text, encoding="utf-8")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+RESULT_CHECK_FIELD_KEYS = (
+    "id",
+    "status",
+    "argv",
+    "cwd",
+    "expectedExitCode",
+    "exitCode",
+    "signal",
+    "startedAt",
+    "finishedAt",
+    "stdoutPath",
+    "stderrPath",
+)
+
+
+def _host_check(item, *, status="passed", **overrides):
+    expected = item["expectedExitCode"]
+    check_id = item["id"]
+    if status == "passed":
+        exit_code, signal = expected, None
+    elif status == "failed":
+        exit_code, signal = (1 if expected == 0 else 0), None
+    elif status == "timed_out":
+        exit_code, signal = None, "SIGTERM"
+    else:
+        exit_code, signal = None, None
+    check = {
+        "id": check_id,
+        "status": status,
+        "argv": list(item["argv"]),
+        "cwd": item["cwd"],
+        "expectedExitCode": expected,
+        "exitCode": exit_code,
+        "signal": signal,
+        "startedAt": "2026-09-14T00:00:00Z",
+        "finishedAt": "2026-09-14T00:00:01Z",
+        "stdoutPath": f"/abs/out/checks/{check_id}.stdout.log",
+        "stderrPath": f"/abs/out/checks/{check_id}.stderr.log",
+    }
+    check.update(overrides)
+    return check
 
 
 class JobIdentityTests(unittest.TestCase):
@@ -236,7 +325,54 @@ class BuildJobTests(unittest.TestCase):
         self.assertEqual(impl["agent"]["profile"], "implementer")
         self.assertEqual(impl["permissions"]["mode"], "write")
         self.assertEqual(impl["agent"]["sessionId"], "sess_impl")
-        self.assertEqual(impl["verification"][0]["id"], "unit")
+        self.assertEqual(
+            impl["verification"][0]["id"], "unit"
+        )
+
+    def test_direct_implement_job_is_requirement_only_with_verification(self) -> None:
+        requirement = _artifact("requirement", self.root)
+        job = build_job(
+            board="project-board",
+            task_id="t_abc",
+            stage="direct_implement",
+            business_attempt=1,
+            transport_retry=0,
+            workspace=_workspace(),
+            agents=AGENTS,
+            inputs=(requirement,),
+            session_id=None,
+            verification=(
+                {
+                    "id": "unit",
+                    "argv": ["true"],
+                    "cwd": "/abs/repo",
+                    "timeoutSeconds": 30,
+                    "expectedExitCode": 0,
+                },
+            ),
+        )
+        self.assertEqual(job["agent"]["profile"], "implementer")
+        self.assertEqual(job["permissions"]["mode"], "write")
+        self.assertEqual(
+            job["expectedOutput"],
+            {"kind": "direct-implementation", "schema": "direct-implementation.v1"},
+        )
+        self.assertEqual(job["inputs"][0]["kind"], "requirement")
+        self.assertEqual(job["verification"][0]["id"], "unit")
+        without = None
+        with self.assertRaises(WorkflowProtocolError):
+            without = build_job(
+                board="project-board",
+                task_id="t_abc",
+                stage="direct_implement",
+                business_attempt=1,
+                transport_retry=0,
+                workspace=_workspace(),
+                agents=AGENTS,
+                inputs=(requirement,),
+                session_id=None,
+            )
+        self.assertIsNone(without)
 
     def test_missing_chained_artifact_is_rejected(self) -> None:
         requirement = _artifact("requirement", self.root)
@@ -414,8 +550,15 @@ class ConsumeResultTests(unittest.TestCase):
         )
         self.job_sha = write_job_document(self.job, self.root / "run")["job_sha256"]
         self.plan_path = self.root / "plan.json"
-        self.plan_path.write_text('{"schema":"plan.v1","title":"ok"}', encoding="utf-8")
-        self.plan_sha = hashlib.sha256(self.plan_path.read_bytes()).hexdigest()
+        self.plan_payload = {"schema": "plan.v1", "title": "ok"}
+        self.plan_sha = _write_canonical_artifact(
+            self.plan_path,
+            kind="plan",
+            job=self.job,
+            job_sha256=self.job_sha,
+            session_id="sess_plan",
+            payload=self.plan_payload,
+        )
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -433,7 +576,7 @@ class ConsumeResultTests(unittest.TestCase):
             "sessionId": "sess_plan",
             "startedAt": "2026-09-14T00:00:00Z",
             "finishedAt": "2026-09-14T00:01:00Z",
-            "structuredOutput": {"kind": "plan", "payload": {"schema": "plan.v1", "title": "ok"}},
+            "structuredOutput": {"kind": "plan", "payload": self.plan_payload},
             "artifacts": [
                 {
                     "kind": "plan",
@@ -537,6 +680,31 @@ class ConsumeResultTests(unittest.TestCase):
         self.assertEqual(outcome.kind, "transport_failure")
         self.assertIsNone(outcome.next_status)
 
+    def test_replaced_job_json_self_consistent_result_is_protocol_failure(self) -> None:
+        ledger = self.job_sha
+        forged = json.loads(json.dumps(self.job))
+        forged["agent"] = dict(forged["agent"], model="forged-model")
+        forged_sha = job_document_sha256(forged)
+        self.assertNotEqual(forged_sha, ledger)
+        payload = {"schema": "plan.v1", "title": "forged"}
+        digest = _write_canonical_artifact(
+            self.plan_path,
+            kind="plan",
+            job=forged,
+            job_sha256=forged_sha,
+            session_id="sess_plan",
+            payload=payload,
+        )
+        result = self._result()
+        result["jobSha256"] = forged_sha
+        result["structuredOutput"] = {"kind": "plan", "payload": payload}
+        result["artifacts"][0]["sha256"] = digest
+        outcome = consume_result(forged, result, expected_job_sha256=ledger)
+        self.assertEqual(outcome.kind, "protocol_failure")
+        self.assertIsNone(outcome.next_status)
+        self.assertTrue(outcome.reason)
+        self.assertIn("job_sha256", outcome.reason)
+
     def test_plan_review_verdicts(self) -> None:
         requirement = _artifact("requirement", self.root)
         plan = _artifact("plan", self.root)
@@ -554,7 +722,14 @@ class ConsumeResultTests(unittest.TestCase):
         review_sha = write_job_document(review_job, self.root / "review-run")["job_sha256"]
         artifact_path = self.root / "plan-review.json"
         payload = {"schema": "plan-review.v1", "verdict": "approved", "summary": "ok", "findings": []}
-        artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+        digest = _write_canonical_artifact(
+            artifact_path,
+            kind="plan-review",
+            job=review_job,
+            job_sha256=review_sha,
+            session_id="sess_review",
+            payload=payload,
+        )
         result = {
             "schema": RESULT_SCHEMA,
             "jobId": review_job["jobId"],
@@ -572,7 +747,7 @@ class ConsumeResultTests(unittest.TestCase):
                 {
                     "kind": "plan-review",
                     "path": str(artifact_path),
-                    "sha256": hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+                    "sha256": digest,
                     "schema": ARTIFACT_SCHEMA,
                     "canonical": True,
                 }
@@ -602,8 +777,14 @@ class ConsumeResultTests(unittest.TestCase):
         self.assertEqual(approved.review_verdict, "approved")
 
         payload["verdict"] = "request_changes"
-        artifact_path.write_text(json.dumps(payload), encoding="utf-8")
-        result["artifacts"][0]["sha256"] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+        result["artifacts"][0]["sha256"] = _write_canonical_artifact(
+            artifact_path,
+            kind="plan-review",
+            job=review_job,
+            job_sha256=review_sha,
+            session_id="sess_review",
+            payload=payload,
+        )
         result["structuredOutput"] = {"kind": "plan-review", "payload": payload}
         result["jobSha256"] = review_sha
         requested = consume_result(review_job, result)
@@ -634,7 +815,15 @@ class ConsumeResultTests(unittest.TestCase):
         )
         job_sha = write_job_document(job, self.root / "impl-run")["job_sha256"]
         impl_path = self.root / "implementation.json"
-        impl_path.write_text('{"schema":"implementation.v1","outcome":"completed"}', encoding="utf-8")
+        impl_payload = {"schema": "implementation.v1", "outcome": "completed"}
+        impl_digest = _write_canonical_artifact(
+            impl_path,
+            kind="implementation",
+            job=job,
+            job_sha256=job_sha,
+            session_id="sess_impl",
+            payload=impl_payload,
+        )
         result = {
             "schema": RESULT_SCHEMA,
             "jobId": job["jobId"],
@@ -649,19 +838,28 @@ class ConsumeResultTests(unittest.TestCase):
             "finishedAt": "2026-09-14T00:01:00Z",
             "structuredOutput": {
                 "kind": "implementation",
-                "payload": {"schema": "implementation.v1", "outcome": "completed"},
+                "payload": impl_payload,
             },
             "artifacts": [
                 {
                     "kind": "implementation",
                     "path": str(impl_path),
-                    "sha256": hashlib.sha256(impl_path.read_bytes()).hexdigest(),
+                    "sha256": impl_digest,
                     "schema": ARTIFACT_SCHEMA,
                     "canonical": True,
                 }
             ],
             "touchedFiles": [],
-            "checks": [{"id": "unit", "status": "passed"}],
+            "checks": [
+                _host_check(
+                    {
+                        "id": "unit",
+                        "argv": ["node", "--test"],
+                        "cwd": "/abs/repo",
+                        "expectedExitCode": 0,
+                    }
+                )
+            ],
             "usage": {},
             "workspace": {
                 "repoRoot": "/abs/repo",
@@ -683,6 +881,112 @@ class ConsumeResultTests(unittest.TestCase):
         outcome = consume_result(job, result)
         self.assertEqual(outcome.next_status, WorkflowStatus.VERIFYING)
         self.assertEqual(outcome.session_id, "sess_impl")
+
+    def test_direct_implement_completed_goes_to_verifying_and_blocked_outcome_blocks(self) -> None:
+        requirement = _artifact("requirement", self.root)
+        job = build_job(
+            board="project-board",
+            task_id="t_abc",
+            stage="direct_implement",
+            business_attempt=1,
+            transport_retry=0,
+            workspace=_workspace(),
+            agents=AGENTS,
+            inputs=(requirement,),
+            session_id=None,
+            verification=(
+                {
+                    "id": "unit",
+                    "argv": ["true"],
+                    "cwd": "/abs/repo",
+                    "timeoutSeconds": 30,
+                    "expectedExitCode": 0,
+                },
+            ),
+        )
+        job_sha = write_job_document(job, self.root / "direct-run")["job_sha256"]
+        impl_path = self.root / "direct-implementation.json"
+        payload = {
+            "schema": "direct-implementation.v1",
+            "outcome": "completed",
+            "summary": "ok",
+            "residualRisks": [],
+            "blockingIssues": [],
+        }
+        digest = _write_canonical_artifact(
+            impl_path,
+            kind="direct-implementation",
+            job=job,
+            job_sha256=job_sha,
+            session_id="sess_direct",
+            payload=payload,
+        )
+        result = {
+            "schema": RESULT_SCHEMA,
+            "jobId": job["jobId"],
+            "idempotencyKey": job["idempotencyKey"],
+            "jobSha256": job_sha,
+            "taskId": "t_abc",
+            "stage": "direct_implement",
+            "status": "completed",
+            "adapter": "pi",
+            "sessionId": "sess_direct",
+            "startedAt": "2026-09-14T00:00:00Z",
+            "finishedAt": "2026-09-14T00:01:00Z",
+            "structuredOutput": {"kind": "direct-implementation", "payload": payload},
+            "artifacts": [
+                {
+                    "kind": "direct-implementation",
+                    "path": str(impl_path),
+                    "sha256": digest,
+                    "schema": ARTIFACT_SCHEMA,
+                    "canonical": True,
+                }
+            ],
+            "touchedFiles": [],
+            "checks": [
+                _host_check(
+                    {
+                        "id": "unit",
+                        "argv": ["true"],
+                        "cwd": "/abs/repo",
+                        "expectedExitCode": 0,
+                    }
+                )
+            ],
+            "usage": {},
+            "workspace": {
+                "repoRoot": "/abs/repo",
+                "branchBefore": "main",
+                "branchAfter": "main",
+                "headBefore": "a" * 40,
+                "headAfter": "a" * 40,
+                "snapshotBeforeSha256": "c" * 64,
+                "snapshotAfterSha256": "c" * 64,
+            },
+            "error": None,
+            "paths": {
+                "events": "/abs/events.jsonl",
+                "stderr": "/abs/stderr.log",
+                "final": "/abs/final.txt",
+                "adapterRuns": [],
+            },
+        }
+        completed = consume_result(job, result)
+        self.assertEqual(completed.next_status, WorkflowStatus.VERIFYING)
+        payload["outcome"] = "blocked"
+        payload["blockingIssues"] = ["needs API key"]
+        result["artifacts"][0]["sha256"] = _write_canonical_artifact(
+            impl_path,
+            kind="direct-implementation",
+            job=job,
+            job_sha256=job_sha,
+            session_id="sess_direct",
+            payload=payload,
+        )
+        result["structuredOutput"] = {"kind": "direct-implementation", "payload": payload}
+        blocked = consume_result(job, result)
+        self.assertEqual(blocked.next_status, WorkflowStatus.BLOCKED)
 
     def test_execute_review_approved_goes_to_product_acceptance(self) -> None:
         requirement = _artifact("requirement", self.root)
@@ -708,7 +1012,14 @@ class ConsumeResultTests(unittest.TestCase):
             "acceptanceCoverage": [],
         }
         path = self.root / "execute-review.json"
-        path.write_text(json.dumps(payload), encoding="utf-8")
+        digest = _write_canonical_artifact(
+            path,
+            kind="execute-review",
+            job=job,
+            job_sha256=job_sha,
+            session_id="sess_exec",
+            payload=payload,
+        )
         result = {
             "schema": RESULT_SCHEMA,
             "jobId": job["jobId"],
@@ -726,7 +1037,7 @@ class ConsumeResultTests(unittest.TestCase):
                 {
                     "kind": "execute-review",
                     "path": str(path),
-                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "sha256": digest,
                     "schema": ARTIFACT_SCHEMA,
                     "canonical": True,
                 }
@@ -754,8 +1065,14 @@ class ConsumeResultTests(unittest.TestCase):
         outcome = consume_result(job, result)
         self.assertEqual(outcome.next_status, WorkflowStatus.PRODUCT_ACCEPTANCE)
         payload["verdict"] = "request_changes"
-        path.write_text(json.dumps(payload), encoding="utf-8")
-        result["artifacts"][0]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        result["artifacts"][0]["sha256"] = _write_canonical_artifact(
+            path,
+            kind="execute-review",
+            job=job,
+            job_sha256=job_sha,
+            session_id="sess_exec",
+            payload=payload,
+        )
         result["structuredOutput"] = {"kind": "execute-review", "payload": payload}
         rework = consume_result(job, result)
         self.assertEqual(rework.next_status, WorkflowStatus.IMPLEMENT_REWORK)
@@ -763,7 +1080,7 @@ class ConsumeResultTests(unittest.TestCase):
 
 class VerifyDecisionTests(unittest.TestCase):
     def test_verification_is_derived_only_from_checks(self) -> None:
-        self.assertEqual(decide_verification({"checks": []}), "passed")
+        self.assertEqual(decide_verification({"checks": []}), "failed")
         self.assertEqual(
             decide_verification({"checks": [{"id": "a", "status": "passed"}]}),
             "passed",
@@ -778,6 +1095,375 @@ class VerifyDecisionTests(unittest.TestCase):
             decide_verification({"checks": [{"id": "a", "status": "timed_out"}]}),
             "failed",
         )
+
+
+class BoundResultCheckTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="autodev-bound-checks-")
+        self.root = Path(self._tmp.name)
+        self.requirement = _artifact("requirement", self.root)
+        self.verification = (
+            {
+                "id": "unit",
+                "argv": ["true"],
+                "cwd": "/abs/repo",
+                "timeoutSeconds": 30,
+                "expectedExitCode": 0,
+            },
+            {
+                "id": "lint",
+                "argv": ["echo", "ok"],
+                "cwd": "/abs/repo",
+                "timeoutSeconds": 15,
+                "expectedExitCode": 0,
+            },
+        )
+        self.job = build_job(
+            board="project-board",
+            task_id="t_abc",
+            stage="direct_implement",
+            business_attempt=1,
+            transport_retry=0,
+            workspace=_workspace(),
+            agents=AGENTS,
+            inputs=(self.requirement,),
+            session_id=None,
+            verification=self.verification,
+        )
+        self.job_sha = write_job_document(self.job, self.root / "run")["job_sha256"]
+        self.payload = {
+            "schema": "direct-implementation.v1",
+            "outcome": "completed",
+            "summary": "ok",
+            "residualRisks": [],
+            "blockingIssues": [],
+        }
+        self.artifact_path = self.root / "direct-implementation.json"
+        _write_canonical_artifact(
+            self.artifact_path,
+            kind="direct-implementation",
+            job=self.job,
+            job_sha256=self.job_sha,
+            session_id="sess_direct",
+            payload=self.payload,
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _passed_checks(self):
+        return [_host_check(item) for item in self.verification]
+
+    def _result(self, *, checks):
+        return {
+            "schema": RESULT_SCHEMA,
+            "jobId": self.job["jobId"],
+            "idempotencyKey": self.job["idempotencyKey"],
+            "jobSha256": self.job_sha,
+            "taskId": "t_abc",
+            "stage": "direct_implement",
+            "status": "completed",
+            "adapter": "pi",
+            "sessionId": "sess_direct",
+            "startedAt": "2026-09-14T00:00:00Z",
+            "finishedAt": "2026-09-14T00:01:00Z",
+            "structuredOutput": {"kind": "direct-implementation", "payload": self.payload},
+            "artifacts": [
+                {
+                    "kind": "direct-implementation",
+                    "path": str(self.artifact_path),
+                    "sha256": hashlib.sha256(self.artifact_path.read_bytes()).hexdigest(),
+                    "schema": ARTIFACT_SCHEMA,
+                    "canonical": True,
+                }
+            ],
+            "touchedFiles": [],
+            "checks": checks,
+            "usage": {},
+            "workspace": {
+                "repoRoot": "/abs/repo",
+                "branchBefore": "main",
+                "branchAfter": "main",
+                "headBefore": "a" * 40,
+                "headAfter": "a" * 40,
+                "snapshotBeforeSha256": "c" * 64,
+                "snapshotAfterSha256": "c" * 64,
+            },
+            "error": None,
+            "paths": {
+                "events": "/abs/events.jsonl",
+                "stderr": "/abs/stderr.log",
+                "final": "/abs/final.txt",
+                "adapterRuns": [],
+            },
+        }
+
+    def test_empty_or_missing_checks_are_protocol_failures(self) -> None:
+        empty = consume_result(self.job, self._result(checks=[]))
+        self.assertEqual(empty.kind, "protocol_failure")
+        missing = consume_result(self.job, self._result(checks=[self._passed_checks()[0]]))
+        self.assertEqual(missing.kind, "protocol_failure")
+
+    def test_duplicate_or_extra_check_ids_are_protocol_failures(self) -> None:
+        duplicate = self._passed_checks()
+        duplicate[1] = dict(duplicate[0])
+        self.assertEqual(consume_result(self.job, self._result(checks=duplicate)).kind, "protocol_failure")
+        extra = self._passed_checks()
+        extra.append(
+            _host_check(
+                {
+                    "id": "bonus",
+                    "argv": ["true"],
+                    "cwd": "/abs/repo",
+                    "expectedExitCode": 0,
+                }
+            )
+        )
+        self.assertEqual(consume_result(self.job, self._result(checks=extra)).kind, "protocol_failure")
+
+    def test_mismatched_argv_cwd_or_exit_code_is_protocol_failure(self) -> None:
+        argv = self._passed_checks()
+        argv[0]["argv"] = ["false"]
+        self.assertEqual(consume_result(self.job, self._result(checks=argv)).kind, "protocol_failure")
+        cwd = self._passed_checks()
+        cwd[0]["cwd"] = "/abs/elsewhere"
+        self.assertEqual(consume_result(self.job, self._result(checks=cwd)).kind, "protocol_failure")
+        exit_code = self._passed_checks()
+        exit_code[1]["expectedExitCode"] = 1
+        self.assertEqual(consume_result(self.job, self._result(checks=exit_code)).kind, "protocol_failure")
+
+    def test_valid_failed_check_is_consumed_for_rework_not_protocol_failure(self) -> None:
+        checks = [_host_check(item) for item in self.verification]
+        checks[0] = _host_check(self.verification[0], status="failed")
+        outcome = consume_result(self.job, self._result(checks=checks))
+        self.assertEqual(outcome.kind, "consumed")
+        self.assertEqual(outcome.next_status, WorkflowStatus.VERIFYING)
+        self.assertEqual(decide_verification({"checks": checks}), "failed")
+
+    def test_matching_passed_checks_consume(self) -> None:
+        outcome = consume_result(self.job, self._result(checks=self._passed_checks()))
+        self.assertEqual(outcome.kind, "consumed")
+        self.assertEqual(outcome.next_status, WorkflowStatus.VERIFYING)
+
+    def test_omitted_check_fields_are_protocol_failures(self) -> None:
+        for field in RESULT_CHECK_FIELD_KEYS:
+            with self.subTest(field=field):
+                checks = self._passed_checks()
+                del checks[0][field]
+                outcome = consume_result(self.job, self._result(checks=checks))
+                self.assertEqual(outcome.kind, "protocol_failure")
+                self.assertIn(field, outcome.reason or "")
+
+    def test_unknown_check_field_is_protocol_failure(self) -> None:
+        checks = self._passed_checks()
+        checks[0]["bonus"] = "nope"
+        outcome = consume_result(self.job, self._result(checks=checks))
+        self.assertEqual(outcome.kind, "protocol_failure")
+        self.assertIn("bonus", outcome.reason or "")
+
+    def test_invalid_check_types_paths_and_timestamps_are_protocol_failures(self) -> None:
+        cases = {
+            "id": "",
+            "status": "ok",
+            "argv": [],
+            "cwd": "repo",
+            "expectedExitCode": 256,
+            "exitCode": 256,
+            "signal": "",
+            "startedAt": "today",
+            "finishedAt": "2026-09-14 00:00:01Z",
+            "stdoutPath": "stdout.log",
+            "stderrPath": "./stderr.log",
+        }
+        for field, value in cases.items():
+            with self.subTest(field=field, value=value):
+                checks = self._passed_checks()
+                checks[0][field] = value
+                if field == "expectedExitCode":
+                    checks[0]["exitCode"] = value
+                outcome = consume_result(self.job, self._result(checks=checks))
+                self.assertEqual(outcome.kind, "protocol_failure")
+
+    def test_contradictory_passed_and_failed_evidence_is_protocol_failure(self) -> None:
+        passed_exit = self._passed_checks()
+        passed_exit[0]["exitCode"] = 1
+        self.assertEqual(consume_result(self.job, self._result(checks=passed_exit)).kind, "protocol_failure")
+        passed_signal = self._passed_checks()
+        passed_signal[0]["signal"] = "SIGTERM"
+        self.assertEqual(consume_result(self.job, self._result(checks=passed_signal)).kind, "protocol_failure")
+        failed_success = [_host_check(item, status="failed") for item in self.verification]
+        failed_success[0]["exitCode"] = self.verification[0]["expectedExitCode"]
+        failed_success[0]["signal"] = None
+        self.assertEqual(consume_result(self.job, self._result(checks=failed_success)).kind, "protocol_failure")
+
+    def test_timed_out_and_unavailable_checks_are_consumed_for_rework(self) -> None:
+        timed_out = [_host_check(item) for item in self.verification]
+        timed_out[0] = _host_check(self.verification[0], status="timed_out")
+        timed = consume_result(self.job, self._result(checks=timed_out))
+        self.assertEqual(timed.kind, "consumed")
+        self.assertEqual(timed.next_status, WorkflowStatus.VERIFYING)
+        unavailable = [_host_check(item) for item in self.verification]
+        unavailable[0] = _host_check(self.verification[0], status="unavailable")
+        missing = consume_result(self.job, self._result(checks=unavailable))
+        self.assertEqual(missing.kind, "consumed")
+        self.assertEqual(missing.next_status, WorkflowStatus.VERIFYING)
+
+
+class CanonicalArtifactValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="autodev-canonical-artifact-")
+        self.root = Path(self._tmp.name)
+        self.requirement = _artifact("requirement", self.root)
+        self.job = build_job(
+            board="project-board",
+            task_id="t_abc",
+            stage="plan",
+            business_attempt=1,
+            transport_retry=0,
+            workspace=_workspace(),
+            agents=AGENTS,
+            inputs=(self.requirement,),
+            session_id=None,
+        )
+        self.job_sha = write_job_document(self.job, self.root / "run")["job_sha256"]
+        self.payload = {"schema": "plan.v1", "title": "ok"}
+        self.artifact_path = self.root / "plan.json"
+        self.digest = _write_canonical_artifact(
+            self.artifact_path,
+            kind="plan",
+            job=self.job,
+            job_sha256=self.job_sha,
+            session_id="sess_plan",
+            payload=self.payload,
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _result(self, *, path=None, digest=None, payload=None, session_id="sess_plan"):
+        artifact_path = path if path is not None else self.artifact_path
+        return {
+            "schema": RESULT_SCHEMA,
+            "jobId": self.job["jobId"],
+            "idempotencyKey": self.job["idempotencyKey"],
+            "jobSha256": self.job_sha,
+            "taskId": "t_abc",
+            "stage": "plan",
+            "status": "completed",
+            "adapter": "pi",
+            "sessionId": session_id,
+            "startedAt": "2026-09-14T00:00:00Z",
+            "finishedAt": "2026-09-14T00:01:00Z",
+            "structuredOutput": {"kind": "plan", "payload": payload or self.payload},
+            "artifacts": [
+                {
+                    "kind": "plan",
+                    "path": str(artifact_path),
+                    "sha256": digest or self.digest,
+                    "schema": ARTIFACT_SCHEMA,
+                    "canonical": True,
+                }
+            ],
+            "touchedFiles": [],
+            "checks": [],
+            "usage": {},
+            "workspace": {
+                "repoRoot": "/abs/repo",
+                "branchBefore": "main",
+                "branchAfter": "main",
+                "headBefore": "a" * 40,
+                "headAfter": "a" * 40,
+                "snapshotBeforeSha256": "c" * 64,
+                "snapshotAfterSha256": "c" * 64,
+            },
+            "error": None,
+            "paths": {
+                "events": "/abs/events.jsonl",
+                "stderr": "/abs/stderr.log",
+                "final": "/abs/final.txt",
+                "adapterRuns": [],
+            },
+        }
+
+    def test_matching_canonical_wrapper_consumes(self) -> None:
+        outcome = consume_result(self.job, self._result())
+        self.assertEqual(outcome.kind, "consumed")
+
+    def test_missing_artifact_file_is_protocol_failure(self) -> None:
+        missing = self.root / "missing.json"
+        outcome = consume_result(
+            self.job,
+            self._result(path=missing, digest="a" * 64),
+        )
+        self.assertEqual(outcome.kind, "protocol_failure")
+
+    def test_hash_drift_is_protocol_failure(self) -> None:
+        outcome = consume_result(self.job, self._result(digest="b" * 64))
+        self.assertEqual(outcome.kind, "protocol_failure")
+
+    def test_wrong_job_identity_is_protocol_failure(self) -> None:
+        digest = _write_canonical_artifact(
+            self.artifact_path,
+            kind="plan",
+            job=self.job,
+            job_sha256=self.job_sha,
+            session_id="sess_plan",
+            payload=self.payload,
+            job_identity={"jobId": "job_other"},
+        )
+        self.assertEqual(consume_result(self.job, self._result(digest=digest)).kind, "protocol_failure")
+
+    def test_wrong_stage_is_protocol_failure(self) -> None:
+        digest = _write_canonical_artifact(
+            self.artifact_path,
+            kind="plan",
+            job=self.job,
+            job_sha256=self.job_sha,
+            session_id="sess_plan",
+            payload=self.payload,
+            job_identity={"stage": "implement"},
+        )
+        self.assertEqual(consume_result(self.job, self._result(digest=digest)).kind, "protocol_failure")
+
+    def test_wrong_inputs_are_protocol_failure(self) -> None:
+        digest = _write_canonical_artifact(
+            self.artifact_path,
+            kind="plan",
+            job=self.job,
+            job_sha256=self.job_sha,
+            session_id="sess_plan",
+            payload=self.payload,
+            inputs=[
+                {
+                    "kind": "requirement",
+                    "path": "/abs/other.json",
+                    "sha256": "c" * 64,
+                }
+            ],
+        )
+        self.assertEqual(consume_result(self.job, self._result(digest=digest)).kind, "protocol_failure")
+
+    def test_wrong_session_is_protocol_failure(self) -> None:
+        digest = _write_canonical_artifact(
+            self.artifact_path,
+            kind="plan",
+            job=self.job,
+            job_sha256=self.job_sha,
+            session_id="sess_other",
+            payload=self.payload,
+        )
+        self.assertEqual(consume_result(self.job, self._result(digest=digest)).kind, "protocol_failure")
+
+    def test_payload_mismatch_is_protocol_failure(self) -> None:
+        digest = _write_canonical_artifact(
+            self.artifact_path,
+            kind="plan",
+            job=self.job,
+            job_sha256=self.job_sha,
+            session_id="sess_plan",
+            payload={"schema": "plan.v1", "title": "drifted"},
+        )
+        self.assertEqual(consume_result(self.job, self._result(digest=digest)).kind, "protocol_failure")
 
 
 if __name__ == "__main__":

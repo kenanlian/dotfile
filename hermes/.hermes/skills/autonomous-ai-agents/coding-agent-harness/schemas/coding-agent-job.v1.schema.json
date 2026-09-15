@@ -24,7 +24,7 @@
     "jobId": { "type": "string", "minLength": 1 },
     "idempotencyKey": { "type": "string", "minLength": 1 },
     "taskId": { "type": "string", "minLength": 1 },
-    "stage": { "enum": ["plan", "plan_review", "implement", "execute_review"] },
+    "stage": { "enum": ["plan", "plan_review", "implement", "execute_review", "direct_implement"] },
     "attempt": { "type": "integer", "minimum": 1 },
     "workspace": {
       "type": "object",
@@ -82,10 +82,10 @@
       "required": ["kind", "schema"],
       "properties": {
         "kind": {
-          "enum": ["plan", "plan-review", "implementation", "execute-review"]
+          "enum": ["plan", "plan-review", "implementation", "execute-review", "direct-implementation"]
         },
         "schema": {
-          "enum": ["plan.v1", "plan-review.v1", "implementation.v1", "execute-review.v1"]
+          "enum": ["plan.v1", "plan-review.v1", "implementation.v1", "execute-review.v1", "direct-implementation.v1"]
         }
       }
     },
@@ -116,5 +116,49 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "stage": { "const": "direct_implement" } },
+        "required": ["stage"]
+      },
+      "then": {
+        "properties": {
+          "agent": {
+            "properties": {
+              "profile": { "const": "implementer" }
+            },
+            "required": ["profile"]
+          },
+          "permissions": {
+            "properties": {
+              "mode": { "const": "write" }
+            },
+            "required": ["mode"]
+          },
+          "expectedOutput": {
+            "properties": {
+              "kind": { "const": "direct-implementation" },
+              "schema": { "const": "direct-implementation.v1" }
+            },
+            "required": ["kind", "schema"]
+          },
+          "inputs": {
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "properties": {
+                "kind": { "const": "requirement" }
+              },
+              "required": ["kind"]
+            }
+          },
+          "verification": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
 }

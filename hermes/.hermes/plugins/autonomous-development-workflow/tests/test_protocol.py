@@ -202,6 +202,46 @@ class TransitionTests(unittest.TestCase):
         assert_allowed_transition("plan_reviewing", "blocked")
         assert_allowed_transition("code_reviewing", "blocked")
 
+    def test_full_graph_rejects_direct_only_transitions(self) -> None:
+        with self.assertRaises(WorkflowProtocolError):
+            assert_allowed_transition("queued", "implementing")
+        with self.assertRaises(WorkflowProtocolError):
+            assert_allowed_transition("verifying", "completed")
+        with self.assertRaises(WorkflowProtocolError):
+            assert_allowed_transition(
+                "queued", "implementing", template_id="autonomous-development.v1"
+            )
+
+    def test_direct_template_allows_direct_only_transitions_and_rejects_full_edges(self) -> None:
+        assert_allowed_transition(
+            "queued", "implementing", template_id="direct-implementation.v1"
+        )
+        assert_allowed_transition(
+            "verifying", "completed", template_id="direct-implementation.v1"
+        )
+        assert_allowed_transition(
+            "verifying", "implement_rework", template_id="direct-implementation.v1"
+        )
+        with self.assertRaises(WorkflowProtocolError):
+            assert_allowed_transition(
+                "queued", "planning", template_id="direct-implementation.v1"
+            )
+        with self.assertRaises(WorkflowProtocolError):
+            assert_allowed_transition(
+                "verifying", "review_requested", template_id="direct-implementation.v1"
+            )
+
+    def test_full_implementing_cannot_go_to_blocked_but_direct_can(self) -> None:
+        with self.assertRaises(WorkflowProtocolError):
+            assert_allowed_transition("implementing", "blocked")
+        with self.assertRaises(WorkflowProtocolError):
+            assert_allowed_transition(
+                "implementing", "blocked", template_id="autonomous-development.v1"
+            )
+        assert_allowed_transition(
+            "implementing", "blocked", template_id="direct-implementation.v1"
+        )
+
     def test_illegal_edges_are_rejected(self) -> None:
         with self.assertRaises(WorkflowProtocolError):
             assert_allowed_transition("queued", "completed")

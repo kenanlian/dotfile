@@ -33,7 +33,7 @@
     "taskId": { "type": ["string", "null"], "minLength": 1 },
     "stage": {
       "type": ["string", "null"],
-      "enum": ["plan", "plan_review", "implement", "execute_review", null]
+      "enum": ["plan", "plan_review", "implement", "execute_review", "direct_implement", null]
     },
     "status": {
       "enum": ["completed", "failed", "timed_out", "aborted", "unavailable"]
@@ -54,7 +54,7 @@
       "required": ["kind", "payload"],
       "properties": {
         "kind": {
-          "enum": ["plan", "plan-review", "implementation", "execute-review"]
+          "enum": ["plan", "plan-review", "implementation", "execute-review", "direct-implementation"]
         },
         "payload": { "type": "object" }
       }
@@ -67,7 +67,7 @@
         "required": ["kind", "path", "sha256", "schema", "canonical"],
         "properties": {
           "kind": {
-            "enum": ["plan", "plan-review", "implementation", "execute-review", "plan-markdown"]
+            "enum": ["plan", "plan-review", "implementation", "execute-review", "direct-implementation", "plan-markdown"]
           },
           "path": { "type": "string", "minLength": 1, "pattern": "^/" },
           "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
@@ -222,7 +222,7 @@
           "idempotencyKey": { "type": "string", "minLength": 1 },
           "taskId": { "type": "string", "minLength": 1 },
           "stage": {
-            "enum": ["plan", "plan_review", "implement", "execute_review"]
+            "enum": ["plan", "plan_review", "implement", "execute_review", "direct_implement"]
           },
           "sessionId": { "type": "string", "minLength": 1 },
           "structuredOutput": { "type": "object" },

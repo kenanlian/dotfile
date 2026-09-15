@@ -13,15 +13,17 @@ SKILL_PATH = (
     Path(__file__).resolve().parent / "skills" / "autonomous-development-workflow" / "SKILL.md"
 )
 WORKER_PROMPT = (
-    "For cards bound to autonomous-development.v1: call autodev_workflow_status first, "
-    "then repeatedly call autodev_workflow_advance. While in_progress, keep advancing and "
-    "do not emit a completion summary. Use real browser/Obsidian/CLI/app paths only after "
-    "acceptance_required. Submit product acceptance only through "
-    "autodev_workflow_submit_acceptance; never write product-acceptance JSON yourself. "
-    "If you cannot reliably verify real product behavior, submit needs_human with one "
-    "explicit question. Do not call native kanban_complete, kanban_request_review, "
-    "kanban_request_changes, or kanban_block, and do not shell equivalent hermes kanban "
-    "lifecycle commands."
+    "For cards bound to autonomous-development.v1 or direct-implementation.v1: call "
+    "autodev_workflow_status first, then repeatedly call autodev_workflow_advance. "
+    "While in_progress, keep advancing and do not emit a completion summary. "
+    "direct-implementation.v1 never waits for product acceptance and never returns "
+    "acceptance_required; keep advancing until the controller completes or blocks. "
+    "Use real browser/Obsidian/CLI/app paths only after acceptance_required. "
+    "Submit product acceptance only through autodev_workflow_submit_acceptance; never "
+    "write product-acceptance JSON yourself. If you cannot reliably verify real product "
+    "behavior, submit needs_human with one explicit question. Do not call native "
+    "kanban_complete, kanban_request_review, kanban_request_changes, or kanban_block, "
+    "and do not shell equivalent hermes kanban lifecycle commands."
 )
 
 

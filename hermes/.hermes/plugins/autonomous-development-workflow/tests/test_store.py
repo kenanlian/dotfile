@@ -14,12 +14,14 @@ from pathlib import Path
 from plugin_imports import import_plugin
 
 _store = import_plugin("controller.store")
+_templates = import_plugin("controller.templates")
 _types = import_plugin("controller.types")
 
 WorkflowConflict = _types.WorkflowConflict
 WorkflowProtocolError = _types.WorkflowProtocolError
 WORKFLOW_SCHEMA = _types.WORKFLOW_SCHEMA
 WORKFLOW_TEMPLATE_ID = _types.WORKFLOW_TEMPLATE_ID
+DIRECT_TEMPLATE_ID = _templates.DIRECT_TEMPLATE_ID
 WorkflowStore = _store.WorkflowStore
 
 
@@ -273,7 +275,7 @@ class WorkflowStoreTests(unittest.TestCase):
 
         threads = [
             threading.Thread(target=attempt, args=("planning",)),
-            threading.Thread(target=attempt, args=("blocked",)),
+            threading.Thread(target=attempt, args=("planning",)),
         ]
         for thread in threads:
             thread.start()
@@ -282,7 +284,7 @@ class WorkflowStoreTests(unittest.TestCase):
         self.assertEqual(sorted(results), ["conflict", "ok"])
         loaded = store.get_manifest("project-board", "t_abc")
         self.assertEqual(loaded["revision"], 2)
-        self.assertIn(loaded["workflowStatus"], {"planning", "blocked"})
+        self.assertEqual(loaded["workflowStatus"], "planning")
 
     def test_artifact_rejects_missing_relative_hash_mismatch_and_overwrite(self) -> None:
         store = self._store()
@@ -468,6 +470,106 @@ class WorkflowStoreTests(unittest.TestCase):
         self.assertEqual(loaded["pendingLifecycle"]["runId"], "run_1")
         self.assertNotIn("workflow_lifecycle", store.table_names())
         self.assertNotIn("workflow_sagas", store.table_names())
+
+    def test_direct_queued_to_completed_is_rejected(self) -> None:
+        store = self._store()
+        store.put_manifest(_manifest(templateId=DIRECT_TEMPLATE_ID))
+        with self.assertRaises(WorkflowProtocolError):
+            store.cas_update_manifest(
+                "project-board",
+                "t_abc",
+                expected_revision=1,
+                manifest=_manifest(
+                    templateId=DIRECT_TEMPLATE_ID,
+                    revision=2,
+                    workflowStatus="completed",
+                ),
+            )
+        loaded = store.get_manifest("project-board", "t_abc")
+        self.assertEqual(loaded["workflowStatus"], "queued")
+        self.assertEqual(loaded["revision"], 1)
+
+    def test_direct_forbidden_plan_job_is_rejected(self) -> None:
+        store = self._store()
+        store.put_manifest(_manifest(templateId=DIRECT_TEMPLATE_ID))
+        with self.assertRaises(WorkflowProtocolError):
+            store.put_job(_job(stage="plan"))
+        self.assertIsNone(store.get_job("job_plan1"))
+        with self.assertRaises(WorkflowProtocolError):
+            store.put_job(_job(board="missing-board", task_id="t_missing", stage="direct_implement"))
+
+    def test_template_schema_and_repo_mutation_is_rejected(self) -> None:
+        store = self._store()
+        store.put_manifest(_manifest())
+        with self.assertRaises(WorkflowProtocolError):
+            store.cas_update_manifest(
+                "project-board",
+                "t_abc",
+                expected_revision=1,
+                manifest=_manifest(revision=2, templateId=DIRECT_TEMPLATE_ID),
+            )
+        with self.assertRaises(WorkflowProtocolError):
+            store.cas_update_manifest(
+                "project-board",
+                "t_abc",
+                expected_revision=1,
+                manifest=_manifest(revision=2, schema="other.workflow.v1", workflowStatus="planning"),
+            )
+        with self.assertRaises(WorkflowProtocolError):
+            store.cas_update_manifest(
+                "project-board",
+                "t_abc",
+                expected_revision=1,
+                manifest=_manifest(revision=2, repoRoot="/abs/other", workflowStatus="planning"),
+            )
+        loaded = store.get_manifest("project-board", "t_abc")
+        self.assertEqual(loaded["templateId"], WORKFLOW_TEMPLATE_ID)
+        self.assertEqual(loaded["schema"], WORKFLOW_SCHEMA)
+        self.assertEqual(loaded["repoRoot"], "/abs/repo")
+        self.assertEqual(loaded["revision"], 1)
+
+    def test_same_status_checkpoint_is_allowed(self) -> None:
+        store = self._store()
+        store.put_manifest(_manifest())
+        store.put_job(_job())
+        stored = store.checkpoint(
+            board="project-board",
+            task_id="t_abc",
+            expected_revision=1,
+            manifest=_manifest(revision=2, workflowStatus="queued", activeJobId="job_plan1"),
+            job_patch={"job_id": "job_plan1", "status": "running"},
+        )
+        self.assertEqual(stored["workflowStatus"], "queued")
+        self.assertEqual(stored["activeJobId"], "job_plan1")
+        self.assertEqual(store.get_job("job_plan1")["status"], "running")
+
+    def test_legal_direct_and_full_transitions_are_allowed(self) -> None:
+        store = self._store()
+        store.put_manifest(_manifest())
+        store.cas_update_manifest(
+            "project-board",
+            "t_abc",
+            expected_revision=1,
+            manifest=_manifest(revision=2, workflowStatus="planning"),
+        )
+        self.assertEqual(store.get_manifest("project-board", "t_abc")["workflowStatus"], "planning")
+        direct_root = Path(self._tmp.name) / "direct-state"
+        direct_root.mkdir()
+        direct = self._store(direct_root)
+        direct.put_manifest(_manifest(templateId=DIRECT_TEMPLATE_ID))
+        direct.cas_update_manifest(
+            "project-board",
+            "t_abc",
+            expected_revision=1,
+            manifest=_manifest(
+                templateId=DIRECT_TEMPLATE_ID,
+                revision=2,
+                workflowStatus="implementing",
+            ),
+        )
+        self.assertEqual(direct.get_manifest("project-board", "t_abc")["workflowStatus"], "implementing")
+        direct.put_job(_job(stage="direct_implement", job_id="job_direct1", idempotency_key="k-direct"))
+        self.assertEqual(direct.get_job("job_direct1")["stage"], "direct_implement")
 
 
 if __name__ == "__main__":

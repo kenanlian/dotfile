@@ -32,6 +32,7 @@ const STAGE_OUTPUT = {
   plan_review: { kind: "plan-review", schema: "plan-review.v1" },
   implement: { kind: "implementation", schema: "implementation.v1" },
   execute_review: { kind: "execute-review", schema: "execute-review.v1" },
+  direct_implement: { kind: "direct-implementation", schema: "direct-implementation.v1" },
 };
 
 function fail(message) {
@@ -142,6 +143,15 @@ function payloadFor(job, spec) {
     if (job.stage === "execute_review") review.acceptanceCoverage = spec.acceptanceCoverage || ["login"];
     return review;
   }
+  if (job.stage === "direct_implement") {
+    return {
+      schema: output.schema,
+      outcome: spec.outcome || "completed",
+      summary: spec.summary || "Implemented the requirement.",
+      residualRisks: spec.residualRisks || [],
+      blockingIssues: spec.blockingIssues || [],
+    };
+  }
   return {
     schema: output.schema,
     outcome: spec.outcome || "completed",
@@ -197,10 +207,17 @@ crash("after_lock", crashPoint);
 
 const output = STAGE_OUTPUT[job.stage];
 const status = spec.status || "completed";
-const sessionId = job.agent?.sessionId || spec.sessionId || `sess_${job.stage}_${ident.businessAttempt}`;
+let sessionId;
+if (Object.prototype.hasOwnProperty.call(spec, "sessionId")) {
+  sessionId = spec.sessionId;
+} else if (job.agent?.sessionId) {
+  sessionId = job.agent.sessionId;
+} else {
+  sessionId = `sess_${job.stage}_${ident.businessAttempt}`;
+}
 const startedAt = isoNow();
 
-if (status === "completed" && job.stage === "implement" && spec.dirty !== false) {
+if (status === "completed" && (job.stage === "implement" || job.stage === "direct_implement") && spec.dirty !== false) {
   const target = join(job.workspace.repoRoot, "src", "app.txt");
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, spec.fileContents || "hello from implementer\n");
@@ -248,11 +265,46 @@ if (status === "completed") {
 }
 
 crash("before_result", crashPoint);
-const checks = spec.checks === "failed"
-  ? [{ id: "unit", status: "failed" }]
-  : spec.checks === "passed" || job.stage === "implement"
-    ? [{ id: "unit", status: "passed" }]
-    : [];
+function boundChecks(checkStatus) {
+  const verification = Array.isArray(job.verification) ? job.verification : [];
+  const checksDir = join(args.outDir, "checks");
+  mkdirSync(checksDir, { recursive: true });
+  const finishedAt = isoNow();
+  return verification.map((item) => {
+    const safeId = String(item.id ?? "check").replace(/[^A-Za-z0-9._-]+/g, "-");
+    const stdoutPath = join(checksDir, `${safeId}.stdout.log`);
+    const stderrPath = join(checksDir, `${safeId}.stderr.log`);
+    writeFileSync(stdoutPath, "");
+    writeFileSync(stderrPath, "");
+    const expected = item.expectedExitCode;
+    let exitCode = expected;
+    let signal = null;
+    if (checkStatus === "failed") {
+      exitCode = expected === 0 ? 1 : 0;
+    } else if (checkStatus === "timed_out") {
+      exitCode = null;
+      signal = "SIGTERM";
+    } else if (checkStatus === "unavailable") {
+      exitCode = null;
+    }
+    return {
+      id: item.id,
+      status: checkStatus,
+      argv: Array.isArray(item.argv) ? item.argv : [],
+      cwd: item.cwd,
+      expectedExitCode: expected,
+      exitCode,
+      signal,
+      startedAt,
+      finishedAt,
+      stdoutPath,
+      stderrPath,
+    };
+  });
+}
+const checks = job.stage === "implement" || job.stage === "direct_implement"
+  ? boundChecks(spec.checks === "failed" ? "failed" : "passed")
+  : [];
 
 const result = {
   schema: RESULT_SCHEMA,
@@ -268,7 +320,7 @@ const result = {
   finishedAt: isoNow(),
   structuredOutput,
   artifacts,
-  touchedFiles: job.stage === "implement" ? ["src/app.txt"] : [],
+  touchedFiles: job.stage === "implement" || job.stage === "direct_implement" ? ["src/app.txt"] : [],
   checks,
   usage: {},
   workspace: {

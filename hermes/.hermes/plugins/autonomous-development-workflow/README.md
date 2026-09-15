@@ -11,8 +11,10 @@ state into the plugin directory.
 
 ## What this milestone did and did not do
 
-This tree includes typed product acceptance, the bypass guard, mock-harness
-smoke, and the `autodev` CLI (`status` / `doctor` / `reconcile` / `abandon`).
+This tree includes two allowlisted templates (`autonomous-development.v1` / `--flow full`
+and `direct-implementation.v1` / `--flow direct`), typed product acceptance for the
+full template, the bypass guard, mock-harness smoke, and the `autodev` CLI
+(`status` / `doctor` / `reconcile` / `abandon`).
 
 **Profile integration and a real Dispatcher end-to-end pass are not done
 here.** A coordinator will create the isolated Worker Profile, enable the
@@ -54,7 +56,7 @@ Manifest-bound Dispatcher Workers may call:
 
 - `autodev_workflow_status`
 - `autodev_workflow_advance`
-- `autodev_workflow_submit_acceptance`
+- `autodev_workflow_submit_acceptance` (full template only; rejected for `direct-implementation.v1`)
 
 Follow `skills/autonomous-development-workflow/SKILL.md`. Ordinary sessions
 without a Manifest are ignored by the `pre_tool_call` guard. `abandon` is

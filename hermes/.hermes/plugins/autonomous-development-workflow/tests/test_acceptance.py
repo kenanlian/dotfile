@@ -316,9 +316,21 @@ class TypedAcceptanceTests(AcceptanceHelpers, unittest.TestCase):
 
     def test_non_acceptance_status_is_rejected(self) -> None:
         current = self.store.get_manifest("project-board", "t_abc")
-        current["workflowStatus"] = "code_reviewing"
-        current["revision"] = 7
-        self.store.cas_update_manifest("project-board", "t_abc", expected_revision=6, manifest=current)
+        blocked = dict(current)
+        blocked["workflowStatus"] = "blocked"
+        blocked["revision"] = int(current["revision"]) + 1
+        self.store.cas_update_manifest(
+            "project-board", "t_abc", expected_revision=int(current["revision"]), manifest=blocked
+        )
+        reviewing = dict(blocked)
+        reviewing["workflowStatus"] = "code_reviewing"
+        reviewing["revision"] = int(blocked["revision"]) + 1
+        self.store.cas_update_manifest(
+            "project-board",
+            "t_abc",
+            expected_revision=int(blocked["revision"]),
+            manifest=reviewing,
+        )
         with self.assertRaises(WorkflowProtocolError):
             self._controller().submit_acceptance(
                 board="project-board",

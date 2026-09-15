@@ -559,7 +559,7 @@ async function main() {
           kind: STAGE_CONTRACTS[job.stage].outputKind,
           payload: payloadResult.value,
         };
-        if (job.stage === "implement") {
+        if (STAGE_CONTRACTS[job.stage].verificationAllowed) {
           checks = await runChecks(preflight.value.verifiedVerification || job.verification, {
             outDir: opts.outDir,
             cwd: job.workspace.repoRoot,

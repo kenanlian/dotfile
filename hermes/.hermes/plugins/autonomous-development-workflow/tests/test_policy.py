@@ -42,12 +42,15 @@ LEGAL_EDGES = (
 
 ILLEGAL_EDGES = (
     (WorkflowStatus.QUEUED, WorkflowStatus.COMPLETED),
+    (WorkflowStatus.QUEUED, WorkflowStatus.IMPLEMENTING),
     (WorkflowStatus.PLANNING, WorkflowStatus.PRODUCT_ACCEPTANCE),
     (WorkflowStatus.COMPLETED, WorkflowStatus.PLANNING),
     (WorkflowStatus.REVIEW_REQUESTED, WorkflowStatus.IMPLEMENTING),
     (WorkflowStatus.PLAN_REVIEWING, WorkflowStatus.VERIFYING),
     (WorkflowStatus.BLOCKED, WorkflowStatus.PLANNING),
     (WorkflowStatus.VERIFYING, WorkflowStatus.CODE_REVIEWING),
+    (WorkflowStatus.VERIFYING, WorkflowStatus.COMPLETED),
+    (WorkflowStatus.IMPLEMENTING, WorkflowStatus.BLOCKED),
 )
 
 
@@ -66,6 +69,7 @@ def _snapshot(**overrides) -> PolicySnapshot:
         resume_status=None,
         implement_checks=None,
         kanban_status=None,
+        template_id="autonomous-development.v1",
     )
     data.update(overrides)
     return PolicySnapshot(**data)
@@ -295,14 +299,15 @@ class NextActionTests(unittest.TestCase):
                 implement_checks=({"id": "unit", "status": "failed"},),
             )
         )
-        self.assertEqual(failed.kind, "create_job")
-        self.assertEqual(failed.stage, "implement")
+        self.assertEqual(failed.kind, "apply_lifecycle")
+        self.assertEqual(failed.target_status, WorkflowStatus.IMPLEMENT_REWORK)
         self.assertEqual(failed.reason, "implement_rework")
 
-    def test_empty_checks_pass_verification(self) -> None:
+    def test_empty_checks_fail_verification(self) -> None:
         action = next_action(_snapshot(status=WorkflowStatus.VERIFYING, implement_checks=()))
         self.assertEqual(action.kind, "apply_lifecycle")
-        self.assertEqual(action.target_status, WorkflowStatus.REVIEW_REQUESTED)
+        self.assertEqual(action.target_status, WorkflowStatus.IMPLEMENT_REWORK)
+        self.assertEqual(action.reason, "implement_rework")
 
     def test_implement_rework_limit_from_verify_execute_review_and_acceptance(self) -> None:
         for status, extra in (
@@ -334,8 +339,8 @@ class NextActionTests(unittest.TestCase):
                 implement_checks=({"id": "unit", "status": "failed"},),
             )
         )
-        self.assertEqual(action.kind, "create_job")
-        self.assertEqual(action.stage, "implement")
+        self.assertEqual(action.kind, "apply_lifecycle")
+        self.assertEqual(action.target_status, WorkflowStatus.IMPLEMENT_REWORK)
 
     def test_transport_failure_retries_same_business_attempt(self) -> None:
         action = next_action(
@@ -469,6 +474,73 @@ class NextActionTests(unittest.TestCase):
     def test_code_review_approved_awaits_acceptance_via_product_acceptance_status(self) -> None:
         action = next_action(_snapshot(status=WorkflowStatus.PRODUCT_ACCEPTANCE))
         self.assertEqual(action.kind, "await_acceptance")
+
+    def test_direct_queued_creates_direct_implement_job(self) -> None:
+        action = next_action(
+            _snapshot(status=WorkflowStatus.QUEUED, template_id="direct-implementation.v1")
+        )
+        self.assertEqual(action.kind, "create_job")
+        self.assertEqual(action.stage, "direct_implement")
+        self.assertEqual(action.target_status, WorkflowStatus.IMPLEMENTING)
+
+    def test_direct_verifying_passed_completes_without_review(self) -> None:
+        action = next_action(
+            _snapshot(
+                status=WorkflowStatus.VERIFYING,
+                template_id="direct-implementation.v1",
+                implement_checks=({"id": "unit", "status": "passed"},),
+            )
+        )
+        self.assertEqual(action.kind, "apply_lifecycle")
+        self.assertEqual(action.target_status, WorkflowStatus.COMPLETED)
+
+    def test_direct_check_failure_resumes_direct_implement(self) -> None:
+        action = next_action(
+            _snapshot(
+                status=WorkflowStatus.VERIFYING,
+                template_id="direct-implementation.v1",
+                implement_rework_count=0,
+                implementer_session_id="sess_direct",
+                implement_checks=({"id": "unit", "status": "failed"},),
+            )
+        )
+        self.assertEqual(action.kind, "apply_lifecycle")
+        self.assertEqual(action.target_status, WorkflowStatus.IMPLEMENT_REWORK)
+        self.assertEqual(action.reason, "implement_rework")
+
+    def test_direct_rejects_full_only_statuses_before_full_flow_branch(self) -> None:
+        for status in (
+            WorkflowStatus.PLANNING,
+            WorkflowStatus.PLAN_REVIEWING,
+            WorkflowStatus.PLAN_REWORK,
+            WorkflowStatus.REVIEW_REQUESTED,
+            WorkflowStatus.CODE_REVIEWING,
+            WorkflowStatus.PRODUCT_ACCEPTANCE,
+        ):
+            with self.subTest(status=status.value):
+                with self.assertRaises(WorkflowProtocolError):
+                    next_action(
+                        _snapshot(status=status, template_id="direct-implementation.v1")
+                    )
+
+    def test_full_rejects_direct_implement_active_stage(self) -> None:
+        with self.assertRaises(WorkflowProtocolError):
+            next_action(
+                _snapshot(
+                    status=WorkflowStatus.IMPLEMENTING,
+                    active_job=_job(stage="direct_implement", status="running"),
+                )
+            )
+
+    def test_direct_rejects_plan_active_stage(self) -> None:
+        with self.assertRaises(WorkflowProtocolError):
+            next_action(
+                _snapshot(
+                    status=WorkflowStatus.IMPLEMENTING,
+                    template_id="direct-implementation.v1",
+                    active_job=_job(stage="plan", status="running"),
+                )
+            )
 
 
 if __name__ == "__main__":

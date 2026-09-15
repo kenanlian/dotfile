@@ -38,6 +38,7 @@ const {
   PLAN_FIELD_KEYS,
   PLAN_REVIEW_FIELD_KEYS,
   IMPLEMENTATION_FIELD_KEYS,
+  DIRECT_IMPLEMENTATION_FIELD_KEYS,
   EXECUTE_REVIEW_FIELD_KEYS,
 } = await import("../src/contracts.mjs");
 
@@ -149,6 +150,30 @@ function validExecuteReviewJob() {
   return job;
 }
 
+function validDirectImplementJob() {
+  const job = validPlanJob();
+  job.jobId = "job_direct";
+  job.idempotencyKey = "task_123:direct_implement:1";
+  job.stage = "direct_implement";
+  job.agent.profile = "implementer";
+  job.agent.model = "kimi-coding/k3";
+  job.permissions.mode = "write";
+  job.inputs = [
+    { kind: "requirement", path: "/abs/requirement.md", sha256: "b".repeat(64) },
+  ];
+  job.expectedOutput = { kind: "direct-implementation", schema: "direct-implementation.v1" };
+  job.verification = [
+    {
+      id: "check-unit",
+      argv: ["node", "--test", "tests/unit.test.mjs"],
+      cwd: "/abs/repo",
+      timeoutSeconds: 120,
+      expectedExitCode: 0,
+    },
+  ];
+  return job;
+}
+
 function validPlanPayload() {
   return {
     schema: "plan.v1",
@@ -204,6 +229,16 @@ function validImplementationPayload() {
     summary: "Implemented greet.",
     completedWorkPackages: ["WP-01"],
     deviations: [],
+    residualRisks: [],
+    blockingIssues: [],
+  };
+}
+
+function validDirectImplementationPayload() {
+  return {
+    schema: "direct-implementation.v1",
+    outcome: "completed",
+    summary: "Implemented the requirement.",
     residualRisks: [],
     blockingIssues: [],
   };
@@ -343,6 +378,7 @@ test("valid fixtures for every stage pass without repair", () => {
     validPlanReviewJob(),
     validImplementJob(),
     validExecuteReviewJob(),
+    validDirectImplementJob(),
   ]) {
     const original = clone(job);
     const result = validateJob(job);
@@ -372,6 +408,8 @@ test("reviewer jobs may resume only as null sessionId; planner/implementer may r
   assert.equal(validateJob(planner).ok, true);
   const implementer = setPath(validImplementJob(), "/agent/sessionId", "sess-impl");
   assert.equal(validateJob(implementer).ok, true);
+  const direct = setPath(validDirectImplementJob(), "/agent/sessionId", "sess-direct");
+  assert.equal(validateJob(direct).ok, true);
 });
 
 test("verification is allowed only on implement and must be unique and well-formed", () => {
@@ -460,18 +498,164 @@ test("typedError factory is stable and error kinds cover the protocol set", () =
 });
 
 test("submit tool names and stage contracts are exact", () => {
-  assert.deepEqual([...STAGES], ["plan", "plan_review", "implement", "execute_review"]);
+  assert.deepEqual([...STAGES], ["plan", "plan_review", "implement", "execute_review", "direct_implement"]);
   assert.deepEqual(SUBMIT_TOOLS, {
     plan: "submit_plan",
     plan_review: "submit_plan_review",
     implement: "submit_implementation",
     execute_review: "submit_execute_review",
+    direct_implement: "submit_direct_implementation",
   });
   assert.equal(STAGE_CONTRACTS.plan.profile, "planner");
   assert.equal(STAGE_CONTRACTS.plan.permission, "read-only");
   assert.equal(STAGE_CONTRACTS.implement.permission, "write");
   assert.equal(STAGE_CONTRACTS.plan_review.session, "fresh");
   assert.equal(STAGE_CONTRACTS.execute_review.session, "fresh");
+  assert.equal(STAGE_CONTRACTS.direct_implement.profile, "implementer");
+  assert.equal(STAGE_CONTRACTS.direct_implement.permission, "write");
+  assert.equal(STAGE_CONTRACTS.direct_implement.outputKind, "direct-implementation");
+  assert.equal(STAGE_CONTRACTS.direct_implement.outputSchema, "direct-implementation.v1");
+  assert.equal(STAGE_CONTRACTS.direct_implement.submitTool, "submit_direct_implementation");
+  assert.equal(STAGE_CONTRACTS.direct_implement.session, "fresh_or_resume");
+  assert.equal(STAGE_CONTRACTS.direct_implement.verificationAllowed, true);
+  assert.equal(STAGE_CONTRACTS.direct_implement.verificationRequired, true);
+});
+
+test("direct_implement requires requirement-only input, non-empty checks, and typed payload", () => {
+  const okJob = validateJob(validDirectImplementJob());
+  assert.equal(okJob.ok, true, okJob.error && okJob.error.message);
+
+  const emptyChecks = validDirectImplementJob();
+  emptyChecks.verification = [];
+  assertInvalidJob(emptyChecks, "/verification");
+
+  const withPlan = validDirectImplementJob();
+  withPlan.inputs = [
+    { kind: "requirement", path: "/abs/requirement.md", sha256: "b".repeat(64) },
+    { kind: "plan", path: "/abs/plan.json", sha256: "c".repeat(64) },
+  ];
+  assertInvalidJob(withPlan, "/inputs");
+
+  const planOnly = validDirectImplementJob();
+  planOnly.inputs = [{ kind: "plan", path: "/abs/plan.json", sha256: "c".repeat(64) }];
+  assertInvalidJob(planOnly, "/inputs");
+
+  const okPayload = validatePayload("direct-implementation", validDirectImplementationPayload());
+  assert.equal(okPayload.ok, true, okPayload.error && okPayload.error.message);
+
+  const completedWithBlockers = validDirectImplementationPayload();
+  completedWithBlockers.blockingIssues = ["still blocked"];
+  assert.equal(validatePayload("direct-implementation", completedWithBlockers).ok, false);
+
+  const blockedEmpty = validDirectImplementationPayload();
+  blockedEmpty.outcome = "blocked";
+  assert.equal(validatePayload("direct-implementation", blockedEmpty).ok, false);
+
+  const blockedOk = validDirectImplementationPayload();
+  blockedOk.outcome = "blocked";
+  blockedOk.blockingIssues = ["cannot proceed"];
+  assert.equal(validatePayload("direct-implementation", blockedOk).ok, true);
+
+  const extraField = validDirectImplementationPayload();
+  extraField.completedWorkPackages = ["WP-01"];
+  assert.equal(validatePayload("direct-implementation", extraField).ok, false);
+});
+
+test("coding-agent-job.v1 JSON Schema encodes direct_implement stage semantics", () => {
+  const schema = loadSchema("coding-agent-job.v1.schema.json");
+  const valid = validDirectImplementJob();
+  assert.equal(validateJob(valid).ok, true);
+  assert.equal(schemaAccepts(schema, valid), true);
+
+  const cases = [
+    (() => {
+      const job = validDirectImplementJob();
+      job.verification = [];
+      return job;
+    })(),
+    (() => {
+      const job = validDirectImplementJob();
+      job.inputs = [
+        { kind: "requirement", path: "/abs/requirement.md", sha256: "b".repeat(64) },
+        { kind: "plan", path: "/abs/plan.json", sha256: "c".repeat(64) },
+      ];
+      return job;
+    })(),
+    (() => {
+      const job = validDirectImplementJob();
+      job.inputs = [{ kind: "plan", path: "/abs/plan.json", sha256: "c".repeat(64) }];
+      return job;
+    })(),
+    (() => {
+      const job = validDirectImplementJob();
+      job.agent.profile = "planner";
+      return job;
+    })(),
+    (() => {
+      const job = validDirectImplementJob();
+      job.permissions.mode = "read-only";
+      return job;
+    })(),
+    (() => {
+      const job = validDirectImplementJob();
+      job.expectedOutput = { kind: "implementation", schema: "implementation.v1" };
+      return job;
+    })(),
+  ];
+  for (const job of cases) {
+    assert.equal(validateJob(job).ok, false, JSON.stringify(job));
+    assert.equal(schemaAccepts(schema, job), false, JSON.stringify(job));
+  }
+
+  const plan = validPlanJob();
+  assert.equal(validateJob(plan).ok, true);
+  assert.equal(schemaAccepts(schema, plan), true);
+});
+
+test("direct-implementation JSON Schema matches runtime outcome and non-empty string rules", () => {
+  const schema = loadSchema("direct-implementation.v1.schema.json");
+  const completed = validDirectImplementationPayload();
+  assert.equal(validatePayload("direct-implementation", completed).ok, true);
+  assert.equal(schemaAccepts(schema, completed), true);
+
+  const blockedOk = validDirectImplementationPayload();
+  blockedOk.outcome = "blocked";
+  blockedOk.blockingIssues = ["cannot proceed"];
+  assert.equal(validatePayload("direct-implementation", blockedOk).ok, true);
+  assert.equal(schemaAccepts(schema, blockedOk), true);
+
+  const invalids = [
+    (() => {
+      const payload = validDirectImplementationPayload();
+      payload.blockingIssues = ["still blocked"];
+      return payload;
+    })(),
+    (() => {
+      const payload = validDirectImplementationPayload();
+      payload.outcome = "blocked";
+      return payload;
+    })(),
+    (() => {
+      const payload = validDirectImplementationPayload();
+      payload.summary = "";
+      return payload;
+    })(),
+    (() => {
+      const payload = validDirectImplementationPayload();
+      payload.residualRisks = [""];
+      return payload;
+    })(),
+    (() => {
+      const payload = validDirectImplementationPayload();
+      payload.outcome = "blocked";
+      payload.blockingIssues = [""];
+      return payload;
+    })(),
+  ];
+  for (const payload of invalids) {
+    assert.equal(validatePayload("direct-implementation", payload).ok, false, JSON.stringify(payload));
+    assert.equal(schemaAccepts(schema, payload), false, JSON.stringify(payload));
+  }
 });
 
 test("plan payload graph, coverage, and path rules", () => {
@@ -584,6 +768,7 @@ test("JSON schemas match runtime top-level required and property sets", () => {
     ["plan.v1.schema.json", PLAN_FIELD_KEYS],
     ["plan-review.v1.schema.json", PLAN_REVIEW_FIELD_KEYS],
     ["implementation.v1.schema.json", IMPLEMENTATION_FIELD_KEYS],
+    ["direct-implementation.v1.schema.json", DIRECT_IMPLEMENTATION_FIELD_KEYS],
     ["execute-review.v1.schema.json", EXECUTE_REVIEW_FIELD_KEYS],
   ];
   for (const [file, keys] of cases) {
@@ -788,7 +973,20 @@ function applyJsonSchema(schema, value, path, errors) {
     }
   }
   if (Array.isArray(value) && schema.items) {
+    if (schema.minItems !== undefined && value.length < schema.minItems) {
+      errors.push(`${path || "/"} minItems`);
+    }
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+      errors.push(`${path || "/"} maxItems`);
+    }
     value.forEach((item, index) => applyJsonSchema(schema.items, item, `${path}/${index}`, errors));
+  } else if (Array.isArray(value)) {
+    if (schema.minItems !== undefined && value.length < schema.minItems) {
+      errors.push(`${path || "/"} minItems`);
+    }
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+      errors.push(`${path || "/"} maxItems`);
+    }
   }
   if (schema.if) {
     const probe = [];
