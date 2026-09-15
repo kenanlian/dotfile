@@ -1,0 +1,7 @@
+name: intent-discussion
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: Intent discussion phase — converges user intent into persisted requirement documents
+provides_tools:
+  - intent_requirement_write
