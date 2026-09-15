@@ -1,0 +1,42 @@
+{
+  "schema": "coding-agent.job.v1",
+  "jobId": "job_execute_review",
+  "idempotencyKey": "task_fixture:execute_review:1",
+  "taskId": "task_fixture",
+  "stage": "execute_review",
+  "attempt": 1,
+  "workspace": {
+    "repoRoot": "__REPO_ROOT__",
+    "branch": "main",
+    "expectedHead": "__HEAD__",
+    "requireCleanAtStart": false
+  },
+  "agent": {
+    "adapter": "pi",
+    "profile": "execute-reviewer",
+    "model": "zai-coding-cn/glm-5.3",
+    "thinking": "high",
+    "sessionId": null
+  },
+  "permissions": { "mode": "read-only" },
+  "inputs": [
+    {
+      "kind": "requirement",
+      "path": "__REQUIREMENT_PATH__",
+      "sha256": "__REQUIREMENT_SHA256__"
+    },
+    {
+      "kind": "plan",
+      "path": "__PLAN_PATH__",
+      "sha256": "__PLAN_SHA256__"
+    },
+    {
+      "kind": "implementation",
+      "path": "__IMPLEMENTATION_PATH__",
+      "sha256": "__IMPLEMENTATION_SHA256__"
+    }
+  ],
+  "expectedOutput": { "kind": "execute-review", "schema": "execute-review.v1" },
+  "verification": [],
+  "limits": { "timeoutSeconds": null }
+}

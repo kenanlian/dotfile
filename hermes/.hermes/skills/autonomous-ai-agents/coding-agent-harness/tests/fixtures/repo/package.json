@@ -1,0 +1,5 @@
+{
+  "name": "greet-fixture",
+  "private": true,
+  "type": "module"
+}

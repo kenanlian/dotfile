@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "implementation.v1",
+  "title": "implementation.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "outcome",
+    "summary",
+    "completedWorkPackages",
+    "deviations",
+    "residualRisks",
+    "blockingIssues"
+  ],
+  "properties": {
+    "schema": { "const": "implementation.v1" },
+    "outcome": { "enum": ["completed", "blocked"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "completedWorkPackages": { "type": "array", "items": { "type": "string" } },
+    "deviations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workPackageId", "summary"],
+        "properties": {
+          "workPackageId": { "type": "string", "minLength": 1 },
+          "summary": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "residualRisks": { "type": "array", "items": { "type": "string" } },
+    "blockingIssues": { "type": "array", "items": { "type": "string" } }
+  }
+}

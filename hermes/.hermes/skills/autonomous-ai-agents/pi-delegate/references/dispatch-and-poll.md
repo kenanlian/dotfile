@@ -39,8 +39,11 @@ node "<skill-dir>/scripts/relay.mjs" --brief brief.txt --cd /path/to/repo
 | `--timeout <dur>` | Optional relay watchdog (default: off; h/m/s strings). Normal orchestration omits it; a deliberately long guard (`4h`) beats a task estimate. |
 | `--out-dir <dir>` | Artifact directory (default: a fresh directory under the system temp dir). |
 | `--auto-handoff-plan <file>` | Enable top-level Auto Handoff: one additional `-e` plus child-process `PI_AUTO_HANDOFF_PLAN_FILE` (the exact validated plan path) and `PI_AUTO_HANDOFF_HANDOFF_DIR` (`<actual out dir>/auto-handoff`). `<file>` must be an absolute readable non-empty regular file. Absence disables atomically. |
-| `--review-output plan\|execute` | Review relays only (never with `--write`). Loads `extensions/review-submit/` via `-e`, adds exactly `submit_plan_review` or `submit_execute_review` to the read-only allowlist, and captures exactly one successful expected-tool result into `structuredOutput`. |
+| `--review-output plan\|execute` | Review relays only (never with `--write`). Loads `extensions/review-submit/` via `-e`, adds exactly `submit_plan_review` or `submit_execute_review` to the read-only allowlist, and captures exactly one successful expected-tool result into `structuredOutput`. Mutually exclusive with `--structured-output-*`. |
 | `--review-output-recovery` | Single output-only recovery turn. Requires `--session` and `--review-output`. Child allowlist is only the stage submit tool; an output-only instruction is appended. |
+| `--structured-output-tool <name>` | Trusted/Harness transport surface. Capture exactly one successful result from this submit tool. Must be paired with `--structured-output-extension`. Allowed with `--write`. Mutually exclusive with `--review-output`. |
+| `--structured-output-extension <dir>` | Absolute extension root containing `index.ts` or `index.js`. Must be paired with `--structured-output-tool`. |
+| `--structured-output-recovery` | Single output-only recovery turn. Requires `--session` plus the generic tool/extension pair. Child allowlist is only that submit tool. |
 | `-h`, `--help` | Print the relay's header help. |
 
 A fresh run defaults to read-only. Writing requires an explicit `--write`. The relay
@@ -48,9 +51,13 @@ always passes `--no-extensions` plus an explicit `-e <delegate-agent-root>` so e
 loading is deterministic: the `delegate_agent` tool exists and nothing implicit loads.
 When `--auto-handoff-plan` is present, one additional `-e` loads the auto-handoff
 extension; delegated children keep `--no-extensions` and never receive it. When
-`--review-output` is present, one additional `-e` loads the review-submit extension
-and the stage submit tool is added to the read-only allowlist. Global
-Skills discovery stays enabled; the relay never copies or mirrors Skills.
+`--review-output` is present, one additional `-e` loads the review-submit
+extension and the stage submit tool is added to the read-only allowlist. When
+`--structured-output-tool` and `--structured-output-extension` are present, one
+additional `-e` loads that trusted extension root and the named submit tool is
+added to the current mode allowlist (including `--write`). The two flag families
+are mutually exclusive. Global Skills discovery stays enabled; the relay never
+copies or mirrors Skills.
 
 There is no `call_allowlist` in this relay: a `--read-only` parent can still ask
 `delegate_agent` for a write-access child. Tool-gating applies only to the top-level
@@ -89,14 +96,14 @@ Artifacts live outside the repo by default so they do not appear in `touchedFile
   `autoRetryCount` (Pi auto-retries are normal; they are counted, not failed).
   `finalMessage` is diagnostic only; review runs finish via the stage submit tool and
   nothing parses `finalMessage`.
-- `structuredOutput` — `{ tool, payload }` when `--review-output` captured exactly one
-  successful expected-tool result (`submit_plan_review` or `submit_execute_review`);
-  otherwise `null`. Absent `--review-output`, always `null` (write-mode relays never
-  set the flag). Zero, two or more successful expected-tool results, or an error
-  result from the expected tool, are protocol errors: `structuredOutput` stays `null`
-  and `structuredOutputError` carries the diagnostic.
-- `structuredOutputError` — diagnostic string for a failed review-output capture;
-  `null` when capture succeeded or `--review-output` was absent.
+- `structuredOutput` — `{ tool, payload }` when `--review-output` or
+  `--structured-output-tool` captured exactly one successful expected-tool
+  result; otherwise `null`. Absent those flags, always `null`. Zero, two or more
+  successful expected-tool results, or an error result from the expected tool,
+  are protocol errors: `structuredOutput` stays `null` and `structuredOutputError`
+  carries the diagnostic.
+- `structuredOutputError` — diagnostic string for a failed structured-output
+  capture; `null` when capture succeeded or no structured-output flag was set.
 - `briefPath`, `finalPath` (null when absent), `eventsPath`, `stderrPath`.
 - `touchedFiles` — `git status --porcelain` lines for the working tree under `--cd`
   only, taken at terminal time. It is a snapshot, not an attribution of Pi's edits:
@@ -177,11 +184,12 @@ The argv is equivalent to:
 pi --mode json -p --no-extensions -e ~/.pi/agent/extensions/delegate-agent \
   [-e ~/Secret-Projects/pi-auto-handoff]              # only with --auto-handoff-plan
   [-e <pi-delegate>/extensions/review-submit]         # only with --review-output
-  --tools read,grep,find,ls,delegate_agent            # or write set; review-output appends the stage submit tool
-                                                      # --review-output-recovery: only the stage submit tool
+  [-e <absolute-extension-root>]                      # only with --structured-output-extension
+  --tools read,grep,find,ls,delegate_agent            # or write set; structured-output appends the submit tool
+                                                      # --review-output-recovery / --structured-output-recovery: only the submit tool
   [--model provider/model] --thinking high \
   [--session <existing-id>] \
-  [--append-system-prompt <output-only instruction>]  # only with --review-output-recovery
+  [--append-system-prompt <output-only instruction>]  # only with recovery flags
 ```
 
 When `--auto-handoff-plan` is set, the child is spawned with a fresh env copy that

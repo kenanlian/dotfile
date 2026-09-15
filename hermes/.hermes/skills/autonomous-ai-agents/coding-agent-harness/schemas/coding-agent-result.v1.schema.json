@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coding-agent.result.v1",
+  "title": "coding-agent.result.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "jobId",
+    "idempotencyKey",
+    "jobSha256",
+    "taskId",
+    "stage",
+    "status",
+    "adapter",
+    "sessionId",
+    "startedAt",
+    "finishedAt",
+    "structuredOutput",
+    "artifacts",
+    "touchedFiles",
+    "checks",
+    "usage",
+    "workspace",
+    "error",
+    "paths"
+  ],
+  "properties": {
+    "schema": { "const": "coding-agent.result.v1" },
+    "jobId": { "type": ["string", "null"], "minLength": 1 },
+    "idempotencyKey": { "type": ["string", "null"], "minLength": 1 },
+    "jobSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "taskId": { "type": ["string", "null"], "minLength": 1 },
+    "stage": {
+      "type": ["string", "null"],
+      "enum": ["plan", "plan_review", "implement", "execute_review", null]
+    },
+    "status": {
+      "enum": ["completed", "failed", "timed_out", "aborted", "unavailable"]
+    },
+    "adapter": { "const": "pi" },
+    "sessionId": { "type": ["string", "null"], "minLength": 1 },
+    "startedAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+    },
+    "finishedAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+    },
+    "structuredOutput": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["kind", "payload"],
+      "properties": {
+        "kind": {
+          "enum": ["plan", "plan-review", "implementation", "execute-review"]
+        },
+        "payload": { "type": "object" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "path", "sha256", "schema", "canonical"],
+        "properties": {
+          "kind": {
+            "enum": ["plan", "plan-review", "implementation", "execute-review", "plan-markdown"]
+          },
+          "path": { "type": "string", "minLength": 1, "pattern": "^/" },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "schema": { "type": "string", "minLength": 1 },
+          "canonical": { "type": "boolean" }
+        }
+      }
+    },
+    "touchedFiles": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status",
+          "argv",
+          "cwd",
+          "expectedExitCode",
+          "exitCode",
+          "signal",
+          "startedAt",
+          "finishedAt",
+          "stdoutPath",
+          "stderrPath"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "status": {
+            "enum": ["passed", "failed", "timed_out", "unavailable"]
+          },
+          "argv": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "cwd": { "type": "string", "minLength": 1, "pattern": "^/" },
+          "expectedExitCode": { "type": "integer", "minimum": 0, "maximum": 255 },
+          "exitCode": { "type": ["integer", "null"], "minimum": 0, "maximum": 255 },
+          "signal": { "type": ["string", "null"], "minLength": 1 },
+          "startedAt": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+          },
+          "finishedAt": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+          },
+          "stdoutPath": { "type": "string", "minLength": 1, "pattern": "^/" },
+          "stderrPath": { "type": "string", "minLength": 1, "pattern": "^/" }
+        }
+      }
+    },
+    "usage": { "type": "object" },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repoRoot",
+        "branchBefore",
+        "branchAfter",
+        "headBefore",
+        "headAfter",
+        "snapshotBeforeSha256",
+        "snapshotAfterSha256"
+      ],
+      "properties": {
+        "repoRoot": { "type": "string", "minLength": 1, "pattern": "^/" },
+        "branchBefore": { "type": "string", "minLength": 1 },
+        "branchAfter": { "type": "string", "minLength": 1 },
+        "headBefore": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$|^[a-f0-9]{64}$"
+        },
+        "headAfter": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$|^[a-f0-9]{64}$"
+        },
+        "snapshotBeforeSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "snapshotAfterSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "error": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["kind", "message", "details"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "aborted",
+            "adapter_failed",
+            "adapter_unavailable",
+            "agent_not_settled",
+            "artifact_write_failed",
+            "idempotency_conflict",
+            "input_hash_mismatch",
+            "invalid_job",
+            "permission_mismatch",
+            "read_only_violation",
+            "run_in_progress",
+            "session_mismatch",
+            "structured_output_duplicate",
+            "structured_output_invalid",
+            "structured_output_missing",
+            "timed_out",
+            "workspace_mismatch"
+          ]
+        },
+        "message": { "type": "string", "minLength": 1 },
+        "details": { "type": "object" }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["events", "stderr", "final", "adapterRuns"],
+      "properties": {
+        "events": { "type": "string", "minLength": 1, "pattern": "^/" },
+        "stderr": { "type": "string", "minLength": 1, "pattern": "^/" },
+        "final": { "type": "string", "minLength": 1, "pattern": "^/" },
+        "adapterRuns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["phase", "result", "events", "stderr", "final"],
+            "properties": {
+              "phase": { "enum": ["primary", "output-recovery"] },
+              "result": { "type": "string", "minLength": 1, "pattern": "^/" },
+              "events": { "type": "string", "minLength": 1, "pattern": "^/" },
+              "stderr": { "type": "string", "minLength": 1, "pattern": "^/" },
+              "final": { "type": "string", "minLength": 1, "pattern": "^/" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "completed" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "jobId": { "type": "string", "minLength": 1 },
+          "idempotencyKey": { "type": "string", "minLength": 1 },
+          "taskId": { "type": "string", "minLength": 1 },
+          "stage": {
+            "enum": ["plan", "plan_review", "implement", "execute_review"]
+          },
+          "sessionId": { "type": "string", "minLength": 1 },
+          "structuredOutput": { "type": "object" },
+          "error": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": { "enum": ["failed", "timed_out", "aborted"] }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "error": { "type": "object" }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plan.v1",
+  "title": "plan.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "outcome",
+    "title",
+    "goal",
+    "architecture",
+    "techStack",
+    "requirements",
+    "contracts",
+    "workPackages",
+    "verification",
+    "risks",
+    "blockingIssues"
+  ],
+  "properties": {
+    "schema": { "const": "plan.v1" },
+    "outcome": { "enum": ["completed", "blocked"] },
+    "title": { "type": "string", "minLength": 1 },
+    "goal": { "type": "string", "minLength": 1 },
+    "architecture": { "type": "string", "minLength": 1 },
+    "techStack": { "type": "array", "items": { "type": "string" } },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "contracts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "requirementIds", "text"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "requirementIds": { "type": "array", "items": { "type": "string" } },
+          "text": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "workPackages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "objective",
+          "dependsOn",
+          "contractIds",
+          "fileChanges",
+          "steps",
+          "verificationIds"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "objective": { "type": "string", "minLength": 1 },
+          "dependsOn": { "type": "array", "items": { "type": "string" } },
+          "contractIds": { "type": "array", "items": { "type": "string" } },
+          "fileChanges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["action", "path"],
+              "properties": {
+                "action": { "enum": ["create", "modify", "delete"] },
+                "path": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
+          "steps": { "type": "array", "items": { "type": "string" } },
+          "verificationIds": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "cwd", "argv", "expected", "contractIds"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["focused", "integration", "smoke"] },
+          "cwd": { "type": "string", "minLength": 1 },
+          "argv": { "type": "array", "items": { "type": "string" } },
+          "expected": { "type": "string", "minLength": 1 },
+          "contractIds": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["risk", "mitigation"],
+        "properties": {
+          "risk": { "type": "string", "minLength": 1 },
+          "mitigation": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "blockingIssues": { "type": "array", "items": { "type": "string" } }
+  }
+}

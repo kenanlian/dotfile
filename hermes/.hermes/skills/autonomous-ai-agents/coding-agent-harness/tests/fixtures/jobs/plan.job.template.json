@@ -1,0 +1,32 @@
+{
+  "schema": "coding-agent.job.v1",
+  "jobId": "job_plan",
+  "idempotencyKey": "task_fixture:plan:1",
+  "taskId": "task_fixture",
+  "stage": "plan",
+  "attempt": 1,
+  "workspace": {
+    "repoRoot": "__REPO_ROOT__",
+    "branch": "main",
+    "expectedHead": "__HEAD__",
+    "requireCleanAtStart": true
+  },
+  "agent": {
+    "adapter": "pi",
+    "profile": "planner",
+    "model": "zai-coding-cn/glm-5.3",
+    "thinking": "high",
+    "sessionId": null
+  },
+  "permissions": { "mode": "read-only" },
+  "inputs": [
+    {
+      "kind": "requirement",
+      "path": "__REQUIREMENT_PATH__",
+      "sha256": "__REQUIREMENT_SHA256__"
+    }
+  ],
+  "expectedOutput": { "kind": "plan", "schema": "plan.v1" },
+  "verification": [],
+  "limits": { "timeoutSeconds": null }
+}

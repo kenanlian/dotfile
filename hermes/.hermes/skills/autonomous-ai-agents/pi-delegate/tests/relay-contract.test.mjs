@@ -59,9 +59,12 @@ test('review-output flags and structuredOutput fields are additive on result v1'
   assert.match(source, /submit_plan_review/);
   assert.match(source, /submit_execute_review/);
   assert.match(source, /delegate-relay\.result\.v1/);
-  assert.match(source, /if \(reviewSubmit\) argv\.push\("-e", reviewSubmit\)/);
+  assert.match(source, /if \(structuredExtension\) argv\.push\("-e", structuredExtension\)/);
   assert.match(source, /if \(opts\.reviewOutputRecovery && !opts\.session\)/);
   assert.match(source, /if \(opts\.reviewOutput !== null && opts\.write\)/);
+  assert.match(source, /--structured-output-tool/);
+  assert.match(source, /--structured-output-extension/);
+  assert.match(source, /--structured-output-recovery/);
 });
 
 test('review-submit schema field lists match harness contracts.py key sets', async () => {

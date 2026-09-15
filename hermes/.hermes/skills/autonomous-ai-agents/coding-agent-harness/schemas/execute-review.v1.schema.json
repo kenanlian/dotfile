@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "execute-review.v1",
+  "title": "execute-review.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "verdict", "summary", "findings", "acceptanceCoverage"],
+  "properties": {
+    "schema": { "const": "execute-review.v1" },
+    "verdict": { "enum": ["approved", "request_changes", "blocked"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "file", "line", "problem", "requiredChange"],
+        "properties": {
+          "severity": { "enum": ["blocking", "warning"] },
+          "file": { "type": "string", "minLength": 1 },
+          "line": { "type": "integer", "minimum": 0 },
+          "problem": { "type": "string", "minLength": 1 },
+          "requiredChange": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "acceptanceCoverage": { "type": "array", "items": { "type": "string" } }
+  }
+}

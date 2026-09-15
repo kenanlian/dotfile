@@ -61,6 +61,16 @@
  *   --review-output-recovery  Single C19 recovery turn: requires --session and
  *                        --review-output; child allowlist is only the stage
  *                        submit tool plus an output-only instruction.
+ *   --structured-output-tool <name>  Trusted/Harness transport: capture exactly
+ *                        one successful result from this submit tool. Must be
+ *                        paired with --structured-output-extension. Compatible
+ *                        with --write. Mutually exclusive with --review-output.
+ *   --structured-output-extension <dir>  Absolute extension root containing
+ *                        index.ts or index.js. Must be paired with
+ *                        --structured-output-tool.
+ *   --structured-output-recovery  Single output-only recovery turn. Requires
+ *                        --session plus the generic tool/extension pair; child
+ *                        allowlist is only that submit tool.
  *   -h, --help           Show this help.
  *
  * Result: written to <out-dir>/result.json —
@@ -96,6 +106,7 @@ const MAX_TIMER_MS = 2_147_483_647;
 const VERSION_PROBE_TIMEOUT_MS = 10_000;
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/;
 const SAFE_SESSION = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const SAFE_TOOL = /^[A-Za-z][A-Za-z0-9_]*$/;
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "delegate_agent"];
 const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write", "delegate_agent"];
@@ -108,9 +119,13 @@ const REVIEW_OUTPUT_STAGES = new Set(Object.keys(REVIEW_SUBMIT_TOOLS));
 function outputOnlyInstruction(tool) {
   return (
     `Output-only recovery turn: call only ${tool} with the completed typed `
-    + "review payload. Do not read, search, edit, write, or delegate. "
+    + "payload. Do not read, search, edit, write, or delegate. "
     + `After ${tool} returns, stop.`
   );
+}
+
+function hasExtensionIndex(root) {
+  return Boolean(root) && (existsSync(join(root, "index.ts")) || existsSync(join(root, "index.js")));
 }
 
 /** The delegate-agent extension root: `-e` takes a directory, not a module file. */
@@ -161,9 +176,9 @@ function reviewSubmitRoot() {
 }
 
 function childTools(opts) {
-  const submit = opts.reviewOutput ? REVIEW_SUBMIT_TOOLS[opts.reviewOutput] : null;
-  if (opts.reviewOutputRecovery) return [submit];
-  if (opts.write) return WRITE_TOOLS;
+  const submit = opts.structuredOutput?.tool ?? null;
+  if (opts.structuredOutput?.recovery) return [submit];
+  if (opts.write) return submit ? [...WRITE_TOOLS, submit] : WRITE_TOOLS;
   if (submit) return [...READ_ONLY_TOOLS, submit];
   return READ_ONLY_TOOLS;
 }
@@ -197,6 +212,10 @@ function parseArgs(argv) {
     autoHandoffPlan: null,
     reviewOutput: null,
     reviewOutputRecovery: false,
+    structuredOutputTool: null,
+    structuredOutputExtension: null,
+    structuredOutputRecovery: false,
+    structuredOutput: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -224,6 +243,16 @@ function parseArgs(argv) {
       case "--auto-handoff-plan": opts.autoHandoffPlan = next(); break;
       case "--review-output": opts.reviewOutput = next(); break;
       case "--review-output-recovery": opts.reviewOutputRecovery = true; break;
+      case "--structured-output-tool": opts.structuredOutputTool = next(); break;
+      case "--structured-output-extension": {
+        const raw = next();
+        if (!isAbsolute(raw)) {
+          fail("--structured-output-extension must be an absolute path");
+        }
+        opts.structuredOutputExtension = resolve(raw);
+        break;
+      }
+      case "--structured-output-recovery": opts.structuredOutputRecovery = true; break;
       default:
         fail(`unknown option: ${arg}`);
     }
@@ -278,7 +307,53 @@ function parseArgs(argv) {
   if (opts.reviewOutput !== null && opts.write) {
     fail(`--review-output is not valid with --write`);
   }
+  opts.structuredOutput = resolveStructuredOutputRequest(opts);
   return opts;
+}
+
+function resolveStructuredOutputRequest(opts) {
+  const genericRequested = opts.structuredOutputTool !== null
+    || opts.structuredOutputExtension !== null
+    || opts.structuredOutputRecovery;
+  const legacyRequested = opts.reviewOutput !== null || opts.reviewOutputRecovery;
+  if (genericRequested && legacyRequested) {
+    fail("--review-output/--review-output-recovery cannot be combined with --structured-output-* flags");
+  }
+  if (opts.structuredOutputTool !== null && opts.structuredOutputExtension === null) {
+    fail("--structured-output-tool requires --structured-output-extension");
+  }
+  if (opts.structuredOutputExtension !== null && opts.structuredOutputTool === null) {
+    fail("--structured-output-extension requires --structured-output-tool");
+  }
+  if (opts.structuredOutputRecovery && (opts.structuredOutputTool === null || opts.structuredOutputExtension === null)) {
+    fail("--structured-output-recovery requires --structured-output-tool and --structured-output-extension");
+  }
+  if (opts.structuredOutputRecovery && !opts.session) {
+    fail(`--structured-output-recovery requires --session`);
+  }
+  if (opts.structuredOutputTool !== null && !SAFE_TOOL.test(opts.structuredOutputTool)) {
+    fail(`--structured-output-tool contains unsupported characters (allowed: letters, digits, _)`);
+  }
+  if (opts.structuredOutputExtension !== null && !isAbsolute(opts.structuredOutputExtension)) {
+    fail("--structured-output-extension must be an absolute path");
+  }
+  if (opts.reviewOutput !== null) {
+    return {
+      tool: REVIEW_SUBMIT_TOOLS[opts.reviewOutput],
+      extensionRoot: null,
+      recovery: opts.reviewOutputRecovery,
+      source: "review",
+    };
+  }
+  if (opts.structuredOutputTool !== null) {
+    return {
+      tool: opts.structuredOutputTool,
+      extensionRoot: opts.structuredOutputExtension,
+      recovery: opts.structuredOutputRecovery,
+      source: "generic",
+    };
+  }
+  return null;
 }
 
 function headerComment() {
@@ -348,13 +423,13 @@ function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
-function buildArgv(opts, extensionRoot, autoHandoff, reviewSubmit) {
+function buildArgv(opts, extensionRoot, autoHandoff, structuredExtension) {
   // Deterministic extension loading: -ne disables implicit discovery; the
   // explicit -e still loads under it. Skills discovery is left enabled.
   const argv = ["--mode", "json", "-p", "--no-extensions"];
   if (extensionRoot) argv.push("-e", extensionRoot);
   if (autoHandoff?.enabled) argv.push("-e", autoHandoff.extensionRoot);
-  if (reviewSubmit) argv.push("-e", reviewSubmit);
+  if (structuredExtension) argv.push("-e", structuredExtension);
   argv.push("--tools", childTools(opts).join(","));
   if (opts.model) argv.push("--model", opts.model);
   argv.push("--thinking", opts.thinking);
@@ -367,8 +442,8 @@ function buildArgv(opts, extensionRoot, autoHandoff, reviewSubmit) {
     // Fresh logical session ids are the caller's choice; without one Pi mints
     // its own, which the relay reports from the session event.
   }
-  if (opts.reviewOutputRecovery) {
-    argv.push("--append-system-prompt", outputOnlyInstruction(REVIEW_SUBMIT_TOOLS[opts.reviewOutput]));
+  if (opts.structuredOutput?.recovery) {
+    argv.push("--append-system-prompt", outputOnlyInstruction(opts.structuredOutput.tool));
   }
   // The brief rides the child's stdin: pi consumes piped stdin as the initial
   // prompt with NO positional argument (unlike Codex, pi has no "-" positional
@@ -702,20 +777,39 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
     process.exit(1);
   }
 
-  const reviewSubmit = opts.reviewOutput ? reviewSubmitRoot() : null;
-  if (opts.reviewOutput && !reviewSubmit) {
-    const result = writeResult({
-      status: "failed",
-      exitCode: 1,
-      signal: null,
-      sessionId: opts.session,
-      resolvedModel: null,
-      finalMessage: "",
-      touchedFiles: gitTouchedFiles(opts.cd),
-      error: "review-submit extension root not found (expected <pi-delegate>/extensions/review-submit or PI_REVIEW_SUBMIT_ROOT)",
-    });
-    printSummary(result, run.resultPath);
-    process.exit(1);
+  let structuredExtension = null;
+  if (opts.structuredOutput?.source === "review") {
+    structuredExtension = reviewSubmitRoot();
+    if (!structuredExtension) {
+      const result = writeResult({
+        status: "failed",
+        exitCode: 1,
+        signal: null,
+        sessionId: opts.session,
+        resolvedModel: null,
+        finalMessage: "",
+        touchedFiles: gitTouchedFiles(opts.cd),
+        error: "review-submit extension root not found (expected <pi-delegate>/extensions/review-submit or PI_REVIEW_SUBMIT_ROOT)",
+      });
+      printSummary(result, run.resultPath);
+      process.exit(1);
+    }
+  } else if (opts.structuredOutput?.source === "generic") {
+    structuredExtension = opts.structuredOutput.extensionRoot;
+    if (!hasExtensionIndex(structuredExtension)) {
+      const result = writeResult({
+        status: "failed",
+        exitCode: 1,
+        signal: null,
+        sessionId: opts.session,
+        resolvedModel: null,
+        finalMessage: "",
+        touchedFiles: gitTouchedFiles(opts.cd),
+        error: `structured-output extension root not found or missing index.ts/index.js: ${structuredExtension}`,
+      });
+      printSummary(result, run.resultPath);
+      process.exit(1);
+    }
   }
 
   // The brief rides the child's stdin: argv carries only fixed flags plus the
@@ -723,7 +817,7 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
   // stdin END before it starts, so the relay must write the whole brief and
   // close the pipe promptly. EPIPE here only means the child died before
   // consuming stdin; the close handler records the real exit status.
-  const argv = buildArgv(opts, extensionRoot, run.autoHandoff, reviewSubmit);
+  const argv = buildArgv(opts, extensionRoot, run.autoHandoff, structuredExtension);
   const spawnOpts = { cwd: opts.cd, stdio: ["pipe", "pipe", "pipe"], detached: true };
   if (run.autoHandoff.enabled) {
     spawnOpts.env = {
@@ -736,7 +830,7 @@ function dispatchToPi(opts, brief, run, writeResult, bin) {
   child.stdin.on("error", () => { /* EPIPE: child exited before reading stdin */ });
   child.stdin.end(brief, "utf8");
 
-  const expectedTool = opts.reviewOutput ? REVIEW_SUBMIT_TOOLS[opts.reviewOutput] : null;
+  const expectedTool = opts.structuredOutput?.tool ?? null;
   const scanner = makePiEventScanner(expectedTool);
   const stderrTail = [];
   const stderrDecoder = new StringDecoder("utf8");

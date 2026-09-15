@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plan-review.v1",
+  "title": "plan-review.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "verdict", "summary", "findings"],
+  "properties": {
+    "schema": { "const": "plan-review.v1" },
+    "verdict": { "enum": ["approved", "request_changes", "blocked"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "location", "problem", "requiredChange"],
+        "properties": {
+          "severity": { "enum": ["blocking", "warning"] },
+          "location": { "type": "string", "minLength": 1 },
+          "problem": { "type": "string", "minLength": 1 },
+          "requiredChange": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
