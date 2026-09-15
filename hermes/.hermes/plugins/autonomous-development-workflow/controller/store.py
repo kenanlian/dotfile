@@ -314,6 +314,18 @@ class WorkflowStore:
             row = conn.execute("SELECT * FROM workflow_jobs WHERE job_id = ?", (job_id,)).fetchone()
         return _row_dict(row)
 
+    def list_jobs(self, board: str, task_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM workflow_jobs
+                WHERE board = ? AND task_id = ?
+                ORDER BY business_attempt ASC, transport_retry ASC, job_id ASC
+                """,
+                (board, task_id),
+            ).fetchall()
+        return [_row_dict(row) for row in rows]
+
     def update_job(self, job_id: str, **fields: Any) -> dict[str, Any]:
         allowed = {
             "harness_pid",

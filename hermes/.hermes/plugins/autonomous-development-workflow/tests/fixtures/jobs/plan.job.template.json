@@ -1,0 +1,32 @@
+{
+  "schema": "coding-agent.job.v1",
+  "jobId": "job_fixture_plan",
+  "idempotencyKey": "project-board:t_fixture:plan:1:0:deadbeefdeadbeef",
+  "taskId": "t_fixture",
+  "stage": "plan",
+  "attempt": 1,
+  "workspace": {
+    "repoRoot": "/abs/repo",
+    "branch": "main",
+    "expectedHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "requireCleanAtStart": true
+  },
+  "agent": {
+    "adapter": "pi",
+    "profile": "planner",
+    "model": "planner-model",
+    "thinking": "high",
+    "sessionId": null
+  },
+  "permissions": { "mode": "read-only" },
+  "inputs": [
+    {
+      "kind": "requirement",
+      "path": "/abs/requirement.json",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "expectedOutput": { "kind": "plan", "schema": "plan.v1" },
+  "verification": [],
+  "limits": { "timeoutSeconds": 60 }
+}

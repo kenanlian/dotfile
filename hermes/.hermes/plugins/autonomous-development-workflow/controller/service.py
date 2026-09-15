@@ -4,15 +4,36 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .harness import HarnessHandle, start_harness_run, wait_on_harness
+from .acceptance import is_review_lane, submit_typed_acceptance
+from .git_guard import capture_candidate_fingerprint, fingerprint_digest
+from .harness import (
+    HarnessHandle,
+    observe_harness_run,
+    start_harness_run,
+    wait_on_harness,
+)
 from .jobs import build_job, consume_result, write_job_document
-from .lifecycle import apply_pending_lifecycle, make_pending_lifecycle, show_task
-from .policy import ActiveJobView, WorkflowAction, next_action, snapshot_from_manifest
+from .lifecycle import (
+    apply_pending_lifecycle,
+    kanban_status_of,
+    lifecycle_already_applied,
+    make_pending_lifecycle,
+    show_task,
+)
+from .policy import (
+    MAX_IMPLEMENT_REWORK,
+    MAX_PLAN_REWORK,
+    ActiveJobView,
+    WorkflowAction,
+    next_action,
+    snapshot_from_manifest,
+)
 from .protocol import parse_manifest, require_absolute_path, result_digest, review_verdict_from_result
 from .store import WorkflowStore, canonical_dumps, sha256_file
 from .types import (
@@ -443,6 +464,17 @@ class WorkflowController:
         self._validate_bindings(manifest, shown, task_id=task_id, board=board, run_id=run_id)
         if manifest.get("pendingLifecycle"):
             return self._apply_pending(manifest, run_id=run_id)
+        if (
+            manifest.get("workflowStatus") == WorkflowStatus.REVIEW_REQUESTED.value
+            and is_review_lane(shown, run_id)
+        ):
+            updated = dict(manifest)
+            updated["revision"] = int(manifest["revision"]) + 1
+            updated["workflowStatus"] = WorkflowStatus.CODE_REVIEWING.value
+            self.store.cas_update_manifest(
+                board, task_id, expected_revision=int(manifest["revision"]), manifest=updated
+            )
+            manifest = updated
         snapshot = self._snapshot(manifest)
         action = next_action(snapshot)
         if action.kind == "apply_lifecycle" and action.target_status is not None:
@@ -481,10 +513,9 @@ class WorkflowController:
         findings: Any = None,
         question: str | None = None,
     ) -> dict[str, Any]:
-        from ..hooks import assert_guard_clear
         from .acceptance import submit_typed_acceptance
 
-        assert_guard_clear(board, task_id)
+        self._assert_guard_clear(board, task_id)
         shown = show_task(self.dispatch_tool, task_id=task_id, board=board)
         manifest = self._require_manifest(board, task_id)
         self._validate_bindings(manifest, shown, task_id=task_id, board=board, run_id=run_id)
@@ -652,8 +683,29 @@ class WorkflowController:
             "consumed_at": None,
         }
         self.store.put_job(record)
+        self.store.acquire_repo_lease(
+            str(manifest["repoRoot"]),
+            board=board,
+            task_id=task_id,
+            fencing_token=job["idempotencyKey"],
+        )
         updated = dict(manifest)
         updated["activeJobId"] = job["jobId"]
+        if (
+            action.reason == "implement_rework"
+            and manifest.get("workflowStatus") == WorkflowStatus.VERIFYING.value
+        ):
+            updated["implementReworkCount"] = int(manifest.get("implementReworkCount") or 0) + 1
+        if stage == "execute_review":
+            digest = fingerprint_digest(
+                capture_candidate_fingerprint(
+                    str(manifest["repoRoot"]), declared_repo=str(manifest["repoRoot"])
+                )
+            )
+            existing = updated.get("candidateFingerprint")
+            if existing and existing != digest:
+                raise WorkflowProtocolError("candidate fingerprint drift")
+            updated["candidateFingerprint"] = digest
         if action.target_status is not None:
             updated["workflowStatus"] = action.target_status.value
         updated["revision"] = int(manifest["revision"]) + 1
@@ -689,6 +741,7 @@ class WorkflowController:
             job_sha256=row["job_sha256"],
             recorded_pid=row.get("harness_pid"),
             recorded_identity=row.get("process_identity"),
+            env=os.environ.copy(),
             popen=self.popen,
             identity_fn=self.identity_fn,
         )
@@ -717,9 +770,17 @@ class WorkflowController:
                 monotonic_fn=self.monotonic_fn,
                 identity_fn=self.identity_fn,
             )
+        proc = handle.proc
+        if proc is not None and hasattr(proc, "wait"):
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                pass
         return handle
 
-    def _consume_and_maybe_lifecycle(self, manifest: dict[str, Any], *, run_id: str) -> dict[str, Any]:
+    def _consume_and_maybe_lifecycle(
+        self, manifest: dict[str, Any], *, run_id: str, apply_lifecycle: bool = True
+    ) -> dict[str, Any]:
         job_id = manifest["activeJobId"]
         row = self.store.get_job(str(job_id))
         result_path = Path(row["run_dir"]) / "result.json"
@@ -742,8 +803,30 @@ class WorkflowController:
                 updated["implementerSessionId"] = outcome.session_id
             if outcome.review_verdict == "request_changes" and row["stage"] == "plan_review":
                 updated["planReworkCount"] = int(manifest.get("planReworkCount") or 0) + 1
+                if int(updated["planReworkCount"]) > MAX_PLAN_REWORK:
+                    updated["workflowStatus"] = WorkflowStatus.BLOCKED.value
+                    updated["pendingLifecycle"] = make_pending_lifecycle(
+                        target_status=WorkflowStatus.BLOCKED.value,
+                        run_id=run_id,
+                        workflow_revision=updated["revision"],
+                        args={"reason": "plan_rework_limit"},
+                    )
             if outcome.review_verdict == "request_changes" and row["stage"] == "execute_review":
                 updated["implementReworkCount"] = int(manifest.get("implementReworkCount") or 0) + 1
+                if int(updated["implementReworkCount"]) > MAX_IMPLEMENT_REWORK:
+                    updated["workflowStatus"] = WorkflowStatus.BLOCKED.value
+                    updated["pendingLifecycle"] = make_pending_lifecycle(
+                        target_status=WorkflowStatus.BLOCKED.value,
+                        run_id=run_id,
+                        workflow_revision=updated["revision"],
+                        args={"reason": "implement_rework_limit"},
+                    )
+                else:
+                    updated["pendingLifecycle"] = make_pending_lifecycle(
+                        target_status=WorkflowStatus.IMPLEMENT_REWORK.value,
+                        run_id=run_id,
+                        workflow_revision=updated["revision"],
+                    )
             for artifact in outcome.artifacts:
                 artifacts.append(
                     {
@@ -784,10 +867,27 @@ class WorkflowController:
         if updated.get("pendingLifecycle"):
             return self._apply_pending(updated, run_id=run_id)
         snapshot = self._snapshot(updated)
+        if row["stage"] == "implement" and isinstance(result.get("checks"), list):
+            from dataclasses import replace
+
+            snapshot = replace(
+                snapshot,
+                implement_checks=tuple(
+                    item for item in result["checks"] if isinstance(item, Mapping)
+                ),
+            )
+        if row["stage"] == "execute_review" and updated.get("candidateFingerprint"):
+            actual = fingerprint_digest(
+                capture_candidate_fingerprint(
+                    str(manifest["repoRoot"]), declared_repo=str(manifest["repoRoot"])
+                )
+            )
+            if actual != updated["candidateFingerprint"]:
+                raise WorkflowProtocolError("candidate fingerprint drift")
         action = next_action(snapshot)
-        if action.kind == "apply_lifecycle" and action.target_status is not None:
+        if apply_lifecycle and action.kind == "apply_lifecycle" and action.target_status is not None:
             return self._write_and_apply_lifecycle(updated, action.target_status, run_id=run_id)
-        if action.kind == "block":
+        if apply_lifecycle and action.kind == "block":
             return self._write_and_apply_lifecycle(
                 updated, WorkflowStatus.BLOCKED, run_id=run_id, reason=action.reason
             )
@@ -841,6 +941,15 @@ class WorkflowController:
                 expected_revision=int(manifest["revision"]),
                 manifest=updated,
             )
+            if updated["workflowStatus"] == WorkflowStatus.COMPLETED.value:
+                lease = self.store.get_repo_lease(str(manifest["repoRoot"]))
+                if lease and lease.get("released_at") is None:
+                    self.store.release_repo_lease(
+                        str(manifest["repoRoot"]),
+                        board=manifest["board"],
+                        task_id=manifest["taskId"],
+                        reason="completed",
+                    )
             action = next_action(self._snapshot(updated))
             outcome = "blocked" if updated["workflowStatus"] == WorkflowStatus.BLOCKED.value else None
             return self._summary(updated, action, outcome=outcome)
@@ -877,6 +986,238 @@ class WorkflowController:
             "pendingLifecycle": manifest.get("pendingLifecycle"),
             "outcome": outcome,
         }
+
+    def reconcile(self, *, board: str, task_id: str, run_id: str | None = None) -> dict[str, Any]:
+        shown = show_task(self.dispatch_tool, task_id=task_id, board=board)
+        manifest = self._require_manifest(board, task_id)
+        self._validate_bindings(manifest, shown, task_id=task_id, board=board, run_id=run_id)
+        pending = manifest.get("pendingLifecycle")
+        if pending:
+            if lifecycle_already_applied(shown, pending):
+                updated = dict(manifest)
+                updated["revision"] = int(manifest["revision"]) + 1
+                updated["pendingLifecycle"] = None
+                self.store.cas_update_manifest(
+                    board, task_id, expected_revision=int(manifest["revision"]), manifest=updated
+                )
+                return {**self._summary(updated, WorkflowAction(kind="noop")), "reconciled": True}
+            if run_id and str(pending.get("runId")) == str(run_id):
+                result = self._apply_pending(manifest, run_id=str(run_id))
+                return {**result, "reconciled": True}
+            return {
+                **self._summary(manifest, WorkflowAction(kind="apply_lifecycle")),
+                "reconciled": False,
+                "reason": "pendingLifecycle requires the bound Worker run",
+            }
+        snapshot = self._snapshot(manifest)
+        action = next_action(snapshot)
+        if action.kind == "consume_job":
+            if not run_id:
+                result = self._consume_and_maybe_lifecycle(
+                    manifest, run_id="cli-reconcile", apply_lifecycle=False
+                )
+                return {**result, "reconciled": True}
+            result = self._consume_and_maybe_lifecycle(manifest, run_id=str(run_id))
+            return {**result, "reconciled": True}
+        return {**self._summary(manifest, action), "reconciled": False}
+
+    def abandon(self, *, board: str, task_id: str, reason: str) -> dict[str, Any]:
+        if not isinstance(reason, str) or not reason.strip():
+            raise WorkflowProtocolError("abandon requires an explicit operator reason")
+        manifest = self._require_manifest(board, task_id)
+        job_id = manifest.get("activeJobId")
+        if job_id:
+            row = self.store.get_job(str(job_id))
+            if row:
+                observed = observe_harness_run(
+                    run_dir=row["run_dir"],
+                    job_id=row["job_id"],
+                    job_sha256=row["job_sha256"],
+                    recorded_pid=row.get("harness_pid"),
+                    recorded_identity=row.get("process_identity"),
+                    identity_fn=self.identity_fn,
+                )
+                if observed.kind == "live_process":
+                    raise WorkflowProtocolError("cannot abandon while a Harness process is live")
+        lease = self.store.get_repo_lease(str(manifest["repoRoot"]))
+        released = False
+        if lease and lease.get("released_at") is None:
+            self.store.release_repo_lease(
+                str(manifest["repoRoot"]),
+                board=board,
+                task_id=task_id,
+                reason="abandon",
+            )
+            released = True
+        updated = dict(manifest)
+        updated["revision"] = int(manifest["revision"]) + 1
+        updated["workflowStatus"] = WorkflowStatus.BLOCKED.value
+        updated["resumeStatus"] = None
+        updated["abandonReason"] = reason.strip()
+        updated["pendingLifecycle"] = None
+        updated["activeJobId"] = None
+        self.store.cas_update_manifest(
+            board, task_id, expected_revision=int(manifest["revision"]), manifest=updated
+        )
+        return {
+            **self._summary(updated, WorkflowAction(kind="noop"), outcome="blocked"),
+            "abandoned": True,
+            "leaseReleased": released,
+            "reason": reason.strip(),
+        }
+
+
+def doctor_report(
+    store: WorkflowStore,
+    *,
+    board: str,
+    task_id: str | None = None,
+    shown: Mapping[str, Any] | None = None,
+    config: PluginConfig | None = None,
+) -> dict[str, Any]:
+    findings: list[dict[str, str]] = []
+    targets = [task_id] if task_id else [item["taskId"] for item in store.list_manifests(board)]
+    if task_id and store.get_manifest(board, task_id) is None:
+        findings.append(
+            {
+                "code": "missing_manifest",
+                "severity": "error",
+                "message": f"Kanban task {task_id} has no workflow Manifest",
+            }
+        )
+    for current_id in targets:
+        if not current_id:
+            continue
+        manifest = store.get_manifest(board, current_id)
+        if manifest is None:
+            continue
+        findings.extend(_doctor_manifest(store, manifest, shown=shown, config=config))
+    return {"ok": not any(item["severity"] == "error" for item in findings), "findings": findings}
+
+
+def _doctor_manifest(
+    store: WorkflowStore,
+    manifest: Mapping[str, Any],
+    *,
+    shown: Mapping[str, Any] | None,
+    config: PluginConfig | None,
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    board, task_id = manifest["board"], manifest["taskId"]
+    if shown:
+        task = shown.get("task") if isinstance(shown.get("task"), Mapping) else shown
+        kanban_status = kanban_status_of(shown)
+        workspace = task.get("workspace_path") if isinstance(task, Mapping) else None
+        if workspace and Path(str(workspace)).resolve() != Path(str(manifest["repoRoot"])).resolve():
+            findings.append(
+                {
+                    "code": "repo_mismatch",
+                    "severity": "error",
+                    "message": "Kanban workspace does not match Manifest repoRoot",
+                }
+            )
+        expected_lane = {
+            "queued": {"ready", "todo"},
+            "planning": {"running"},
+            "plan_reviewing": {"running"},
+            "plan_rework": {"running", "todo"},
+            "implementing": {"running"},
+            "verifying": {"running"},
+            "review_requested": {"review"},
+            "implement_rework": {"todo", "running"},
+            "code_reviewing": {"running"},
+            "product_acceptance": {"running"},
+            "blocked": {"blocked", "todo"},
+            "completed": {"done"},
+        }.get(str(manifest.get("workflowStatus")), set())
+        if kanban_status and expected_lane and kanban_status not in expected_lane:
+            findings.append(
+                {
+                    "code": "lane_mismatch",
+                    "severity": "warning",
+                    "message": f"workflow {manifest.get('workflowStatus')} vs Kanban {kanban_status}",
+                }
+            )
+        pending = manifest.get("pendingLifecycle")
+        if isinstance(pending, Mapping) and not lifecycle_already_applied(shown, pending):
+            findings.append(
+                {
+                    "code": "pending_lifecycle",
+                    "severity": "warning",
+                    "message": f"{pending.get('tool')} is not yet applied",
+                }
+            )
+    job_id = manifest.get("activeJobId")
+    if job_id:
+        row = store.get_job(str(job_id))
+        if row is None:
+            findings.append(
+                {"code": "missing_job", "severity": "error", "message": f"active Job {job_id} is missing"}
+            )
+        else:
+            if not Path(row["job_path"]).is_file():
+                findings.append(
+                    {"code": "missing_job_file", "severity": "error", "message": "active Job file is missing"}
+                )
+            observed = observe_harness_run(
+                run_dir=row["run_dir"],
+                job_id=row["job_id"],
+                job_sha256=row["job_sha256"],
+                recorded_pid=row.get("harness_pid"),
+                recorded_identity=row.get("process_identity"),
+            )
+            if observed.kind == "orphan_lock":
+                findings.append(
+                    {
+                        "code": "orphan_lock",
+                        "severity": "error",
+                        "message": "orphan run.lock bound to the active Job",
+                    }
+                )
+            if observed.kind == "not_started" and row.get("consumed_at") is None:
+                findings.append(
+                    {
+                        "code": "job_not_started",
+                        "severity": "warning",
+                        "message": "active Job has no Result and no live process",
+                    }
+                )
+    for kind in ("requirement", "plan", "implementation", "plan-review", "execute-review", "product-acceptance"):
+        artifact = store.latest_artifact(board, task_id, kind)
+        if artifact is None:
+            continue
+        path = Path(artifact["path"])
+        if not path.is_file():
+            findings.append(
+                {"code": "artifact_missing", "severity": "error", "message": f"{kind} artifact is missing"}
+            )
+        elif sha256_file(path) != artifact["sha256"]:
+            findings.append(
+                {"code": "artifact_hash", "severity": "error", "message": f"{kind} artifact hash drifted"}
+            )
+    lease = store.get_repo_lease(str(manifest["repoRoot"]))
+    if lease and lease.get("released_at") is None:
+        if lease.get("task_id") != task_id or lease.get("board") != board:
+            findings.append(
+                {
+                    "code": "lease_foreign",
+                    "severity": "error",
+                    "message": "repo lease is held by a different task",
+                }
+            )
+        if manifest.get("workflowStatus") == WorkflowStatus.COMPLETED.value:
+            findings.append(
+                {
+                    "code": "lease_terminal",
+                    "severity": "warning",
+                    "message": "repo lease still held after completion",
+                }
+            )
+    if config is not None and not config.harness_command:
+        findings.append(
+            {"code": "harness_config", "severity": "error", "message": "harness_command is missing"}
+        )
+    return findings
 
 
 def snapshot_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:

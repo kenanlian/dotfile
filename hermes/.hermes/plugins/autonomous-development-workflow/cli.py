@@ -1,4 +1,4 @@
-"""Plugin CLI: argv builders and autodev enqueue. Hermes calls use shell=False."""
+"""Plugin CLI: argv builders and autodev enqueue/status/doctor/reconcile/abandon."""
 
 from __future__ import annotations
 
@@ -9,14 +9,17 @@ from typing import Any, Callable
 
 from .config import load_plugin_config
 from .controller.service import (
+    WorkflowController,
     build_kanban_create_argv,
     build_kanban_link_argv,
     build_kanban_show_argv,
     build_kanban_unblock_argv,
+    doctor_report,
     enqueue_workflow,
     run_argv,
 )
 from .controller.store import WorkflowStore
+from .controller.types import WorkflowProtocolError
 
 
 def invoke_hermes(argv: list[str]) -> tuple[int, str, str]:
@@ -41,6 +44,23 @@ def setup_autodev_cli(parser) -> None:
     enqueue.add_argument("--profile", default="autodev", help="Worker profile assignee")
     enqueue.add_argument("--idempotency-key", default=None, help="Stable replay key")
 
+    status = sub.add_parser("status", help="Show the external workflow checkpoint")
+    status.add_argument("--board", required=True, help="Kanban board slug")
+    status.add_argument("task_id", help="Kanban task id")
+
+    doctor = sub.add_parser("doctor", help="Read-only workflow diagnostics")
+    doctor.add_argument("--board", required=True, help="Kanban board slug")
+    doctor.add_argument("task_id", nargs="?", default=None, help="Optional Kanban task id")
+
+    reconcile = sub.add_parser("reconcile", help="Apply proven-idempotent workflow recovery")
+    reconcile.add_argument("--board", required=True, help="Kanban board slug")
+    reconcile.add_argument("task_id", help="Kanban task id")
+
+    abandon = sub.add_parser("abandon", help="Operator-only abandon: record reason and release the repo lease")
+    abandon.add_argument("--board", required=True, help="Kanban board slug")
+    abandon.add_argument("task_id", help="Kanban task id")
+    abandon.add_argument("--reason", required=True, help="Why this card is being abandoned")
+
 
 def handle_autodev(
     args,
@@ -48,9 +68,7 @@ def handle_autodev(
     config_loader: Callable[..., Any],
     run_command: Callable[[list[str]], tuple[int, str, str]] = run_argv,
 ) -> int:
-    if getattr(args, "autodev_command", None) != "enqueue":
-        print("autodev CLI is not implemented", file=sys.stderr)
-        return 2
+    command = getattr(args, "autodev_command", None)
     config = load_plugin_config(
         {
             "profile": config_loader("profile", "autodev"),
@@ -62,16 +80,73 @@ def handle_autodev(
         }
     )
     store = WorkflowStore(config.state_root)
-    result = enqueue_workflow(
-        board=args.board,
-        repo=args.repo,
-        title=args.title,
-        requirement=args.requirement,
-        profile=args.profile or config.profile,
-        idempotency_key=args.idempotency_key,
-        config=config,
-        store=store,
-        run_argv=run_command,
-    )
-    print(json.dumps(result, sort_keys=True, ensure_ascii=False))
-    return 0
+    if command == "enqueue":
+        result = enqueue_workflow(
+            board=args.board,
+            repo=args.repo,
+            title=args.title,
+            requirement=args.requirement,
+            profile=args.profile or config.profile,
+            idempotency_key=args.idempotency_key,
+            config=config,
+            store=store,
+            run_argv=run_command,
+        )
+        print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+        return 0
+    if command == "status":
+        shown = _show_task(run_command, board=args.board, task_id=args.task_id)
+        controller = _readonly_controller(store, config, run_command, board=args.board)
+        result = controller.status(board=args.board, task_id=args.task_id)
+        result["kanbanStatus"] = (shown.get("task") or shown).get("status") if shown else None
+        print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+        return 0
+    if command == "doctor":
+        shown = None
+        if args.task_id:
+            shown = _show_task(run_command, board=args.board, task_id=args.task_id)
+        result = doctor_report(
+            store, board=args.board, task_id=args.task_id, shown=shown, config=config
+        )
+        print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
+    if command == "reconcile":
+        controller = _readonly_controller(store, config, run_command, board=args.board)
+        result = controller.reconcile(board=args.board, task_id=args.task_id)
+        print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+        return 0
+    if command == "abandon":
+        controller = _readonly_controller(store, config, run_command, board=args.board)
+        result = controller.abandon(board=args.board, task_id=args.task_id, reason=args.reason)
+        print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+        return 0
+    print("autodev CLI is not implemented", file=sys.stderr)
+    return 2
+
+
+def _readonly_controller(store, config, run_command, *, board: str) -> WorkflowController:
+    def dispatch(name: str, args: dict, **kwargs) -> str:
+        if name != "kanban_show":
+            raise WorkflowProtocolError("CLI cannot dispatch Kanban lifecycle tools")
+        code, stdout, stderr = run_command(
+            build_kanban_show_argv(board=board, task_id=str(args.get("task_id")))
+        )
+        if code != 0:
+            raise WorkflowProtocolError(stderr.strip() or stdout.strip() or "kanban show failed")
+        return stdout
+
+    return WorkflowController(store=store, config=config, dispatch_tool=dispatch)
+
+
+def _show_task(run_command, *, board: str, task_id: str) -> dict[str, Any] | None:
+    try:
+        code, stdout, stderr = run_command(build_kanban_show_argv(board=board, task_id=task_id))
+    except Exception:
+        return None
+    if code != 0:
+        return None
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None

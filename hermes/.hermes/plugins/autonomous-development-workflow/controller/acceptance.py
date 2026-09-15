@@ -133,6 +133,15 @@ def submit_typed_acceptance(
             board, task_id, expected_revision=int(updated["revision"]), manifest=cleared
         )
         updated = cleared
+        if target is WorkflowStatus.COMPLETED:
+            lease = store.get_repo_lease(str(manifest["repoRoot"]))
+            if lease and lease.get("released_at") is None:
+                store.release_repo_lease(
+                    str(manifest["repoRoot"]),
+                    board=board,
+                    task_id=task_id,
+                    reason="completed",
+                )
     return {
         "ok": True,
         "workflowStatus": updated["workflowStatus"],

@@ -1,0 +1,6 @@
+{
+  "plan:1:0": { "status": "completed", "sessionId": "sess_plan_1" },
+  "plan_review:1:0": { "status": "completed", "verdict": "approved" },
+  "implement:1:0": { "status": "completed", "checks": "passed", "sessionId": "sess_impl_1" },
+  "execute_review:1:0": { "status": "completed", "verdict": "approved" }
+}
