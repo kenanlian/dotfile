@@ -492,7 +492,9 @@ class WorkflowController:
             snapshot = self._snapshot(manifest)
             action = next_action(snapshot)
         if action.kind in {"observe_job", "create_job"}:
-            self._observe_or_start(manifest, wait_seconds=wait_seconds)
+            handle = self._observe_or_start(manifest, wait_seconds=wait_seconds)
+            if handle.observation.kind == "process_gone":
+                return self._consume_process_gone(manifest, run_id=run_id)
             snapshot = self._snapshot(self.store.get_manifest(board, task_id) or manifest)
             action = next_action(snapshot)
         if action.kind == "consume_job":
@@ -753,8 +755,9 @@ class WorkflowController:
                 status="running",
                 started_at=handle.started_at,
             )
-        if handle.observation.kind == "live_process":
-            wait_on_harness(
+        observed = handle.observation
+        if observed.kind == "live_process":
+            observed = wait_on_harness(
                 run_dir=row["run_dir"],
                 job_id=row["job_id"],
                 job_sha256=row["job_sha256"],
@@ -762,9 +765,9 @@ class WorkflowController:
                 poll_interval_seconds=self.config.poll_interval_seconds,
                 recorded_pid=handle.pid or row.get("harness_pid"),
                 recorded_identity=handle.process_identity or row.get("process_identity"),
-                heartbeat=lambda: self.dispatch_tool(
+                heartbeat=lambda current=None: self.dispatch_tool(
                     "kanban_heartbeat",
-                    {"task_id": manifest["taskId"], "note": "autodev harness still running"},
+                    {"task_id": manifest["taskId"], "note": _heartbeat_note(current)},
                 ),
                 sleep_fn=self.sleep_fn,
                 monotonic_fn=self.monotonic_fn,
@@ -776,7 +779,48 @@ class WorkflowController:
                 proc.wait(timeout=2)
             except Exception:
                 pass
-        return handle
+        return HarnessHandle(
+            observation=observed,
+            pid=handle.pid,
+            process_identity=handle.process_identity,
+            started_at=handle.started_at,
+            proc=handle.proc,
+        )
+
+    def _consume_process_gone(self, manifest: dict[str, Any], *, run_id: str) -> dict[str, Any]:
+        job_id = manifest.get("activeJobId")
+        if not job_id:
+            raise WorkflowProtocolError("no active Job to mark gone")
+        row = self.store.get_job(str(job_id))
+        if row is None:
+            raise WorkflowProtocolError("active Job is missing from the ledger")
+        board, task_id = manifest["board"], manifest["taskId"]
+        failures = dict(manifest.get("runFailureCounts") or {})
+        failures[row["stage"]] = int(failures.get(row["stage"], 0)) + 1
+        updated = dict(manifest)
+        updated["revision"] = int(manifest["revision"]) + 1
+        updated["lastConsumedJobId"] = job_id
+        updated["runFailureCounts"] = failures
+        self.store.checkpoint(
+            board=board,
+            task_id=task_id,
+            expected_revision=int(manifest["revision"]),
+            manifest=updated,
+            job_patch={
+                "job_id": job_id,
+                "status": "unavailable",
+                "consumed_at": int(time.time()),
+                "finished_at": int(time.time()),
+            },
+            artifacts=[],
+        )
+        snapshot = self._snapshot(self.store.get_manifest(board, task_id) or updated)
+        action = next_action(snapshot)
+        if action.kind == "block":
+            return self._write_and_apply_lifecycle(
+                updated, WorkflowStatus.BLOCKED, run_id=run_id, reason=action.reason
+            )
+        return self._summary(updated, action)
 
     def _consume_and_maybe_lifecycle(
         self, manifest: dict[str, Any], *, run_id: str, apply_lifecycle: bool = True
@@ -1174,6 +1218,14 @@ def _doctor_manifest(
                         "message": "orphan run.lock bound to the active Job",
                     }
                 )
+            if observed.kind == "process_gone":
+                findings.append(
+                    {
+                        "code": "process_gone",
+                        "severity": "warning",
+                        "message": "recorded Harness process is gone without a Result",
+                    }
+                )
             if observed.kind == "not_started" and row.get("consumed_at") is None:
                 findings.append(
                     {
@@ -1222,3 +1274,12 @@ def _doctor_manifest(
 
 def snapshot_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
     return dict(manifest)
+
+
+def _heartbeat_note(observed: Any) -> str:
+    kind = getattr(observed, "kind", None)
+    if kind == "live_process":
+        return "autodev harness still running"
+    if kind:
+        return f"autodev harness {kind}"
+    return "autodev harness waiting"

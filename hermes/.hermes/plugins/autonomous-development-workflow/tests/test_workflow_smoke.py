@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from helpers import SmokeEnv, pre_tool_call
+from helpers import MOCK_HARNESS, SmokeEnv, pre_tool_call
 from plugin_imports import import_plugin
 
 _cli = import_plugin("cli")
@@ -366,6 +366,43 @@ class WorkflowSmokeTests(unittest.TestCase):
             environ={"HERMES_KANBAN_TASK": "t_ordinary", "HERMES_KANBAN_BOARD": "project-board"},
         )
         self.assertIsNone(result)
+
+
+    def test_16_mock_rejects_incomplete_job_ownership_evidence(self) -> None:
+        import subprocess
+
+        out_dir = self.env.root / "bare-out"
+        out_dir.mkdir()
+        job_path = out_dir / "job.json"
+        template = Path(__file__).resolve().parent / "fixtures" / "jobs" / "plan.job.template.json"
+        job_path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+        completed = subprocess.run(
+            ["node", str(MOCK_HARNESS), "run", "--job", str(job_path), "--out-dir", str(out_dir)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("incomplete stored Job ownership evidence", completed.stderr)
+        self.assertFalse((out_dir / "result.json").is_file())
+
+    def test_17_process_gone_before_lock_does_not_restart_same_job(self) -> None:
+        self.env.set_script({"plan:1:0": {"status": "completed", "crash": "before_lock"}})
+        created = self.env.enqueue()
+        task_id = created["task_id"]
+        self.env.kanban.claim_ready(task_id)
+        self.env.advance_until(task_id=task_id, statuses={"plan_reviewing", "blocked"}, limit=8)
+        jobs = self.env.store.list_jobs("project-board", task_id)
+        plan_jobs = [row for row in jobs if row["stage"] == "plan"]
+        self.assertGreaterEqual(len(plan_jobs), 2)
+        self.assertNotEqual(plan_jobs[0]["job_id"], plan_jobs[1]["job_id"])
+        self.assertNotEqual(plan_jobs[0]["run_dir"], plan_jobs[1]["run_dir"])
+        self.assertEqual(plan_jobs[0]["transport_retry"], 0)
+        self.assertEqual(plan_jobs[1]["transport_retry"], 1)
+        self.assertEqual(plan_jobs[0]["business_attempt"], plan_jobs[1]["business_attempt"])
+        first_id = plan_jobs[0]["job_id"]
+        matching = [row for row in self.env.launches() if row["jobId"] == first_id]
+        self.assertEqual(len(matching), 1)
 
 
 class CliRecoveryTests(unittest.TestCase):

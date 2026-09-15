@@ -150,12 +150,14 @@ def write_job_document(job: Mapping[str, Any], run_dir: str | Path) -> dict[str,
     directory = Path(run_dir)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "job.json"
+    hash_path = directory / "job.sha256"
     payload = harness_canonical_json(job)
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    digest = job_document_sha256(job)
     if path.exists():
         existing = json_load_if_possible(path)
         if existing is None or job_document_sha256(existing) != digest:
             raise WorkflowConflict("job document identity conflict")
+        _write_job_sha256(hash_path, digest)
         return {
             "job_path": str(path),
             "run_dir": str(directory),
@@ -164,11 +166,18 @@ def write_job_document(job: Mapping[str, Any], run_dir: str | Path) -> dict[str,
     tmp = directory / ".job.json.tmp"
     tmp.write_text(payload, encoding="utf-8")
     tmp.replace(path)
+    _write_job_sha256(hash_path, digest)
     return {
         "job_path": str(path),
         "run_dir": str(directory),
         "job_sha256": digest,
     }
+
+
+def _write_job_sha256(hash_path: Path, digest: str) -> None:
+    tmp = hash_path.with_name(".job.sha256.tmp")
+    tmp.write_text(f"{digest}\n", encoding="utf-8")
+    tmp.replace(hash_path)
 
 
 def consume_result(

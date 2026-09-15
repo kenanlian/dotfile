@@ -217,6 +217,34 @@ class ObserveRecoveryOrderTests(unittest.TestCase):
         )
         self.assertEqual(observed.kind, "not_started")
 
+    def test_dead_recorded_pid_without_lock_or_result_is_process_gone(self) -> None:
+        observed = observe_harness_run(
+            run_dir=str(self.run_dir),
+            job_id="job_plan1",
+            job_sha256="a" * 64,
+            recorded_pid=93812,
+            recorded_identity="93812:old-start",
+            identity_fn=lambda pid: None,
+        )
+        self.assertEqual(observed.kind, "process_gone")
+        still_fresh = observe_harness_run(
+            run_dir=str(self.run_dir),
+            job_id="job_plan1",
+            job_sha256="a" * 64,
+        )
+        self.assertEqual(still_fresh.kind, "not_started")
+
+    def test_matching_live_identity_without_lock_is_live_process(self) -> None:
+        observed = observe_harness_run(
+            run_dir=str(self.run_dir),
+            job_id="job_plan1",
+            job_sha256="a" * 64,
+            recorded_pid=42,
+            recorded_identity="42:start",
+            identity_fn=lambda pid: "42:start" if pid == 42 else None,
+        )
+        self.assertEqual(observed.kind, "live_process")
+
 
 class StartAndWaitTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -291,6 +319,50 @@ class StartAndWaitTests(unittest.TestCase):
             captured["argv"][:4],
             ["node", "/abs/harness.mjs", "run", "--job"],
         )
+        self.assertTrue((self.run_dir / "stderr.log").is_file())
+        stderr = captured["kwargs"]["stderr"]
+        self.assertNotEqual(stderr, __import__("subprocess").DEVNULL)
+        stdout = captured["kwargs"]["stdout"]
+        self.assertIs(stdout, stderr)
+
+    def test_process_gone_does_not_spawn(self) -> None:
+        popen = Mock(side_effect=AssertionError("must not spawn"))
+        handle = start_harness_run(
+            harness_command=("node", "/abs/harness.mjs"),
+            job_path=str(self.job_path),
+            out_dir=str(self.run_dir),
+            job_id="job_plan1",
+            job_sha256="a" * 64,
+            recorded_pid=94127,
+            recorded_identity="94127:gone",
+            popen=popen,
+            identity_fn=lambda pid: None,
+        )
+        self.assertEqual(handle.observation.kind, "process_gone")
+        popen.assert_not_called()
+
+    def test_wait_returns_process_gone_without_waiting_out_the_deadline(self) -> None:
+        clock = {"t": 0.0}
+        sleeps: list[float] = []
+
+        def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            clock["t"] += seconds
+
+        observed = wait_on_harness(
+            run_dir=str(self.run_dir),
+            job_id="job_plan1",
+            job_sha256="a" * 64,
+            wait_seconds=60,
+            poll_interval_seconds=5,
+            recorded_pid=94482,
+            recorded_identity="94482:old",
+            identity_fn=lambda pid: None,
+            sleep_fn=fake_sleep,
+            monotonic_fn=lambda: clock["t"],
+        )
+        self.assertEqual(observed.kind, "process_gone")
+        self.assertEqual(sleeps, [])
 
     def test_wait_clamps_to_300_and_heartbeats_within_60s(self) -> None:
         with self.assertRaises(WorkflowProtocolError):

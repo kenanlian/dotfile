@@ -335,5 +335,84 @@ class LifecycleSagaTests(unittest.TestCase):
             )
 
 
+class ProcessGoneRecoveryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="autodev-gone-")
+        self.state_root = Path(self._tmp.name) / "state"
+        self.state_root.mkdir()
+        self.store = WorkflowStore(str(self.state_root))
+        self.kanban = FakeKanban()
+        requirement = self.state_root / "requirement.json"
+        requirement.write_text('{"schema":"autonomous-development.requirement.v1"}', encoding="utf-8")
+        self.store.put_manifest(
+            _manifest(
+                workflowStatus="queued",
+                revision=1,
+                activeJobId=None,
+                lastConsumedJobId=None,
+                pendingLifecycle=None,
+            )
+        )
+        self.store.register_artifact(
+            board="project-board",
+            task_id="t_abc",
+            job_id="intake:t_abc",
+            kind="requirement",
+            version=1,
+            path=str(requirement),
+            sha256=_sha(requirement.read_text(encoding="utf-8")),
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_dead_pid_without_lock_or_result_retries_then_blocks(self) -> None:
+        launches: list[list[str]] = []
+
+        def fake_popen(argv, **kwargs):
+            proc = Mock()
+            proc.pid = 93000 + len(launches)
+            proc.wait = Mock(return_value=2)
+            launches.append(list(argv))
+            return proc
+
+        controller = WorkflowController(
+            store=self.store,
+            config=_config(self.state_root),
+            dispatch_tool=self.kanban,
+            agents=AGENTS,
+            popen=fake_popen,
+            identity_fn=lambda pid: None,
+            sleep_fn=lambda seconds: None,
+            monotonic_fn=lambda: 0.0,
+        )
+        first = controller.advance(board="project-board", task_id="t_abc", run_id="7", wait_seconds=1)
+        self.assertEqual(len(launches), 1)
+        jobs = self.store.list_jobs("project-board", "t_abc")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["status"], "unavailable")
+        self.assertIsNotNone(jobs[0]["consumed_at"])
+        first_job_id = jobs[0]["job_id"]
+        first_out = jobs[0]["run_dir"]
+        manifest = self.store.get_manifest("project-board", "t_abc")
+        self.assertEqual(manifest["runFailureCounts"]["plan"], 1)
+        self.assertNotEqual(first["workflowStatus"], "blocked")
+        notes = [args.get("note", "") for name, args in self.kanban.calls if name == "kanban_heartbeat"]
+        self.assertFalse(any("still running" in note for note in notes))
+
+        second = controller.advance(board="project-board", task_id="t_abc", run_id="7", wait_seconds=1)
+        self.assertEqual(len(launches), 2)
+        jobs = self.store.list_jobs("project-board", "t_abc")
+        self.assertEqual(len(jobs), 2)
+        self.assertNotEqual(jobs[1]["job_id"], first_job_id)
+        self.assertNotEqual(jobs[1]["run_dir"], first_out)
+        self.assertEqual(second["workflowStatus"], "blocked")
+
+        controller.advance(board="project-board", task_id="t_abc", run_id="7", wait_seconds=1)
+        self.assertEqual(len(launches), 2)
+        self.assertEqual(launches[0][launches[0].index("--out-dir") + 1], first_out)
+        self.assertEqual(launches[1][launches[1].index("--out-dir") + 1], jobs[1]["run_dir"])
+
+
 if __name__ == "__main__":
     unittest.main()

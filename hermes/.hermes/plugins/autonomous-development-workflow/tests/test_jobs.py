@@ -307,6 +307,76 @@ class WriteJobDocumentTests(unittest.TestCase):
         with self.assertRaises(WorkflowConflict):
             write_job_document(drifted, run_dir)
 
+    def test_write_job_document_pairs_job_json_with_job_sha256(self) -> None:
+        requirement = _artifact("requirement", self.root)
+        job = build_job(
+            board="b",
+            task_id="t",
+            stage="plan",
+            business_attempt=1,
+            transport_retry=0,
+            workspace=_workspace(),
+            agents=AGENTS,
+            inputs=(requirement,),
+            session_id=None,
+        )
+        run_dir = self.root / "run"
+        written = write_job_document(job, run_dir)
+        job_path = Path(written["job_path"])
+        hash_path = run_dir / "job.sha256"
+        self.assertTrue(job_path.is_file())
+        self.assertTrue(hash_path.is_file())
+        digest = _protocol.job_document_sha256(job)
+        self.assertEqual(written["job_sha256"], digest)
+        self.assertEqual(hash_path.read_text(encoding="utf-8"), digest + "\n")
+        hash_path.unlink()
+        repaired = write_job_document(job, run_dir)
+        self.assertEqual(repaired["job_sha256"], digest)
+        self.assertEqual(hash_path.read_text(encoding="utf-8"), digest + "\n")
+
+    def test_plugin_prepared_out_dir_passes_real_harness_ownership(self) -> None:
+        import subprocess
+
+        requirement = _artifact("requirement", self.root)
+        repo = self.root / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "dev@example.com"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Dev"], cwd=repo, check=True, capture_output=True)
+        (repo / "README").write_text("fixture\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "fixture"], cwd=repo, check=True, capture_output=True)
+        job = build_job(
+            board="b",
+            task_id="t",
+            stage="plan",
+            business_attempt=1,
+            transport_retry=0,
+            workspace=_workspace(repo=str(repo.resolve()), head="a" * 40),
+            agents=AGENTS,
+            inputs=(requirement,),
+            session_id=None,
+        )
+        run_dir = self.root / "out"
+        write_job_document(job, run_dir)
+        harness = (
+            Path(__file__).resolve().parents[3]
+            / "skills"
+            / "autonomous-ai-agents"
+            / "coding-agent-harness"
+            / "scripts"
+            / "harness.mjs"
+        )
+        completed = subprocess.run(
+            ["node", str(harness), "run", "--job", str(run_dir / "job.json"), "--out-dir", str(run_dir)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        combined = (completed.stdout or "") + (completed.stderr or "")
+        self.assertNotIn("incomplete stored Job ownership evidence", combined)
+        self.assertTrue((run_dir / "job.sha256").is_file())
+
 
 class ConsumeResultTests(unittest.TestCase):
     def setUp(self) -> None:

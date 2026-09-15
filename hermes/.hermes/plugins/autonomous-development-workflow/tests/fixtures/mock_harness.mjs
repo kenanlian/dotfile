@@ -174,6 +174,11 @@ const spec = script[ident.key] || script.default || {};
 const crashPoint = process.env.MOCK_HARNESS_CRASH || spec.crash || null;
 
 mkdirSync(args.outDir, { recursive: true });
+const storedJobPath = join(args.outDir, "job.json");
+const storedHashPath = join(args.outDir, "job.sha256");
+if (existsSync(storedJobPath) !== existsSync(storedHashPath)) {
+  fail("harness: incomplete stored Job ownership evidence");
+}
 const launchLog = process.env.MOCK_HARNESS_LAUNCH_LOG;
 if (launchLog) {
   appendFileSync(

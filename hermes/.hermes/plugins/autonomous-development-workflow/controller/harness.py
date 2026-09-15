@@ -134,18 +134,13 @@ def observe_harness_run(
     if pid is None and isinstance(lock, Mapping) and isinstance(lock.get("pid"), int):
         pid = lock["pid"]
     live_identity = identity_fn(pid) if isinstance(pid, int) else None
-    if (
-        live_identity
-        and recorded_identity
-        and live_identity == recorded_identity
-        and bound
-    ):
+    if live_identity and recorded_identity and live_identity == recorded_identity:
         return HarnessObservation(
             kind="live_process",
             pid=pid,
             process_identity=live_identity,
             lock=lock,
-            lock_bound_to_job=True,
+            lock_bound_to_job=bound,
             reason="identity-matched live process",
         )
     if lock is not None:
@@ -156,6 +151,13 @@ def observe_harness_run(
             lock=lock,
             lock_bound_to_job=bound,
             reason="orphan lock or process identity mismatch",
+        )
+    if recorded_pid is not None or recorded_identity:
+        return HarnessObservation(
+            kind="process_gone",
+            pid=recorded_pid if isinstance(recorded_pid, int) else pid,
+            process_identity=recorded_identity,
+            reason="recorded process is gone and no Result or lock remains",
         )
     return HarnessObservation(kind="not_started")
 
@@ -191,14 +193,18 @@ def start_harness_run(
     argv = build_harness_argv(harness_command, job_path=job_path, out_dir=out_dir)
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     launcher = popen or subprocess.Popen
-    proc = launcher(
-        argv,
-        shell=False,
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=None if env is None else dict(env),
-    )
+    stderr_log = open(Path(out_dir) / "stderr.log", "ab", buffering=0)
+    try:
+        proc = launcher(
+            argv,
+            shell=False,
+            start_new_session=True,
+            stdout=stderr_log,
+            stderr=stderr_log,
+            env=None if env is None else dict(env),
+        )
+    finally:
+        stderr_log.close()
     identity = identity_fn(proc.pid)
     live = HarnessObservation(
         kind="live_process",
@@ -241,9 +247,6 @@ def wait_on_harness(
     deadline = started + wait_seconds
     while True:
         now = monotonic_fn()
-        if heartbeat is not None and now - last_beat >= HEARTBEAT_EVERY_SECONDS:
-            heartbeat()
-            last_beat = now
         observed = observe_harness_run(
             run_dir=run_dir,
             job_id=job_id,
@@ -252,8 +255,14 @@ def wait_on_harness(
             recorded_identity=recorded_identity,
             identity_fn=identity_fn,
         )
-        if observed.kind in {"terminal_result", "orphan_lock"}:
+        if observed.kind in {"terminal_result", "orphan_lock", "process_gone"}:
             return observed
+        if heartbeat is not None and now - last_beat >= HEARTBEAT_EVERY_SECONDS:
+            try:
+                heartbeat(observed)
+            except TypeError:
+                heartbeat()
+            last_beat = now
         if now >= deadline:
             return observed
         remaining = deadline - now
