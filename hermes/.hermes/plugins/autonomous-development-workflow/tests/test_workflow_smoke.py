@@ -39,8 +39,23 @@ class WorkflowSmokeTests(unittest.TestCase):
         self.assertEqual(result["workflowStatus"], "review_requested")
         self.assertEqual(self.env.kanban.cards[task_id]["status"], "review")
         self.assertTrue(any(name == "kanban_request_review" for name, _ in self.env.kanban.tool_calls))
-        jobs = {row["stage"] for row in self.env.store.list_jobs("project-board", task_id)}
+        job_rows = self.env.store.list_jobs("project-board", task_id)
+        jobs = {row["stage"] for row in job_rows}
         self.assertEqual(jobs, {"plan", "plan_review", "implement"})
+        implement_row = next(row for row in job_rows if row["stage"] == "implement")
+        implement_job = json.loads(Path(implement_row["job_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(
+            implement_job["verification"],
+            [
+                {
+                    "id": "V1",
+                    "argv": ["node", "-e", "process.exit(0)"],
+                    "cwd": str(self.env.repo.resolve()),
+                    "timeoutSeconds": 300,
+                    "expectedExitCode": 0,
+                }
+            ],
+        )
 
     def test_02_fresh_review_to_acceptance_done(self) -> None:
         created = self.env.enqueue()

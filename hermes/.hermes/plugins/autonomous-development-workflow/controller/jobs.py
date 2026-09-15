@@ -23,6 +23,7 @@ from .protocol import (
     validate_job_document,
 )
 from .types import (
+    ARTIFACT_SCHEMA,
     JOB_SCHEMA,
     STAGE_INPUT_KINDS,
     STAGE_OUTPUT,
@@ -36,6 +37,7 @@ from .types import (
 )
 
 ConsumeKind = Literal["noop", "consumed", "protocol_failure", "transport_failure"]
+DEFAULT_CHECK_TIMEOUT_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,8 @@ def build_job(
         raise WorkflowProtocolError(f"unknown job stage {stage!r}")
     if business_attempt < 1 or transport_retry < 0:
         raise WorkflowProtocolError("business_attempt must be >= 1 and transport_retry >= 0")
+    if stage == "implement" and not verification:
+        raise WorkflowProtocolError("implement jobs require at least one verification check")
     profile = STAGE_PROFILES[stage]
     agent_spec = agents.get(profile)
     if not isinstance(agent_spec, Mapping) or not agent_spec.get("model") or not agent_spec.get("thinking"):
@@ -254,6 +258,74 @@ def _bind_input(item: Mapping[str, Any], index: int) -> dict[str, str]:
     if actual != expected:
         raise WorkflowProtocolError(f"inputs[{index}] SHA-256 does not match file contents")
     return {"kind": kind, "path": path, "sha256": expected}
+
+
+def verification_from_plan_input(
+    plan_input: Mapping[str, Any],
+    *,
+    repo_root: str,
+    timeout_seconds: int = DEFAULT_CHECK_TIMEOUT_SECONDS,
+) -> tuple[dict[str, Any], ...]:
+    """Translate canonical plan.v1 verification commands into Harness checks."""
+    if timeout_seconds < 1:
+        raise WorkflowProtocolError("verification timeout_seconds must be positive")
+    bound = _bind_input(plan_input, 0)
+    if bound["kind"] != "plan":
+        raise WorkflowProtocolError("implement verification requires a plan input")
+    document = json_load_if_possible(Path(bound["path"]))
+    if document is None:
+        raise WorkflowProtocolError("plan Artifact is not valid JSON")
+    if document.get("schema") != ARTIFACT_SCHEMA or document.get("kind") != "plan":
+        raise WorkflowProtocolError("plan input must be a canonical plan Artifact")
+    payload = document.get("payload")
+    if not isinstance(payload, Mapping) or payload.get("schema") != "plan.v1":
+        raise WorkflowProtocolError("plan Artifact payload must use plan.v1")
+    if payload.get("outcome") != "completed":
+        raise WorkflowProtocolError("implement verification requires a completed plan")
+    raw_checks = payload.get("verification")
+    if not isinstance(raw_checks, list) or not raw_checks:
+        raise WorkflowProtocolError("completed plan requires at least one verification check")
+
+    root = Path(require_absolute_path(repo_root, "repo_root")).resolve()
+    checks: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_checks):
+        if not isinstance(raw, Mapping):
+            raise WorkflowProtocolError(f"plan.verification[{index}] must be an object")
+        check_id = raw.get("id")
+        if not isinstance(check_id, str) or not check_id:
+            raise WorkflowProtocolError(f"plan.verification[{index}].id is required")
+        argv = raw.get("argv")
+        if not isinstance(argv, list) or not argv or any(
+            not isinstance(item, str) or not item for item in argv
+        ):
+            raise WorkflowProtocolError(
+                f"plan.verification[{index}].argv must be a non-empty string array"
+            )
+        raw_cwd = raw.get("cwd")
+        if raw_cwd == ".":
+            cwd = root
+        elif isinstance(raw_cwd, str) and raw_cwd and not Path(raw_cwd).is_absolute():
+            cwd = (root / raw_cwd).resolve()
+        else:
+            raise WorkflowProtocolError(
+                f"plan.verification[{index}].cwd must be repo-relative"
+            )
+        try:
+            cwd.relative_to(root)
+        except ValueError as exc:
+            raise WorkflowProtocolError(
+                f"plan.verification[{index}].cwd escapes repo_root"
+            ) from exc
+        checks.append(
+            {
+                "id": check_id,
+                "argv": list(argv),
+                "cwd": str(cwd),
+                "timeoutSeconds": timeout_seconds,
+                "expectedExitCode": 0,
+            }
+        )
+    return tuple(checks)
 
 
 def _canonical_artifacts(result: Mapping[str, Any]) -> tuple[ArtifactRef, ...]:

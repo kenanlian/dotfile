@@ -214,7 +214,28 @@ if (status === "completed") {
   const artifactsDir = join(args.outDir, "artifacts");
   mkdirSync(artifactsDir, { recursive: true });
   const artifactPath = join(artifactsDir, `${output.kind}-attempt-${job.attempt}.json`);
-  const artifactBytes = canonicalJson(payload);
+  const artifact = {
+    schema: ARTIFACT_SCHEMA,
+    kind: output.kind,
+    job: {
+      jobId: job.jobId,
+      idempotencyKey: job.idempotencyKey,
+      taskId: job.taskId,
+      stage: job.stage,
+      attempt: job.attempt,
+      jobSha256,
+    },
+    sessionId,
+    inputs: job.inputs,
+    workspace: {
+      repoRoot: job.workspace.repoRoot,
+      branch: job.workspace.branch,
+      head: job.workspace.expectedHead,
+      baselineSnapshotSha256: "0".repeat(64),
+    },
+    payload,
+  };
+  const artifactBytes = canonicalJson(artifact);
   atomicWriteFile(artifactPath, artifactBytes);
   artifacts.push({
     kind: output.kind,

@@ -146,6 +146,23 @@ class BuildJobTests(unittest.TestCase):
         self.assertTrue(job["jobId"].startswith("job_"))
         self.assertIn("project-board:t_abc:plan:1:0:", job["idempotencyKey"])
 
+    def test_implement_job_requires_deterministic_verification(self) -> None:
+        plan = _artifact("plan", self.root)
+        with self.assertRaisesRegex(
+            WorkflowProtocolError, "implement jobs require at least one verification check"
+        ):
+            build_job(
+                board="project-board",
+                task_id="t_abc",
+                stage="implement",
+                business_attempt=1,
+                transport_retry=0,
+                workspace=_workspace(),
+                agents=AGENTS,
+                inputs=(plan,),
+                session_id=None,
+            )
+
     def test_reviewer_jobs_are_fresh_and_read_only(self) -> None:
         requirement = _artifact("requirement", self.root)
         plan = _artifact("plan", self.root)
@@ -605,6 +622,15 @@ class ConsumeResultTests(unittest.TestCase):
             agents=AGENTS,
             inputs=(plan,),
             session_id=None,
+            verification=(
+                {
+                    "id": "unit",
+                    "argv": ["node", "--test"],
+                    "cwd": "/abs/repo",
+                    "timeoutSeconds": 30,
+                    "expectedExitCode": 0,
+                },
+            ),
         )
         job_sha = write_job_document(job, self.root / "impl-run")["job_sha256"]
         impl_path = self.root / "implementation.json"

@@ -18,7 +18,12 @@ from .harness import (
     start_harness_run,
     wait_on_harness,
 )
-from .jobs import build_job, consume_result, write_job_document
+from .jobs import (
+    build_job,
+    consume_result,
+    verification_from_plan_input,
+    write_job_document,
+)
 from .lifecycle import (
     apply_pending_lifecycle,
     kanban_status_of,
@@ -671,6 +676,11 @@ class WorkflowController:
             raise WorkflowProtocolError("create_job is missing a stage")
         board, task_id = manifest["board"], manifest["taskId"]
         inputs = self._inputs_for_stage(manifest, stage)
+        verification = ()
+        if stage == "implement":
+            verification = verification_from_plan_input(
+                inputs[0], repo_root=str(manifest["repoRoot"])
+            )
         session_id = None
         if stage == "plan" and manifest.get("plannerSessionId") and (
             action.reason == "plan_rework" or int(manifest.get("planReworkCount") or 0) > 0
@@ -706,6 +716,7 @@ class WorkflowController:
             agents=self.agents,
             inputs=inputs,
             session_id=session_id,
+            verification=verification,
         )
         run_dir = self.store.state_root / "boards" / board / task_id / "jobs" / job["jobId"]
         written = write_job_document(job, run_dir)
