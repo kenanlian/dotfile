@@ -73,6 +73,10 @@ class WorkflowConflict(RuntimeError):
     """Identity or CAS conflict against an existing workflow record."""
 
 
+LEASE_RELEASE_REASONS = frozenset({"completed", "archived", "abandon"})
+TERMINAL_WORKFLOW_STATUSES = frozenset({WorkflowStatus.COMPLETED})
+
+
 @dataclass(frozen=True)
 class GitBaseline:
     branch: str
