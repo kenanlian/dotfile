@@ -13,7 +13,7 @@ Repo: `~/Secret-Projects/pi-delegate-agent` (symlinked at `~/.pi/agent/extension
 process.env.DELEGATE_AGENT_CONFIG  →  ~/.pi/agent/delegate-agent.json
 ```
 
-- Whole-file replacement, not a merge. No `delegate-agent.local.json` overlay exists (checked 2026-09-05 when Kenan asked; options presented — keep editing dotfile / shell-export a full replacement config / extend the extension with a local deep-merge overlay following the dotfile `*.local` convention — none built as of that date).
+- Base config is whole-file (no shell-overlay merge). A **local override now exists** (verified 2026-09-07): `~/.pi/agent/delegate-agent.local.json` (same dir as the base config) deep-merges `agents` per-tier entries plus optional `nesting`/`limits`/`call_allowlist` over the base (`applyLocalOverride`, `LOCAL_OVERRIDE_FILENAME` in `router.ts`). Fit for temporary routing such as provider-quota failover: edit the overlay, no dotfile commit, delete to roll back. Unknown top-level keys in the overlay are a BlockedError. The overlay does NOT apply when `DELEGATE_AGENT_CONFIG` env is set — an explicit env config is complete and nested-child isolation depends on that.
 - A shell-level `DELEGATE_AGENT_CONFIG` export only takes effect in the shell that **launches** Pi; the extension process env is fixed at pi start.
 - Env-var dual use is safe: nested children get a restricted config injected via `withChildEnv` (`/usr/bin/env DELEGATE_AGENT_CONFIG=<tmpfile> pi …`); non-nested children run `--no-extensions` and never read it. A shell-level export does not fight the nesting gate.
 
