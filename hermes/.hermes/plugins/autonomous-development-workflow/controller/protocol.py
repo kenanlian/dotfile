@@ -122,8 +122,10 @@ def parse_manifest(value: Any) -> WorkflowManifest:
         if _GIT_HEAD.fullmatch(head) is None:
             raise WorkflowProtocolError("baseline.head must be a 40- or 64-char git SHA")
         baseline = GitBaseline(
+            repo_root=require_absolute_path(data.get("repoRoot"), "repoRoot"),
             branch=_require_str(baseline_data.get("branch"), "baseline.branch"),
             head=head,
+            clean=True,
         )
     fingerprint = data.get("candidateFingerprint")
     if fingerprint is not None:

@@ -79,8 +79,19 @@ TERMINAL_WORKFLOW_STATUSES = frozenset({WorkflowStatus.COMPLETED})
 
 @dataclass(frozen=True)
 class GitBaseline:
+    repo_root: str
     branch: str
     head: str
+    clean: bool
+
+
+@dataclass(frozen=True)
+class CandidateFingerprint:
+    branch: str
+    head: str
+    porcelain_sha256: str
+    diff_sha256: str
+    file_hashes: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
