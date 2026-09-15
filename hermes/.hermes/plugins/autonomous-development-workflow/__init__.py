@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import schemas, tools
+from . import cli, schemas, tools
 
 PLUGIN_TOOLSET = "autonomous_development_workflow"
 WORKER_PROMPT_SECTION_ID = "autonomous-development-workflow.worker-rules"
@@ -26,12 +26,7 @@ def _on_pre_llm_call(**kwargs) -> None:
 
 
 def _setup_autodev_cli(subparser) -> None:
-    subparser.set_defaults(func=_autodev_cli)
-
-
-def _autodev_cli(args) -> None:
-    del args
-    print("autodev CLI is not implemented")
+    cli.setup_autodev_cli(subparser)
 
 
 def register(ctx) -> None:
@@ -58,7 +53,7 @@ def register(ctx) -> None:
         name="autodev",
         help="Manage external autonomous development workflows",
         setup_fn=_setup_autodev_cli,
-        handler_fn=_autodev_cli,
+        handler_fn=lambda args: cli.handle_autodev(args, config_loader=ctx.get_config),
         description="Enqueue, inspect, doctor, reconcile, and abandon autonomous development cards.",
     )
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)

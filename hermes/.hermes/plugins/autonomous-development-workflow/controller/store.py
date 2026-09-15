@@ -530,6 +530,22 @@ class WorkflowStore:
             ).fetchone()
         return _row_dict(row)
 
+    def list_manifests(self, board: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT manifest_json FROM workflow_manifests WHERE board = ?",
+                (board,),
+            ).fetchall()
+        return [json.loads(row["manifest_json"]) for row in rows]
+
+    def list_intake(self, board: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM workflow_intake WHERE board = ?",
+                (board,),
+            ).fetchall()
+        return [_row_dict(row) for row in rows]
+
     def _migrate(self) -> None:
         with self._transaction() as conn:
             conn.execute(
