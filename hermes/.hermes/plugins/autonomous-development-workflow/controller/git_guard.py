@@ -6,7 +6,7 @@ import hashlib
 import subprocess
 from pathlib import Path
 
-from .protocol import require_absolute_path
+from .protocol import digest_canonical, require_absolute_path
 from .types import CandidateFingerprint, GitBaseline, WorkflowProtocolError
 
 _MUTATING = frozenset("stash reset checkout clean revert commit push switch restore merge rebase".split())
@@ -74,6 +74,18 @@ def capture_candidate_fingerprint(repo: str, *, declared_repo: str | None = None
         porcelain_sha256=_sha(porcelain.encode("utf-8")),
         diff_sha256=_sha((worktree_diff + "\0" + index_diff).encode("utf-8")),
         file_hashes=hashes,
+    )
+
+
+def fingerprint_digest(fingerprint: CandidateFingerprint) -> str:
+    return digest_canonical(
+        {
+            "branch": fingerprint.branch,
+            "head": fingerprint.head,
+            "porcelain_sha256": fingerprint.porcelain_sha256,
+            "diff_sha256": fingerprint.diff_sha256,
+            "file_hashes": list(fingerprint.file_hashes),
+        }
     )
 
 

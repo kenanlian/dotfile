@@ -412,6 +412,7 @@ class WorkflowController:
         self.monotonic_fn = monotonic_fn
 
     def status(self, *, board: str, task_id: str, run_id: str | None = None) -> dict[str, Any]:
+        self._assert_guard_clear(board, task_id)
         manifest = self._require_manifest(board, task_id)
         shown = show_task(self.dispatch_tool, task_id=task_id, board=board)
         self._validate_bindings(manifest, shown, task_id=task_id, board=board, run_id=run_id)
@@ -428,6 +429,7 @@ class WorkflowController:
         wait_seconds: int = 60,
         extra_args: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        self._assert_guard_clear(board, task_id)
         if extra_args:
             forbidden = FORBIDDEN_ADVANCE_KEYS.intersection(extra_args)
             if forbidden:
@@ -466,6 +468,47 @@ class WorkflowController:
         snapshot = self._snapshot(self.store.get_manifest(board, task_id) or manifest)
         action = next_action(snapshot)
         return self._summary(self.store.get_manifest(board, task_id) or manifest, action)
+
+    def submit_acceptance(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        run_id: str,
+        verdict: str,
+        summary: str,
+        scenarios: Any,
+        findings: Any = None,
+        question: str | None = None,
+    ) -> dict[str, Any]:
+        from ..hooks import assert_guard_clear
+        from .acceptance import submit_typed_acceptance
+
+        assert_guard_clear(board, task_id)
+        shown = show_task(self.dispatch_tool, task_id=task_id, board=board)
+        manifest = self._require_manifest(board, task_id)
+        self._validate_bindings(manifest, shown, task_id=task_id, board=board, run_id=run_id)
+        return submit_typed_acceptance(
+            store=self.store,
+            config=self.config,
+            dispatch_tool=self.dispatch_tool,
+            board=board,
+            task_id=task_id,
+            run_id=str(run_id),
+            shown=shown,
+            submission={
+                "verdict": verdict,
+                "summary": summary,
+                "scenarios": scenarios or [],
+                "findings": findings or [],
+                "question": question,
+            },
+        )
+
+    def _assert_guard_clear(self, board: str, task_id: str) -> None:
+        from ..hooks import assert_guard_clear
+
+        assert_guard_clear(board, task_id)
 
     def _require_manifest(self, board: str, task_id: str) -> dict[str, Any]:
         manifest = self.store.get_manifest(board, task_id)

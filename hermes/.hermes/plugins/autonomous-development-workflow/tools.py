@@ -10,6 +10,7 @@ from .config import load_plugin_config
 from .controller.service import FORBIDDEN_ADVANCE_KEYS, WorkflowController
 from .controller.store import WorkflowStore
 from .controller.types import WorkflowProtocolError
+from .hooks import assert_guard_clear
 
 _DEFAULT_AGENTS = {
     "planner": {"model": "unconfigured", "thinking": "high"},
@@ -59,8 +60,26 @@ def workflow_advance(args: dict, **kwargs) -> str:
 
 def submit_acceptance(args: dict, **kwargs) -> str:
     try:
-        _controller_scope(args, kwargs, mutate=True)
-        raise WorkflowProtocolError("typed product acceptance is not implemented in this milestone")
+        extra = dict(args or {})
+        controller, board, task_id, run_id = _controller_scope(extra, kwargs, mutate=True)
+        extra.pop("task_id", None)
+        extra.pop("board", None)
+        if not run_id:
+            raise WorkflowProtocolError("acceptance requires a Dispatcher Worker run")
+        return json.dumps(
+            controller.submit_acceptance(
+                board=board,
+                task_id=task_id,
+                run_id=str(run_id),
+                verdict=extra.pop("verdict", None),
+                summary=extra.pop("summary", None),
+                scenarios=extra.pop("scenarios", None),
+                findings=extra.pop("findings", None),
+                question=extra.pop("question", None),
+            ),
+            sort_keys=True,
+            ensure_ascii=False,
+        )
     except Exception as exc:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
 
@@ -101,11 +120,20 @@ def _controller_scope(
         }
     )
     store = WorkflowStore(config.state_root)
+    if mutate:
+        assert_guard_clear(str(board), str(task_id))
     agents = ctx.get_config("agents", _DEFAULT_AGENTS)
+    dispatch = (
+        kwargs.get("dispatch_tool")
+        or kwargs.get("dispatch_override")
+        or getattr(ctx, "dispatch_tool", None)
+    )
+    if dispatch is None:
+        raise WorkflowProtocolError("plugin context is required")
     controller = WorkflowController(
         store=store,
         config=config,
-        dispatch_tool=ctx.dispatch_tool,
+        dispatch_tool=dispatch,
         agents=agents,
         popen=kwargs.get("popen"),
         identity_fn=kwargs.get("identity_fn"),

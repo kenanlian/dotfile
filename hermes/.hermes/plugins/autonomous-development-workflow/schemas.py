@@ -56,8 +56,9 @@ SUBMIT_ACCEPTANCE = {
     "name": "autodev_workflow_submit_acceptance",
     "description": (
         "Submit a typed product-acceptance verdict for a review-lane Worker "
-        "whose workflow status is product_acceptance. This is the only "
-        "supported way to record product acceptance."
+        "This is the only supported way to record product acceptance. The plugin "
+        "captures the current candidate fingerprint and writes canonical "
+        "product-acceptance-vN.json; do not write that JSON yourself."
     ),
     "parameters": {
         "type": "object",

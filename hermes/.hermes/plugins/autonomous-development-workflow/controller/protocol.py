@@ -303,9 +303,17 @@ def parse_acceptance(value: Any, *, expected_fingerprint: str) -> AcceptanceSubm
             raise WorkflowProtocolError("passed acceptance requires every scenario to pass")
         if blocking:
             raise WorkflowProtocolError("passed acceptance cannot include a blocking finding")
+    elif verdict == "failed":
+        if all(item.status != "failed" for item in scenarios) and not blocking:
+            raise WorkflowProtocolError(
+                "failed acceptance requires a failed scenario or a blocking finding"
+            )
     elif verdict == "needs_human":
         if question is None or not question.strip():
             raise WorkflowProtocolError("needs_human acceptance requires an explicit question")
+    elif verdict == "blocked":
+        if not summary.strip():
+            raise WorkflowProtocolError("blocked acceptance requires an explicit external blocker")
     return AcceptanceSubmission(
         verdict=verdict,
         summary=summary,
