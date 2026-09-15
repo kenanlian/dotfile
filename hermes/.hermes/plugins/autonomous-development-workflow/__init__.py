@@ -35,19 +35,19 @@ def register(ctx) -> None:
         name="autodev_workflow_status",
         toolset=PLUGIN_TOOLSET,
         schema=schemas.STATUS,
-        handler=tools.workflow_status,
+        handler=lambda args, **kwargs: tools.workflow_status(args, ctx=ctx, **kwargs),
     )
     ctx.register_tool(
         name="autodev_workflow_advance",
         toolset=PLUGIN_TOOLSET,
         schema=schemas.ADVANCE,
-        handler=tools.workflow_advance,
+        handler=lambda args, **kwargs: tools.workflow_advance(args, ctx=ctx, **kwargs),
     )
     ctx.register_tool(
         name="autodev_workflow_submit_acceptance",
         toolset=PLUGIN_TOOLSET,
         schema=schemas.SUBMIT_ACCEPTANCE,
-        handler=tools.submit_acceptance,
+        handler=lambda args, **kwargs: tools.submit_acceptance(args, ctx=ctx, **kwargs),
     )
     ctx.register_cli_command(
         name="autodev",

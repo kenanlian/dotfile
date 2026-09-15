@@ -314,6 +314,150 @@ class WorkflowStore:
             row = conn.execute("SELECT * FROM workflow_jobs WHERE job_id = ?", (job_id,)).fetchone()
         return _row_dict(row)
 
+    def update_job(self, job_id: str, **fields: Any) -> dict[str, Any]:
+        allowed = {
+            "harness_pid",
+            "process_identity",
+            "status",
+            "result_path",
+            "started_at",
+            "finished_at",
+            "consumed_at",
+        }
+        unknown = set(fields) - allowed
+        if unknown:
+            raise WorkflowProtocolError(f"cannot update job fields {sorted(unknown)}")
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        values = list(fields.values())
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                f"UPDATE workflow_jobs SET {assignments} WHERE job_id = ?",
+                (*values, job_id),
+            )
+            if cursor.rowcount != 1:
+                raise WorkflowConflict(f"job {job_id} does not exist")
+            row = conn.execute("SELECT * FROM workflow_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        return _row_dict(row)
+
+    def latest_artifact(self, board: str, task_id: str, kind: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM workflow_artifacts
+                WHERE board = ? AND task_id = ? AND kind = ?
+                ORDER BY version DESC LIMIT 1
+                """,
+                (board, task_id, kind),
+            ).fetchone()
+        return _row_dict(row)
+
+    def next_artifact_version(self, board: str, task_id: str, kind: str) -> int:
+        current = self.latest_artifact(board, task_id, kind)
+        return 1 if current is None else int(current["version"]) + 1
+
+    def checkpoint(
+        self,
+        *,
+        board: str,
+        task_id: str,
+        expected_revision: int,
+        manifest: Mapping[str, Any],
+        job_patch: Mapping[str, Any] | None = None,
+        artifacts: list[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically persist job completion, artifacts, and the next Manifest revision."""
+        parsed = parse_manifest(manifest)
+        if parsed.board != board or parsed.task_id != task_id:
+            raise WorkflowProtocolError("checkpoint manifest board/task must match the row identity")
+        if parsed.revision != expected_revision + 1:
+            raise WorkflowProtocolError("CAS revision must increment by 1")
+        text = canonical_dumps(manifest)
+        stored = json.loads(text)
+        now = _now()
+        with self._transaction() as conn:
+            if job_patch:
+                job_id = job_patch["job_id"]
+                updates = {
+                    key: job_patch[key]
+                    for key in (
+                        "harness_pid",
+                        "process_identity",
+                        "status",
+                        "result_path",
+                        "started_at",
+                        "finished_at",
+                        "consumed_at",
+                    )
+                    if key in job_patch
+                }
+                if updates:
+                    assignments = ", ".join(f"{key} = ?" for key in updates)
+                    cursor = conn.execute(
+                        f"UPDATE workflow_jobs SET {assignments} WHERE job_id = ?",
+                        (*updates.values(), job_id),
+                    )
+                    if cursor.rowcount != 1:
+                        raise WorkflowConflict(f"job {job_id} does not exist")
+            for artifact in artifacts or []:
+                path = require_absolute_path(artifact["path"], "artifact.path")
+                digest = require_sha256(artifact["sha256"], "artifact.sha256")
+                existing = conn.execute(
+                    """
+                    SELECT * FROM workflow_artifacts
+                    WHERE board = ? AND task_id = ? AND kind = ? AND version = ?
+                    """,
+                    (board, task_id, artifact["kind"], int(artifact["version"])),
+                ).fetchone()
+                if existing is not None:
+                    current = _row_dict(existing)
+                    if current["path"] != path or current["sha256"] != digest:
+                        raise WorkflowConflict(
+                            f"artifact {artifact['kind']}@v{artifact['version']} is immutable"
+                        )
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO workflow_artifacts(
+                      board, task_id, job_id, kind, version, path, sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        board,
+                        task_id,
+                        artifact["job_id"],
+                        artifact["kind"],
+                        int(artifact["version"]),
+                        path,
+                        digest,
+                        now,
+                    ),
+                )
+            cursor = conn.execute(
+                """
+                UPDATE workflow_manifests
+                SET schema = ?, template_id = ?, repo_root = ?, workflow_status = ?,
+                    revision = ?, manifest_json = ?, updated_at = ?
+                WHERE board = ? AND task_id = ? AND revision = ?
+                """,
+                (
+                    parsed.schema,
+                    parsed.template_id,
+                    parsed.repo_root,
+                    parsed.status.value,
+                    parsed.revision,
+                    text,
+                    now,
+                    board,
+                    task_id,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise WorkflowConflict(
+                    f"CAS failed for {board}/{task_id} at revision {expected_revision}"
+                )
+        return stored
+
     def register_artifact(
         self,
         *,

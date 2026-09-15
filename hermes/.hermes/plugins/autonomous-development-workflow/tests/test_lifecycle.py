@@ -1,0 +1,339 @@
+"""Lifecycle saga: pendingLifecycle fencing, read-back, and Result-before-start."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import Mock
+
+from plugin_imports import import_plugin
+
+_jobs = import_plugin("controller.jobs")
+_lifecycle = import_plugin("controller.lifecycle")
+_service = import_plugin("controller.service")
+_store = import_plugin("controller.store")
+_types = import_plugin("controller.types")
+
+PluginConfig = _types.PluginConfig
+RESULT_SCHEMA = _types.RESULT_SCHEMA
+WORKFLOW_SCHEMA = _types.WORKFLOW_SCHEMA
+WORKFLOW_TEMPLATE_ID = _types.WORKFLOW_TEMPLATE_ID
+WorkflowProtocolError = _types.WorkflowProtocolError
+WorkflowStore = _store.WorkflowStore
+WorkflowController = _service.WorkflowController
+apply_pending_lifecycle = _lifecycle.apply_pending_lifecycle
+make_pending_lifecycle = _lifecycle.make_pending_lifecycle
+build_job = _jobs.build_job
+write_job_document = _jobs.write_job_document
+
+AGENTS = {
+    "planner": {"model": "planner-model", "thinking": "high"},
+    "plan-reviewer": {"model": "review-model", "thinking": "high"},
+    "implementer": {"model": "impl-model", "thinking": "high"},
+    "execute-reviewer": {"model": "review-model", "thinking": "medium"},
+}
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _config(state_root: Path) -> PluginConfig:
+    return PluginConfig(
+        profile="autodev",
+        state_root=str(state_root),
+        harness_command=("node", "/abs/harness.mjs"),
+        main_branch="main",
+        poll_interval_seconds=5,
+        advance_wait_seconds=60,
+    )
+
+
+def _manifest(**overrides):
+    data = {
+        "schema": WORKFLOW_SCHEMA,
+        "templateId": WORKFLOW_TEMPLATE_ID,
+        "board": "project-board",
+        "taskId": "t_abc",
+        "repoRoot": "/abs/repo",
+        "workflowStatus": "review_requested",
+        "revision": 4,
+        "stageAttempt": 1,
+        "activeJobId": None,
+        "plannerSessionId": "sess_plan",
+        "implementerSessionId": "sess_impl",
+        "planReworkCount": 0,
+        "implementReworkCount": 0,
+        "runFailureCounts": {},
+        "baseline": {"branch": "main", "head": "a" * 40},
+        "candidateFingerprint": None,
+        "approvedPlan": None,
+        "lastConsumedJobId": "job_impl",
+        "pendingLifecycle": None,
+        "resumeStatus": None,
+    }
+    data.update(overrides)
+    return data
+
+
+class FakeKanban:
+    def __init__(self, *, status: str = "running", run_id: str = "7") -> None:
+        self.status = status
+        self.run_id = run_id
+        self.calls: list[tuple[str, dict]] = []
+
+    def __call__(self, name: str, args: dict, **kwargs) -> str:
+        self.calls.append((name, dict(args)))
+        if name == "kanban_show":
+            return json.dumps(
+                {
+                    "task": {
+                        "id": args.get("task_id", "t_abc"),
+                        "status": self.status,
+                        "assignee": "autodev",
+                        "workspace_kind": "dir",
+                        "workspace_path": "/abs/repo",
+                        "current_run_id": self.run_id,
+                    },
+                    "parents": [],
+                    "children": [],
+                    "comments": [],
+                    "events": [],
+                    "runs": [{"id": self.run_id, "status": "running"}],
+                }
+            )
+        if name == "kanban_request_review":
+            self.status = "review"
+            return json.dumps({"ok": True, "task_id": args.get("task_id")})
+        if name == "kanban_complete":
+            self.status = "done"
+            return json.dumps({"ok": True, "task_id": args.get("task_id")})
+        if name == "kanban_block":
+            self.status = "blocked"
+            return json.dumps({"ok": True, "task_id": args.get("task_id")})
+        if name == "kanban_request_changes":
+            self.status = "todo"
+            return json.dumps({"ok": True, "task_id": args.get("task_id")})
+        if name == "kanban_heartbeat":
+            return json.dumps({"ok": True})
+        return json.dumps({"error": f"unknown tool {name}"})
+
+
+class LifecycleSagaTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="autodev-life-")
+        self.state_root = Path(self._tmp.name) / "state"
+        self.state_root.mkdir()
+        self.store = WorkflowStore(str(self.state_root))
+        self.kanban = FakeKanban()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _controller(self) -> WorkflowController:
+        return WorkflowController(
+            store=self.store,
+            config=_config(self.state_root),
+            dispatch_tool=self.kanban,
+            agents=AGENTS,
+            popen=Mock(side_effect=AssertionError("harness must not start")),
+        )
+
+    def test_checkpointed_review_request_is_applied_once_on_restart(self) -> None:
+        pending = make_pending_lifecycle(
+            target_status="review_requested",
+            run_id="7",
+            workflow_revision=4,
+        )
+        self.store.put_manifest(_manifest(pendingLifecycle=pending, revision=4))
+        controller = self._controller()
+        first = controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        self.assertEqual(first["workflowStatus"], "review_requested")
+        self.assertIsNone(first["pendingLifecycle"])
+        reviews = [name for name, _ in self.kanban.calls if name == "kanban_request_review"]
+        self.assertEqual(len(reviews), 1)
+        second = controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        reviews = [name for name, _ in self.kanban.calls if name == "kanban_request_review"]
+        self.assertEqual(len(reviews), 1)
+        self.assertEqual(second["nextAction"], "noop")
+
+    def test_checkpointed_complete_is_applied_once_on_restart(self) -> None:
+        self.kanban.status = "review"
+        pending = make_pending_lifecycle(
+            target_status="completed",
+            run_id="7",
+            workflow_revision=8,
+        )
+        self.store.put_manifest(
+            _manifest(workflowStatus="completed", pendingLifecycle=pending, revision=8)
+        )
+        controller = self._controller()
+        controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        completes = [name for name, _ in self.kanban.calls if name == "kanban_complete"]
+        self.assertEqual(len(completes), 1)
+        controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        completes = [name for name, _ in self.kanban.calls if name == "kanban_complete"]
+        self.assertEqual(len(completes), 1)
+
+    def test_pending_lifecycle_bound_to_old_run_is_refused(self) -> None:
+        pending = make_pending_lifecycle(
+            target_status="review_requested",
+            run_id="old-run",
+            workflow_revision=4,
+        )
+        self.store.put_manifest(_manifest(pendingLifecycle=pending))
+        controller = self._controller()
+        with self.assertRaises(WorkflowProtocolError):
+            controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        self.assertFalse(any(name == "kanban_request_review" for name, _ in self.kanban.calls))
+
+    def test_existing_result_is_consumed_without_starting_harness(self) -> None:
+        requirement = self.state_root / "requirement.json"
+        requirement.write_text('{"schema":"autonomous-development.requirement.v1"}', encoding="utf-8")
+        self.store.put_manifest(
+            _manifest(
+                workflowStatus="planning",
+                revision=1,
+                activeJobId=None,
+                lastConsumedJobId=None,
+                pendingLifecycle=None,
+            )
+        )
+        self.store.register_artifact(
+            board="project-board",
+            task_id="t_abc",
+            job_id="intake:t_abc",
+            kind="requirement",
+            version=1,
+            path=str(requirement),
+            sha256=_sha(requirement.read_text(encoding="utf-8")),
+        )
+        job = build_job(
+            board="project-board",
+            task_id="t_abc",
+            stage="plan",
+            business_attempt=1,
+            transport_retry=0,
+            workspace={
+                "repoRoot": "/abs/repo",
+                "branch": "main",
+                "expectedHead": "a" * 40,
+                "requireCleanAtStart": True,
+            },
+            agents=AGENTS,
+            inputs=(
+                {
+                    "kind": "requirement",
+                    "path": str(requirement),
+                    "sha256": _sha(requirement.read_text(encoding="utf-8")),
+                },
+            ),
+            session_id=None,
+        )
+        run_dir = self.state_root / "boards" / "project-board" / "t_abc" / "jobs" / job["jobId"]
+        written = write_job_document(job, run_dir)
+        self.store.put_job(
+            {
+                "job_id": job["jobId"],
+                "board": "project-board",
+                "task_id": "t_abc",
+                "stage": "plan",
+                "business_attempt": 1,
+                "transport_retry": 0,
+                "idempotency_key": job["idempotencyKey"],
+                "job_path": written["job_path"],
+                "run_dir": written["run_dir"],
+                "job_sha256": written["job_sha256"],
+                "harness_pid": None,
+                "process_identity": None,
+                "status": "pending",
+                "result_path": None,
+                "started_at": None,
+                "finished_at": None,
+                "consumed_at": None,
+            }
+        )
+        plan_path = self.state_root / "plan.json"
+        plan_path.write_text('{"schema":"plan.v1","title":"ok"}', encoding="utf-8")
+        result = {
+            "schema": RESULT_SCHEMA,
+            "jobId": job["jobId"],
+            "idempotencyKey": job["idempotencyKey"],
+            "jobSha256": written["job_sha256"],
+            "taskId": "t_abc",
+            "stage": "plan",
+            "status": "completed",
+            "adapter": "pi",
+            "sessionId": "sess_plan",
+            "startedAt": "2026-09-14T00:00:00Z",
+            "finishedAt": "2026-09-14T00:01:00Z",
+            "structuredOutput": {"kind": "plan", "payload": {"schema": "plan.v1", "title": "ok"}},
+            "artifacts": [
+                {
+                    "kind": "plan",
+                    "path": str(plan_path),
+                    "sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+                    "schema": "plan.v1",
+                    "canonical": True,
+                }
+            ],
+            "touchedFiles": [],
+            "checks": [],
+            "usage": {},
+            "workspace": {
+                "repoRoot": "/abs/repo",
+                "branchBefore": "main",
+                "branchAfter": "main",
+                "headBefore": "a" * 40,
+                "headAfter": "a" * 40,
+                "snapshotBeforeSha256": "c" * 64,
+                "snapshotAfterSha256": "c" * 64,
+            },
+            "error": None,
+            "paths": {
+                "events": "/abs/events.jsonl",
+                "stderr": "/abs/stderr.log",
+                "final": "/abs/final.txt",
+                "adapterRuns": [],
+            },
+        }
+        (run_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        current = self.store.get_manifest("project-board", "t_abc")
+        current["activeJobId"] = job["jobId"]
+        current["revision"] = 2
+        self.store.cas_update_manifest(
+            "project-board", "t_abc", expected_revision=1, manifest=current
+        )
+        popen = Mock(side_effect=AssertionError("must not start harness"))
+        controller = WorkflowController(
+            store=self.store,
+            config=_config(self.state_root),
+            dispatch_tool=self.kanban,
+            agents=AGENTS,
+            popen=popen,
+        )
+        outcome = controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        popen.assert_not_called()
+        self.assertEqual(outcome["workflowStatus"], "plan_reviewing")
+        loaded = self.store.get_job(job["jobId"])
+        self.assertIsNotNone(loaded["consumed_at"])
+
+    def test_apply_pending_rejects_old_run_without_dispatch(self) -> None:
+        pending = make_pending_lifecycle(
+            target_status="review_requested", run_id="1", workflow_revision=1
+        )
+        with self.assertRaises(WorkflowProtocolError):
+            apply_pending_lifecycle(
+                pending,
+                current_run_id="2",
+                task_id="t_abc",
+                board="project-board",
+                dispatch=self.kanban,
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

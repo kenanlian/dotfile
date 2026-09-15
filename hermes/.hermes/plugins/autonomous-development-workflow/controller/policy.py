@@ -66,6 +66,36 @@ class PolicySnapshot:
     review_verdict: str | None = None
 
 
+def snapshot_from_manifest(
+    manifest: Mapping[str, Any],
+    *,
+    active_job: ActiveJobView | None = None,
+    implement_checks: tuple[Mapping[str, Any], ...] | None = None,
+    review_verdict: str | None = None,
+    last_consumed_result_sha256: str | None = None,
+) -> PolicySnapshot:
+    status = manifest.get("workflowStatus")
+    parsed = status if isinstance(status, WorkflowStatus) else WorkflowStatus(str(status))
+    failures = manifest.get("runFailureCounts") or {}
+    if not isinstance(failures, Mapping):
+        failures = {}
+    return PolicySnapshot(
+        status=parsed,
+        plan_rework_count=int(manifest.get("planReworkCount") or 0),
+        implement_rework_count=int(manifest.get("implementReworkCount") or 0),
+        run_failure_counts={str(key): int(value) for key, value in failures.items()},
+        active_job=active_job,
+        last_consumed_job_id=manifest.get("lastConsumedJobId"),
+        last_consumed_result_sha256=last_consumed_result_sha256,
+        pending_lifecycle=manifest.get("pendingLifecycle"),
+        planner_session_id=manifest.get("plannerSessionId"),
+        implementer_session_id=manifest.get("implementerSessionId"),
+        resume_status=manifest.get("resumeStatus"),
+        implement_checks=implement_checks,
+        review_verdict=review_verdict,
+    )
+
+
 def next_allowed_transitions(status: WorkflowStatus) -> frozenset[WorkflowStatus]:
     return ALLOWED_TRANSITIONS.get(status, frozenset())
 
