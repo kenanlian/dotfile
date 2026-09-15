@@ -244,12 +244,15 @@ class ResultBindingTests(unittest.TestCase):
         with self.assertRaises(WorkflowProtocolError):
             bind_result(expectation, _result(jobSha256=_sha("other-job")))
 
-    def test_session_mismatch_is_rejected(self) -> None:
-        expectation = parse_job_expectation(_expectation(sessionId="sess_1"))
+    def test_completed_requires_session_and_rejects_resume_mismatch(self) -> None:
+        expectation = parse_job_expectation(_expectation())
+        validate_completed_result(expectation, _result(sessionId="sess_fresh"))
+        resume = parse_job_expectation(_expectation(sessionId="sess_1"))
+        bind_result(resume, _result(sessionId="sess_1"))
         with self.assertRaises(WorkflowProtocolError):
-            bind_result(expectation, _result(sessionId="sess_2"))
+            bind_result(resume, _result(sessionId="sess_2"))
         with self.assertRaises(WorkflowProtocolError):
-            bind_result(expectation, _result(sessionId=None))
+            bind_result(resume, _result(sessionId=None))
 
 
 class CompletedResultTests(unittest.TestCase):

@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .types import (
     ALLOWED_TRANSITIONS,
     GIT_HEAD_PATTERN,
+    JOB_SCHEMA,
     RESULT_SCHEMA,
     REVIEW_OUTPUT_KINDS,
     REVIEWER_STAGES,
     RESUME_STAGES,
     SHA256_PATTERN,
+    STAGE_INPUT_KINDS,
     STAGE_OUTPUT,
+    STAGE_PERMISSIONS,
+    STAGE_PROFILES,
+    TRANSPORT_FAILURE_STATUSES,
     WORKFLOW_SCHEMA,
     WORKFLOW_TEMPLATE_ID,
     AcceptanceFinding,
@@ -83,6 +90,17 @@ def require_sha256(value: Any, what: str) -> str:
     if _SHA256.fullmatch(digest) is None:
         raise WorkflowProtocolError(f"{what} must be a lowercase SHA-256 hex digest")
     return digest
+
+
+def sha256_file_if_exists(path: str) -> str:
+    file_path = Path(path)
+    if not file_path.is_file():
+        raise WorkflowProtocolError(f"artifact path does not exist: {path}")
+    digest = hashlib.sha256()
+    with file_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def parse_status(value: Any) -> WorkflowStatus:
@@ -196,7 +214,14 @@ def bind_result(expectation: JobExpectation, result: Any) -> None:
     _match(expectation.stage, data.get("stage"), "stage")
     _match(expectation.idempotency_key, data.get("idempotencyKey"), "idempotencyKey")
     _match(expectation.job_sha256, data.get("jobSha256"), "jobSha256")
-    _match(expectation.session_id, data.get("sessionId"), "sessionId")
+    actual_session = data.get("sessionId")
+    if expectation.session_id is not None:
+        if actual_session != expectation.session_id:
+            raise WorkflowProtocolError(
+                f"result sessionId {actual_session!r} does not match expectation {expectation.session_id!r}"
+            )
+    elif actual_session is not None:
+        _require_str(actual_session, "sessionId")
 
 
 def _match(expected: Any, actual: Any, field: str) -> None:
@@ -317,3 +342,140 @@ def _parse_finding(value: Any) -> AcceptanceFinding:
         problem=_require_str(data.get("problem"), "finding.problem"),
         details=dict(data),
     )
+
+
+def canonical_json(payload: Any) -> str:
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+
+def digest_canonical(payload: Any) -> str:
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def harness_canonical_json(payload: Any) -> str:
+    """Match coding-agent-harness `canonicalJson`: pretty-printed JSON plus newline."""
+    return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+
+
+def job_document_sha256(job: Mapping[str, Any]) -> str:
+    return hashlib.sha256(harness_canonical_json(job).encode("utf-8")).hexdigest()
+
+
+def result_digest(result: Mapping[str, Any]) -> str:
+    return digest_canonical(result)
+
+
+def review_verdict_from_result(result: Mapping[str, Any]) -> str | None:
+    output = result.get("structuredOutput")
+    if not isinstance(output, Mapping):
+        return None
+    payload = output.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    verdict = payload.get("verdict")
+    if verdict is None:
+        return None
+    return _require_str(verdict, "review.verdict")
+
+
+def checks_passed(result_or_checks: Any) -> bool:
+    if isinstance(result_or_checks, Mapping) and "checks" in result_or_checks:
+        checks = result_or_checks.get("checks")
+    else:
+        checks = result_or_checks
+    if checks is None:
+        checks = []
+    if not isinstance(checks, Sequence) or isinstance(checks, (str, bytes)):
+        raise WorkflowProtocolError("result.checks must be a list")
+    return all(isinstance(item, Mapping) and item.get("status") == "passed" for item in checks)
+
+
+def expectation_from_job(job: Mapping[str, Any], *, job_sha256: str | None = None) -> JobExpectation:
+    data = _require_mapping(job, "job")
+    stage = _require_str(data.get("stage"), "stage")
+    if stage not in STAGE_OUTPUT:
+        raise WorkflowProtocolError(f"unknown job stage {stage!r}")
+    kind, schema = STAGE_OUTPUT[stage]
+    agent = _require_mapping(data.get("agent"), "agent")
+    digest = job_sha256 or job_document_sha256(data)
+    return parse_job_expectation(
+        {
+            "jobId": data.get("jobId"),
+            "taskId": data.get("taskId"),
+            "stage": stage,
+            "idempotencyKey": data.get("idempotencyKey"),
+            "jobSha256": digest,
+            "sessionId": agent.get("sessionId"),
+            "outputKind": kind,
+            "outputSchema": schema,
+        }
+    )
+
+
+def validate_job_document(job: Mapping[str, Any]) -> Mapping[str, Any]:
+    data = _require_mapping(job, "job")
+    schema = _require_str(data.get("schema"), "schema")
+    if schema != JOB_SCHEMA:
+        raise WorkflowProtocolError(f"unknown job schema {schema!r}")
+    stage = _require_str(data.get("stage"), "stage")
+    if stage not in STAGE_OUTPUT:
+        raise WorkflowProtocolError(f"unknown job stage {stage!r}")
+    _require_str(data.get("jobId"), "jobId")
+    _require_str(data.get("idempotencyKey"), "idempotencyKey")
+    _require_str(data.get("taskId"), "taskId")
+    _require_int(data.get("attempt"), "attempt", minimum=1)
+    workspace = _require_mapping(data.get("workspace"), "workspace")
+    require_absolute_path(workspace.get("repoRoot"), "workspace.repoRoot")
+    _require_str(workspace.get("branch"), "workspace.branch")
+    head = _require_str(workspace.get("expectedHead"), "workspace.expectedHead")
+    if _GIT_HEAD.fullmatch(head) is None:
+        raise WorkflowProtocolError("workspace.expectedHead must be a 40- or 64-char git SHA")
+    _require_bool(workspace.get("requireCleanAtStart"), "workspace.requireCleanAtStart")
+    agent = _require_mapping(data.get("agent"), "agent")
+    if agent.get("adapter") != "pi":
+        raise WorkflowProtocolError("agent.adapter must be pi")
+    profile = _require_str(agent.get("profile"), "agent.profile")
+    if profile != STAGE_PROFILES[stage]:
+        raise WorkflowProtocolError(f"stage {stage} requires profile {STAGE_PROFILES[stage]}")
+    _require_str(agent.get("model"), "agent.model")
+    _require_str(agent.get("thinking"), "agent.thinking")
+    session_id = agent.get("sessionId")
+    if session_id is not None:
+        session_id = _require_str(session_id, "agent.sessionId")
+    if stage in REVIEWER_STAGES and session_id is not None:
+        raise WorkflowProtocolError(f"{stage} reviewer jobs must use a fresh session")
+    permissions = _require_mapping(data.get("permissions"), "permissions")
+    mode = _require_str(permissions.get("mode"), "permissions.mode")
+    if mode != STAGE_PERMISSIONS[stage]:
+        raise WorkflowProtocolError(f"stage {stage} requires permissions.mode {STAGE_PERMISSIONS[stage]}")
+    expected = _require_mapping(data.get("expectedOutput"), "expectedOutput")
+    kind, schema_name = STAGE_OUTPUT[stage]
+    if expected.get("kind") != kind or expected.get("schema") != schema_name:
+        raise WorkflowProtocolError(f"stage {stage} requires output {kind}/{schema_name}")
+    inputs = data.get("inputs")
+    if not isinstance(inputs, list):
+        raise WorkflowProtocolError("job.inputs must be a list")
+    required = STAGE_INPUT_KINDS[stage]
+    kinds = tuple(item.get("kind") if isinstance(item, Mapping) else None for item in inputs)
+    if kinds != required:
+        raise WorkflowProtocolError(f"stage {stage} requires inputs {required}")
+    for index, item in enumerate(inputs):
+        entry = _require_mapping(item, f"inputs[{index}]")
+        require_absolute_path(entry.get("path"), f"inputs[{index}].path")
+        require_sha256(entry.get("sha256"), f"inputs[{index}].sha256")
+    verification = data.get("verification")
+    if not isinstance(verification, list):
+        raise WorkflowProtocolError("job.verification must be a list")
+    if verification and stage != "implement":
+        raise WorkflowProtocolError("verification is only allowed on implement jobs")
+    limits = _require_mapping(data.get("limits"), "limits")
+    if "timeoutSeconds" not in limits:
+        raise WorkflowProtocolError("limits.timeoutSeconds is required")
+    timeout = limits.get("timeoutSeconds")
+    if timeout is not None:
+        _require_int(timeout, "limits.timeoutSeconds", minimum=1)
+    return data
+
+
+def is_transport_failure(status: Any) -> bool:
+    return status in TRANSPORT_FAILURE_STATUSES

@@ -24,6 +24,26 @@ STAGE_OUTPUT = {
 REVIEWER_STAGES = frozenset({"plan_review", "execute_review"})
 RESUME_STAGES = frozenset({"plan", "implement"})
 REVIEW_OUTPUT_KINDS = frozenset({"plan-review", "execute-review"})
+TRANSPORT_FAILURE_STATUSES = frozenset({"failed", "timed_out", "aborted", "unavailable"})
+TERMINAL_JOB_STATUSES = frozenset({"completed", *TRANSPORT_FAILURE_STATUSES})
+STAGE_PROFILES = {
+    "plan": "planner",
+    "plan_review": "plan-reviewer",
+    "implement": "implementer",
+    "execute_review": "execute-reviewer",
+}
+STAGE_PERMISSIONS = {
+    "plan": "read-only",
+    "plan_review": "read-only",
+    "implement": "write",
+    "execute_review": "read-only",
+}
+STAGE_INPUT_KINDS = {
+    "plan": ("requirement",),
+    "plan_review": ("requirement", "plan"),
+    "implement": ("plan",),
+    "execute_review": ("requirement", "plan", "implementation"),
+}
 
 
 class WorkflowStatus(str, Enum):
