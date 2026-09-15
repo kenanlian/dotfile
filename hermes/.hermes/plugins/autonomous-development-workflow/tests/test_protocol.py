@@ -3,32 +3,28 @@
 from __future__ import annotations
 
 import hashlib
-import sys
 import unittest
-from pathlib import Path
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-if str(PLUGIN_ROOT) not in sys.path:
-    sys.path.insert(0, str(PLUGIN_ROOT))
+from plugin_imports import import_plugin
 
-from config import load_plugin_config
-from controller.protocol import (
-    assert_allowed_transition,
-    bind_result,
-    parse_acceptance,
-    parse_artifact_ref,
-    parse_job_expectation,
-    parse_manifest,
-    validate_completed_result,
-)
-from controller.types import (
-    JOB_SCHEMA,
-    RESULT_SCHEMA,
-    WORKFLOW_SCHEMA,
-    WORKFLOW_TEMPLATE_ID,
-    WorkflowProtocolError,
-    WorkflowStatus,
-)
+_config = import_plugin("config")
+_protocol = import_plugin("controller.protocol")
+_types = import_plugin("controller.types")
+
+load_plugin_config = _config.load_plugin_config
+assert_allowed_transition = _protocol.assert_allowed_transition
+bind_result = _protocol.bind_result
+parse_acceptance = _protocol.parse_acceptance
+parse_artifact_ref = _protocol.parse_artifact_ref
+parse_job_expectation = _protocol.parse_job_expectation
+parse_manifest = _protocol.parse_manifest
+validate_completed_result = _protocol.validate_completed_result
+JOB_SCHEMA = _types.JOB_SCHEMA
+RESULT_SCHEMA = _types.RESULT_SCHEMA
+WORKFLOW_SCHEMA = _types.WORKFLOW_SCHEMA
+WORKFLOW_TEMPLATE_ID = _types.WORKFLOW_TEMPLATE_ID
+WorkflowProtocolError = _types.WorkflowProtocolError
+WorkflowStatus = _types.WorkflowStatus
 
 
 def _sha(text: str = "payload") -> str:

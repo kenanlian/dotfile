@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from controller.protocol import require_absolute_path
-from controller.types import PluginConfig, WorkflowProtocolError
+from .controller.protocol import require_absolute_path
+from .controller.types import PluginConfig, WorkflowProtocolError
 
 
 def load_plugin_config(raw: Mapping[str, Any] | None) -> PluginConfig:
