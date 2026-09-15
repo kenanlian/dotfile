@@ -66,7 +66,7 @@ Typed `error.kind` values include `invalid_job`, `idempotency_conflict`, `run_in
 
 ## Resume and recovery
 
-Planner/Implementer Jobs may set `agent.sessionId` to resume one exact Pi session. A mismatched session fails closed. Reviewer Jobs must be fresh (`sessionId: null`). If the first completed relay never called the expected submit tool, the Harness issues at most one same-session output-only recovery. Duplicate, error, or invalid payloads are not recovered.
+Planner/Implementer Jobs may set `agent.sessionId` to resume one exact Pi session. A completed resume must report that same session; a missing or different session is `session_mismatch`. Reviewer Jobs must be fresh (`sessionId: null`). If the first completed relay never called the expected submit tool, the Harness issues at most one same-session output-only recovery. Duplicate, error, or invalid payloads are not recovered. `run.lock` records `pid`, `startedAt`, `jobId`, `jobSha256`, and `outDir` so a supervisor can distinguish a live process from an orphan lock; the Harness does not delete an orphan lock and retry in place.
 
 ## Permissions
 

@@ -63,6 +63,19 @@ function classifyAdapterError(relay, job, expectedSession) {
   if (!relay) {
     return typedError("adapter_failed", "/adapter", "relay produced no result.json");
   }
+  if (expectedSession) {
+    const observedMissing = typeof relay.error === "string" && /no valid session id was observed/.test(relay.error);
+    if (observedMissing || (relay.status === "completed" && !relay.sessionId)) {
+      return typedError(
+        "session_mismatch",
+        "/agent/sessionId",
+        `completed resume missing session ${expectedSession}`,
+      );
+    }
+    if (relay.sessionId && relay.sessionId !== expectedSession) {
+      return typedError("session_mismatch", "/agent/sessionId", `session ${relay.sessionId} did not match ${expectedSession}`);
+    }
+  }
   if (relay.status === "unavailable") {
     return typedError("adapter_unavailable", "/adapter", relay.error || "pi unavailable");
   }
@@ -71,9 +84,6 @@ function classifyAdapterError(relay, job, expectedSession) {
   }
   if (relay.status === "aborted") {
     return typedError("aborted", "/adapter", relay.error || "relay aborted");
-  }
-  if (expectedSession && relay.sessionId && relay.sessionId !== expectedSession) {
-    return typedError("session_mismatch", "/agent/sessionId", `session ${relay.sessionId} did not match ${expectedSession}`);
   }
   if (relay.status === "completed" && relay.error && /agent_settled was never observed/.test(relay.error)) {
     return typedError("agent_not_settled", "/adapter", relay.error);
@@ -259,8 +269,18 @@ export async function runPiAdapter(context) {
   }
 
   const status = mapRelayStatus(relay);
-  const sessionError = expectedSession && relay?.sessionId && relay.sessionId !== expectedSession
-    ? typedError("session_mismatch", "/agent/sessionId", `session ${relay.sessionId} did not match ${expectedSession}`)
+  const sessionError = expectedSession && (
+    (relay?.status === "completed" && !relay?.sessionId)
+    || (typeof relay?.error === "string" && /no valid session id was observed/.test(relay.error))
+    || (relay?.sessionId && relay.sessionId !== expectedSession)
+  )
+    ? typedError(
+      "session_mismatch",
+      "/agent/sessionId",
+      relay?.sessionId && relay.sessionId !== expectedSession
+        ? `session ${relay.sessionId} did not match ${expectedSession}`
+        : `completed resume missing session ${expectedSession}`,
+    )
     : null;
   const transportError = sessionError || classifyAdapterError(relay, job, expectedSession);
   let protocolError = null;

@@ -27,7 +27,7 @@ Harness transport uses `--structured-output-tool`, `--structured-output-extensio
 
 ## C7 Exact session and bounded recovery
 
-Fresh Jobs omit `--session`. Non-null `sessionId` is passed verbatim and must match the stream. Missing expected-tool output may recover once on the same session with only the submit tool. Duplicate/error/invalid output is not recovered. Failed/timed-out/aborted/unavailable transport is not retried by the Harness.
+Fresh Jobs omit `--session`. Non-null `sessionId` is passed verbatim and a completed relay must explicitly report the same session; a missing or different session is `session_mismatch`. Missing expected-tool output may recover once on the same session with only the submit tool. Duplicate/error/invalid output is not recovered. Failed/timed-out/aborted/unavailable transport is not retried by the Harness.
 
 ## C8 Workspace and permission guard
 
@@ -43,7 +43,7 @@ Only after a valid `submit_implementation`. Sequential `spawn(argv, {shell:false
 
 ## C11 Idempotency / out-dir ownership
 
-The caller maps `idempotencyKey` to a stable out-dir. First run `O_EXCL`s `run.lock` and stores canonical `job.json` + `job.sha256`. Matching hash + valid Result replays without starting Pi. Different hash is `idempotency_conflict`. Lock without Result is `run_in_progress` (exit 75). Successful publish deletes the lock.
+The caller maps `idempotencyKey` to a stable out-dir. First run `O_EXCL`s `run.lock` (`pid`, `startedAt`, `jobId`, `jobSha256`, `outDir`) and stores canonical `job.json` + `job.sha256`. Matching hash + valid Result replays without starting Pi. Different hash is `idempotency_conflict`. Lock without Result is `run_in_progress` (exit 75) and is not silently deleted. Successful publish deletes the lock.
 
 ## C12 No prose fallback
 

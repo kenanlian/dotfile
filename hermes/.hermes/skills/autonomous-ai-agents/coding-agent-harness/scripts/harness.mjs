@@ -337,7 +337,13 @@ async function main() {
   }
 
   try {
-    exclusiveWriteFile(lockPath, canonicalJson({ pid: process.pid, startedAt }));
+    exclusiveWriteFile(lockPath, canonicalJson({
+      pid: process.pid,
+      startedAt,
+      jobId: parsedJob && typeof parsedJob === "object" ? parsedJob.jobId ?? null : null,
+      jobSha256: jobHash,
+      outDir: opts.outDir,
+    }));
   } catch (error) {
     if (error.code === "EEXIST") {
       process.stderr.write("harness: run_in_progress\n");

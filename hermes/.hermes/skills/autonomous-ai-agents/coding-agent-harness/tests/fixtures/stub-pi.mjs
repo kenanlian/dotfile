@@ -34,7 +34,9 @@ if (process.env.PI_STUB_EXIT) {
 }
 
 const sessionId = process.env.PI_STUB_SESSION ?? "stub-session-1";
-if (process.env.PI_STUB_SESSION_MISMATCH) {
+if (process.env.PI_STUB_NO_SESSION) {
+  /* exact-resume tests omit the session event so the relay cannot infer identity */
+} else if (process.env.PI_STUB_SESSION_MISMATCH) {
   process.stdout.write(`${JSON.stringify({ type: "session", id: process.env.PI_STUB_SESSION_MISMATCH })}\n`);
 } else {
   process.stdout.write(`${JSON.stringify({ type: "session", id: sessionId })}\n`);

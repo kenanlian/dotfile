@@ -504,6 +504,15 @@ test("V9.5 Exact resume passes session through and rejects mismatch", () => {
     assert.notEqual(bad.spawned.status, 0);
     assert.equal(bad.result.status, "failed");
     assert.equal(bad.result.error.kind, "session_mismatch");
+
+    const { jobPath: missingPath } = materialize("plan.job.template.json", world, { sessionId: "sess-exact" });
+    const missing = runHarness(world, missingPath, join(world.outRoot, "resume-missing"), {
+      PI_STUB_NO_SESSION: "1",
+      PI_STUB_EVENTS: JSON.stringify([toolEnd("submit_plan", planPayload())]),
+    });
+    assert.notEqual(missing.spawned.status, 0);
+    assert.equal(missing.result.status, "failed");
+    assert.equal(missing.result.error.kind, "session_mismatch");
   } finally {
     world.cleanup();
   }
@@ -606,6 +615,11 @@ test("V9.7 aborted maps SIGINT to status aborted and exit 130", async () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.equal(existsSync(lockPath), true, "run.lock should exist before abort");
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    assert.equal(typeof lock.pid, "number");
+    assert.equal(lock.jobId, "job_plan");
+    assert.match(lock.jobSha256, /^[a-f0-9]{64}$/);
+    assert.equal(lock.outDir, outDir);
     child.kill("SIGINT");
     const code = await new Promise((resolve) => child.once("exit", (status) => resolve(status)));
     const result = JSON.parse(readFileSync(join(outDir, "result.json"), "utf8"));
