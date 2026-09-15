@@ -1,0 +1,138 @@
+# Operations
+
+Operator procedures for the external autonomous development workflow plugin.
+Commands assume the plugin is already on Hermes' discovery path.
+
+**Not done in this milestone:** creating or cloning Hermes Profiles, running
+`hermes profile` / `hermes plugins enable` / `hermes tools enable|disable`,
+or a real Dispatcher Worker pass against Pi/models. A coordinator will
+perform those steps separately. The procedures below are the intended
+operations once that wiring exists.
+
+## Enqueue
+
+From the **control** profile, create a blocked card, bind a Manifest, copy the
+requirement into an immutable Artifact, and publish only after Kanban
+read-back:
+
+```bash
+hermes -p <control-profile> autodev enqueue \
+  --board <board> \
+  --repo /absolute/git/root \
+  --title "Card title" \
+  --requirement /absolute/requirement.md \
+  --profile autodev
+```
+
+Rules:
+
+- `--repo` must be the git root, on `main_branch`, with a clean worktree.
+- The card is created `blocked`, then unblocked to `ready` (or left `todo` if
+  a same-board predecessor is still active).
+- Replay the same `--idempotency-key` to reuse a published card.
+- The plugin does not start a Worker. Hermes Dispatcher claims `ready` cards.
+
+## Status
+
+```bash
+hermes -p <control-profile> autodev status --board <board> <task-id>
+```
+
+Prints the Manifest checkpoint (`workflowStatus`, `revision`, `nextAction`,
+`inProgress`, `pendingLifecycle`) plus the current Kanban status. It does not
+advance the workflow or dispatch lifecycle tools.
+
+Worker-side equivalent: `autodev_workflow_status` inside a claimed run.
+
+## Human unblock and abandon
+
+### Unblock a card waiting on a person
+
+`needs_human` and external `blocked` verdicts call native `kanban_block`.
+After the operator answers the question or clears the blocker:
+
+```bash
+hermes kanban --board <board> unblock <task-id>
+```
+
+Then let Dispatcher claim the card again. The Worker should call
+`autodev_workflow_status` / `autodev_workflow_advance` (and typed acceptance
+if the Manifest is still `product_acceptance`). Do not `kanban complete` by
+hand on a Manifest-bound card.
+
+### Abandon
+
+Abandon is **operator-only**. It is not registered as a model tool.
+
+```bash
+hermes -p <control-profile> autodev abandon \
+  --board <board> \
+  <task-id> \
+  --reason "why this card is stopping"
+```
+
+Effects:
+
+- Refuses if a Harness process is still live.
+- Records `abandonReason` on the Manifest and moves workflow status to
+  `blocked`.
+- Releases the repo lease (`reason=abandon`).
+- Does not archive the Kanban card and does not rewrite serial successor
+  edges. Unblock or retarget those cards separately if needed.
+
+## Hermes update compatibility check
+
+After upgrading Hermes, before enabling the plugin on a real board:
+
+```bash
+hermes plugins doctor \
+  /Users/kenan/Secret-Projects/dotfile/hermes/.hermes/plugins/autonomous-development-workflow \
+  --ci
+hermes -p autodev plugins doctor autonomous-development-workflow --ci
+hermes -p autodev plugins compat autonomous-development-workflow
+hermes -p autodev plugins list
+```
+
+The plugin must keep using the documented plugin API only (register tools,
+hooks, CLI, skills, `ctx.get_config`, `ctx.dispatch_tool`). Fail the upgrade
+if doctor/compat report a break, or if discovery starts importing Hermes
+private modules.
+
+## Harness failure recovery
+
+`doctor` is read-only. `reconcile` only applies recoveries that are already
+idempotent: a pending lifecycle whose Kanban read-back already matches, or
+consumption of an identity-matched terminal Result without launching a new
+Harness.
+
+```bash
+hermes -p <control-profile> autodev doctor --board <board> <task-id>
+hermes -p <control-profile> autodev reconcile --board <board> <task-id>
+```
+
+Typical findings:
+
+| Code | Meaning | What to do |
+| --- | --- | --- |
+| `orphan_lock` | `run.lock` exists, process identity does not | Do not delete the lock to force a rerun. Confirm the process is dead, then use an explicit recover/retry path or abandon. |
+| `artifact_hash` | Artifact bytes drifted from the ledger | Stop. Restore or reject the candidate; do not advance. |
+| `pending_lifecycle` | Native Kanban tool not applied yet | Reconcile from the bound Worker run, or finish that run so `pendingLifecycle.runId` matches. |
+| `lane_mismatch` | Manifest vs Kanban lane | Inspect with `status`; do not invent a second task state. |
+| `missing_manifest` | Ordinary Kanban card | Guard is a no-op; this plugin does not own the card. |
+
+Transport failures create a new Job id and out-dir at the same business
+attempt (`transport_retry + 1`) and do not increment plan/implement rework
+counts. Result-before-checkpoint must not relaunch the same Job. A late
+Result from an old run must not move a new run.
+
+## Unsupported in this MVP
+
+- No git `commit`, `push`, or release/publish.
+- No Dashboard or extra UI. Kanban + plugin CLI are the operator surfaces.
+- No parallel cards on the same repo. Same-board successors stay `todo`
+  until the predecessor leaves the active serial chain; the repo lease is
+  held by the working card.
+- No second Dispatcher, no forged Worker env, no parsing Coding Agent
+  `final.txt` as protocol.
+- No real Profile wiring or live Dispatcher E2E in this milestone (see the
+  README).
