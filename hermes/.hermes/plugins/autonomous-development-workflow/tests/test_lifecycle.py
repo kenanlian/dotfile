@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 from plugin_imports import import_plugin
@@ -78,6 +79,116 @@ def _manifest(**overrides):
     }
     data.update(overrides)
     return data
+
+
+def _plant_completed_plan(store: WorkflowStore, state_root: Path, *, consumed: bool) -> dict[str, Any]:
+    requirement = state_root / "requirement.json"
+    requirement.write_text('{"schema":"autonomous-development.requirement.v1"}', encoding="utf-8")
+    store.put_manifest(
+        _manifest(
+            workflowStatus="planning",
+            revision=1,
+            activeJobId=None,
+            lastConsumedJobId=None,
+            pendingLifecycle=None,
+        )
+    )
+    digest = _sha(requirement.read_text(encoding="utf-8"))
+    store.register_artifact(
+        board="project-board",
+        task_id="t_abc",
+        job_id="intake:t_abc",
+        kind="requirement",
+        version=1,
+        path=str(requirement),
+        sha256=digest,
+    )
+    job = build_job(
+        board="project-board",
+        task_id="t_abc",
+        stage="plan",
+        business_attempt=1,
+        transport_retry=0,
+        workspace={
+            "repoRoot": "/abs/repo",
+            "branch": "main",
+            "expectedHead": "a" * 40,
+            "requireCleanAtStart": True,
+        },
+        agents=AGENTS,
+        inputs=({"kind": "requirement", "path": str(requirement), "sha256": digest},),
+        session_id=None,
+    )
+    run_dir = state_root / "boards" / "project-board" / "t_abc" / "jobs" / job["jobId"]
+    written = write_job_document(job, run_dir)
+    now = 1_000_000 if consumed else None
+    store.put_job(
+        {
+            "job_id": job["jobId"],
+            "board": "project-board",
+            "task_id": "t_abc",
+            "stage": "plan",
+            "business_attempt": 1,
+            "transport_retry": 0,
+            "idempotency_key": job["idempotencyKey"],
+            "job_path": written["job_path"],
+            "run_dir": written["run_dir"],
+            "job_sha256": written["job_sha256"],
+            "harness_pid": None,
+            "process_identity": None,
+            "status": "completed",
+            "result_path": str(run_dir / "result.json"),
+            "started_at": now,
+            "finished_at": now,
+            "consumed_at": now,
+        }
+    )
+    plan_path = state_root / "plan.json"
+    plan_path.write_text('{"schema":"plan.v1","title":"ok"}', encoding="utf-8")
+    result = {
+        "schema": RESULT_SCHEMA,
+        "jobId": job["jobId"],
+        "idempotencyKey": job["idempotencyKey"],
+        "jobSha256": written["job_sha256"],
+        "taskId": "t_abc",
+        "stage": "plan",
+        "status": "completed",
+        "adapter": "pi",
+        "sessionId": "sess_plan",
+        "startedAt": "2026-09-14T00:00:00Z",
+        "finishedAt": "2026-09-14T00:01:00Z",
+        "structuredOutput": {"kind": "plan", "payload": {"schema": "plan.v1", "title": "ok"}},
+        "artifacts": [
+            {
+                "kind": "plan",
+                "path": str(plan_path),
+                "sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+                "schema": ARTIFACT_SCHEMA,
+                "canonical": True,
+            }
+        ],
+        "touchedFiles": [],
+        "checks": [],
+        "usage": {},
+        "workspace": {
+            "repoRoot": "/abs/repo",
+            "branchBefore": "main",
+            "branchAfter": "main",
+            "headBefore": "a" * 40,
+            "headAfter": "a" * 40,
+            "snapshotBeforeSha256": "c" * 64,
+            "snapshotAfterSha256": "c" * 64,
+        },
+        "error": None,
+        "paths": {
+            "events": "/abs/events.jsonl",
+            "stderr": "/abs/stderr.log",
+            "final": "/abs/final.txt",
+            "adapterRuns": [],
+        },
+    }
+    (run_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+    return {"job": job, "written": written, "requirement": requirement}
 
 
 class FakeKanban:
@@ -321,6 +432,68 @@ class LifecycleSagaTests(unittest.TestCase):
         self.assertEqual(outcome["workflowStatus"], "plan_reviewing")
         loaded = self.store.get_job(job["jobId"])
         self.assertIsNotNone(loaded["consumed_at"])
+
+    def test_protocol_failure_blocks_then_reconsumes_without_harness_after_unblock(self) -> None:
+        planted = _plant_completed_plan(self.store, self.state_root, consumed=False)
+        job = planted["job"]
+        written = planted["written"]
+        current = self.store.get_manifest("project-board", "t_abc")
+        current["activeJobId"] = job["jobId"]
+        current["revision"] = 2
+        self.store.cas_update_manifest(
+            "project-board", "t_abc", expected_revision=1, manifest=current
+        )
+        result_path = Path(written["run_dir"]) / "result.json"
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        payload["artifacts"][0]["schema"] = "plan.v1"
+        result_path.write_text(json.dumps(payload), encoding="utf-8")
+        popen = Mock(side_effect=AssertionError("must not start harness"))
+        controller = WorkflowController(
+            store=self.store,
+            config=_config(self.state_root),
+            dispatch_tool=self.kanban,
+            agents=AGENTS,
+            popen=popen,
+        )
+        blocked = controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        self.assertEqual(blocked["workflowStatus"], "blocked")
+        loaded = self.store.get_manifest("project-board", "t_abc")
+        self.assertEqual(loaded["resumeStatus"], "planning")
+        self.assertEqual(self.kanban.status, "blocked")
+        still = controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        self.assertEqual(still["nextAction"], "noop")
+        popen.assert_not_called()
+        self.kanban.status = "running"
+        resumed = controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        popen.assert_not_called()
+        self.assertEqual(resumed["workflowStatus"], "blocked")
+        job_row = self.store.get_job(job["jobId"])
+        self.assertIsNotNone(job_row["consumed_at"])
+
+    def test_legacy_blocked_without_resume_status_reconsumes_completed_job(self) -> None:
+        planted = _plant_completed_plan(self.store, self.state_root, consumed=True)
+        job = planted["job"]
+        current = self.store.get_manifest("project-board", "t_abc")
+        current["activeJobId"] = job["jobId"]
+        current["workflowStatus"] = "blocked"
+        current["resumeStatus"] = None
+        current["lastConsumedJobId"] = job["jobId"]
+        current["revision"] = 2
+        self.store.cas_update_manifest(
+            "project-board", "t_abc", expected_revision=1, manifest=current
+        )
+        self.kanban.status = "running"
+        popen = Mock(side_effect=AssertionError("must not start harness"))
+        controller = WorkflowController(
+            store=self.store,
+            config=_config(self.state_root),
+            dispatch_tool=self.kanban,
+            agents=AGENTS,
+            popen=popen,
+        )
+        outcome = controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        popen.assert_not_called()
+        self.assertEqual(outcome["workflowStatus"], "plan_reviewing")
 
     def test_apply_pending_rejects_old_run_without_dispatch(self) -> None:
         pending = make_pending_lifecycle(

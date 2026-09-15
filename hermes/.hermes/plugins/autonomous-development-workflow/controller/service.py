@@ -37,6 +37,7 @@ from .policy import (
 from .protocol import parse_manifest, require_absolute_path, result_digest, review_verdict_from_result
 from .store import WorkflowStore, canonical_dumps, sha256_file
 from .types import (
+    TRANSPORT_FAILURE_STATUSES,
     WORKFLOW_SCHEMA,
     WORKFLOW_TEMPLATE_ID,
     PluginConfig,
@@ -437,7 +438,7 @@ class WorkflowController:
         manifest = self._require_manifest(board, task_id)
         shown = show_task(self.dispatch_tool, task_id=task_id, board=board)
         self._validate_bindings(manifest, shown, task_id=task_id, board=board, run_id=run_id)
-        snapshot = self._snapshot(manifest)
+        snapshot = self._snapshot(manifest, kanban_status=kanban_status_of(shown))
         action = next_action(snapshot)
         return self._summary(manifest, action, in_progress=action.kind in {"observe_job", "create_job"})
 
@@ -462,6 +463,7 @@ class WorkflowController:
         shown = show_task(self.dispatch_tool, task_id=task_id, board=board)
         manifest = self._require_manifest(board, task_id)
         self._validate_bindings(manifest, shown, task_id=task_id, board=board, run_id=run_id)
+        kanban_status = kanban_status_of(shown)
         if manifest.get("pendingLifecycle"):
             return self._apply_pending(manifest, run_id=run_id)
         if (
@@ -475,7 +477,8 @@ class WorkflowController:
                 board, task_id, expected_revision=int(manifest["revision"]), manifest=updated
             )
             manifest = updated
-        snapshot = self._snapshot(manifest)
+        manifest = self._maybe_resume_from_blocked(manifest, kanban_status)
+        snapshot = self._snapshot(manifest, kanban_status=kanban_status)
         action = next_action(snapshot)
         if action.kind == "apply_lifecycle" and action.target_status is not None:
             return self._write_and_apply_lifecycle(manifest, action.target_status, run_id=run_id)
@@ -581,7 +584,12 @@ class WorkflowController:
                 if str(current) != str(run_id):
                     raise WorkflowProtocolError("Kanban current run does not match the Worker run")
 
-    def _snapshot(self, manifest: Mapping[str, Any]) -> PolicySnapshot:
+    def _snapshot(
+        self,
+        manifest: Mapping[str, Any],
+        *,
+        kanban_status: str | None = None,
+    ) -> PolicySnapshot:
         job_view = None
         job_id = manifest.get("activeJobId")
         result = None
@@ -593,12 +601,19 @@ class WorkflowController:
                 status = row["status"]
                 if result and result.get("status"):
                     status = str(result["status"])
+                consumed = row.get("consumed_at") is not None
+                if (
+                    consumed
+                    and str(job_id) == str(manifest.get("activeJobId") or "")
+                    and status not in TRANSPORT_FAILURE_STATUSES
+                ):
+                    consumed = False
                 job_view = ActiveJobView(
                     job_id=str(job_id),
                     stage=row["stage"],
                     status=status,
                     result=result,
-                    consumed=row.get("consumed_at") is not None,
+                    consumed=consumed,
                     result_sha256=result_digest(result) if result else None,
                     business_attempt=int(row["business_attempt"]),
                     transport_retry=int(row["transport_retry"]),
@@ -619,7 +634,36 @@ class WorkflowController:
             implement_checks=checks,
             review_verdict=verdict,
             last_consumed_result_sha256=last_hash,
+            kanban_status=kanban_status,
         )
+
+    def _maybe_resume_from_blocked(
+        self, manifest: dict[str, Any], kanban_status: str | None
+    ) -> dict[str, Any]:
+        if manifest.get("workflowStatus") != WorkflowStatus.BLOCKED.value:
+            return manifest
+        if not kanban_status or kanban_status == WorkflowStatus.BLOCKED.value:
+            return manifest
+        resume = manifest.get("resumeStatus")
+        if not isinstance(resume, str) or not resume.strip():
+            return manifest
+        try:
+            target = WorkflowStatus(resume)
+        except ValueError:
+            return manifest
+        if target in {WorkflowStatus.BLOCKED, WorkflowStatus.COMPLETED}:
+            return manifest
+        updated = dict(manifest)
+        updated["revision"] = int(manifest["revision"]) + 1
+        updated["workflowStatus"] = target.value
+        updated["resumeStatus"] = None
+        self.store.cas_update_manifest(
+            manifest["board"],
+            manifest["taskId"],
+            expected_revision=int(manifest["revision"]),
+            manifest=updated,
+        )
+        return updated
 
     def _create_or_reuse_job(self, manifest: dict[str, Any], action: WorkflowAction) -> dict[str, Any]:
         stage = action.stage
@@ -832,9 +876,12 @@ class WorkflowController:
         job_doc = json.loads(Path(row["job_path"]).read_text(encoding="utf-8"))
         previous = None
         if row.get("consumed_at") is not None:
-            previous = result_digest(result)
+            result_status = str(result.get("status") or "")
+            if result_status in TRANSPORT_FAILURE_STATUSES or str(manifest.get("activeJobId")) != str(job_id):
+                previous = result_digest(result)
         outcome = consume_result(job_doc, result, previously_consumed_sha256=previous)
         board, task_id = manifest["board"], manifest["taskId"]
+        prior_status = str(manifest.get("workflowStatus") or "")
         updated = dict(manifest)
         updated["revision"] = int(manifest["revision"]) + 1
         updated["lastConsumedJobId"] = job_id
@@ -894,6 +941,9 @@ class WorkflowController:
                 workflow_revision=updated["revision"],
                 args={"reason": outcome.reason or "protocol failure"},
             )
+        if updated.get("workflowStatus") == WorkflowStatus.BLOCKED.value:
+            if prior_status not in {WorkflowStatus.BLOCKED.value, WorkflowStatus.COMPLETED.value, ""}:
+                updated["resumeStatus"] = prior_status
         self.store.checkpoint(
             board=board,
             task_id=task_id,
@@ -952,10 +1002,17 @@ class WorkflowController:
             workflow_revision=int(manifest["revision"]) + 1,
             args=args,
         )
+        previous = str(manifest.get("workflowStatus") or "")
         updated = dict(manifest)
         updated["revision"] = int(manifest["revision"]) + 1
         updated["workflowStatus"] = target.value
         updated["pendingLifecycle"] = pending
+        if target is WorkflowStatus.BLOCKED and previous not in {
+            WorkflowStatus.BLOCKED.value,
+            WorkflowStatus.COMPLETED.value,
+            "",
+        }:
+            updated["resumeStatus"] = previous
         self.store.cas_update_manifest(
             manifest["board"],
             manifest["taskId"],
@@ -1053,7 +1110,9 @@ class WorkflowController:
                 "reconciled": False,
                 "reason": "pendingLifecycle requires the bound Worker run",
             }
-        snapshot = self._snapshot(manifest)
+        kanban_status = kanban_status_of(shown)
+        manifest = self._maybe_resume_from_blocked(manifest, kanban_status)
+        snapshot = self._snapshot(manifest, kanban_status=kanban_status)
         action = next_action(snapshot)
         if action.kind == "consume_job":
             if not run_id:

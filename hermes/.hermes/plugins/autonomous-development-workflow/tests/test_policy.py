@@ -65,6 +65,7 @@ def _snapshot(**overrides) -> PolicySnapshot:
         implementer_session_id=None,
         resume_status=None,
         implement_checks=None,
+        kanban_status=None,
     )
     data.update(overrides)
     return PolicySnapshot(**data)
@@ -398,6 +399,53 @@ class NextActionTests(unittest.TestCase):
     def test_blocked_and_completed_are_noop(self) -> None:
         self.assertEqual(next_action(_snapshot(status=WorkflowStatus.BLOCKED)).kind, "noop")
         self.assertEqual(next_action(_snapshot(status=WorkflowStatus.COMPLETED)).kind, "noop")
+
+    def test_blocked_stays_noop_while_kanban_is_blocked(self) -> None:
+        action = next_action(
+            _snapshot(
+                status=WorkflowStatus.BLOCKED,
+                resume_status="product_acceptance",
+                kanban_status="blocked",
+            )
+        )
+        self.assertEqual(action.kind, "noop")
+
+    def test_blocked_resumes_recorded_status_after_kanban_unblock(self) -> None:
+        action = next_action(
+            _snapshot(
+                status=WorkflowStatus.BLOCKED,
+                resume_status="product_acceptance",
+                kanban_status="running",
+            )
+        )
+        self.assertEqual(action.kind, "await_acceptance")
+
+    def test_blocked_without_resume_status_consumes_completed_active_job(self) -> None:
+        action = next_action(
+            _snapshot(
+                status=WorkflowStatus.BLOCKED,
+                resume_status=None,
+                kanban_status="todo",
+                active_job=_job(
+                    status="completed",
+                    consumed=True,
+                    result={"status": "completed"},
+                    result_sha256="a" * 64,
+                ),
+            )
+        )
+        self.assertEqual(action.kind, "consume_job")
+        self.assertEqual(action.stage, "plan")
+
+    def test_blocked_without_resume_status_is_noop_when_no_completed_job(self) -> None:
+        action = next_action(
+            _snapshot(
+                status=WorkflowStatus.BLOCKED,
+                resume_status=None,
+                kanban_status="ready",
+            )
+        )
+        self.assertEqual(action.kind, "noop")
 
     def test_review_blocked_verdict_blocks(self) -> None:
         action = next_action(

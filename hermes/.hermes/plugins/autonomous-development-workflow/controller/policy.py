@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Mapping
 
 from .protocol import checks_passed
@@ -64,6 +64,7 @@ class PolicySnapshot:
     resume_status: str | None = None
     implement_checks: tuple[Mapping[str, Any], ...] | None = None
     review_verdict: str | None = None
+    kanban_status: str | None = None
 
 
 def snapshot_from_manifest(
@@ -73,6 +74,7 @@ def snapshot_from_manifest(
     implement_checks: tuple[Mapping[str, Any], ...] | None = None,
     review_verdict: str | None = None,
     last_consumed_result_sha256: str | None = None,
+    kanban_status: str | None = None,
 ) -> PolicySnapshot:
     status = manifest.get("workflowStatus")
     parsed = status if isinstance(status, WorkflowStatus) else WorkflowStatus(str(status))
@@ -93,6 +95,7 @@ def snapshot_from_manifest(
         resume_status=manifest.get("resumeStatus"),
         implement_checks=implement_checks,
         review_verdict=review_verdict,
+        kanban_status=kanban_status,
     )
 
 
@@ -107,6 +110,9 @@ def next_action(snapshot: PolicySnapshot) -> WorkflowAction:
             target_status=snapshot.status,
             reason="pending_lifecycle",
         )
+
+    if snapshot.status is WorkflowStatus.BLOCKED:
+        return _action_for_blocked(snapshot)
 
     job = snapshot.active_job
     if job is not None and not job.consumed:
@@ -230,8 +236,36 @@ def _action_for_status(snapshot: PolicySnapshot) -> WorkflowAction:
                 kind="block", target_status=WorkflowStatus.BLOCKED, reason="acceptance_blocked"
             )
         return WorkflowAction(kind="await_acceptance")
-    if status in {WorkflowStatus.BLOCKED, WorkflowStatus.COMPLETED}:
+    if status is WorkflowStatus.COMPLETED:
         return WorkflowAction(kind="noop")
+    return WorkflowAction(kind="noop")
+
+
+def _kanban_has_left_blocked(kanban_status: str | None) -> bool:
+    return bool(kanban_status) and kanban_status != WorkflowStatus.BLOCKED.value
+
+
+def _resume_workflow_status(raw: str | None) -> WorkflowStatus | None:
+    if not raw:
+        return None
+    try:
+        status = raw if isinstance(raw, WorkflowStatus) else WorkflowStatus(str(raw))
+    except ValueError:
+        return None
+    if status in {WorkflowStatus.BLOCKED, WorkflowStatus.COMPLETED}:
+        return None
+    return status
+
+
+def _action_for_blocked(snapshot: PolicySnapshot) -> WorkflowAction:
+    if not _kanban_has_left_blocked(snapshot.kanban_status):
+        return WorkflowAction(kind="noop")
+    resumed = _resume_workflow_status(snapshot.resume_status)
+    if resumed is not None:
+        return next_action(replace(snapshot, status=resumed, resume_status=None))
+    job = snapshot.active_job
+    if job is not None and job.status == "completed":
+        return WorkflowAction(kind="consume_job", stage=job.stage)
     return WorkflowAction(kind="noop")
 
 

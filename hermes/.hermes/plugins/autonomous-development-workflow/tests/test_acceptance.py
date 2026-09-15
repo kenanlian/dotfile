@@ -393,6 +393,36 @@ class TypedAcceptanceTests(AcceptanceHelpers, unittest.TestCase):
         self.assertEqual(len(blocks), 1)
         self.assertEqual(blocks[0].get("kind"), "needs_input")
 
+    def test_needs_human_unblocks_to_product_acceptance_and_can_resubmit(self) -> None:
+        self._controller().submit_acceptance(
+            board="project-board",
+            task_id="t_abc",
+            run_id="9",
+            **self._submission(
+                verdict="needs_human",
+                summary="Empty-state copy is unspecified.",
+                scenarios=[],
+                question="What copy should the empty dashboard show?",
+            ),
+        )
+        self.assertEqual(self.kanban.status, "blocked")
+        still = self._controller().advance(board="project-board", task_id="t_abc", run_id="9")
+        self.assertEqual(still["workflowStatus"], "blocked")
+        self.assertEqual(still["nextAction"], "noop")
+        self.kanban.status = "running"
+        resumed = self._controller().advance(board="project-board", task_id="t_abc", run_id="9")
+        self.assertEqual(resumed["workflowStatus"], "product_acceptance")
+        self.assertEqual(resumed["nextAction"], "await_acceptance")
+        loaded = self.store.get_manifest("project-board", "t_abc")
+        self.assertIsNone(loaded["resumeStatus"])
+        passed = self._controller().submit_acceptance(
+            board="project-board",
+            task_id="t_abc",
+            run_id="9",
+            **self._submission(),
+        )
+        self.assertEqual(passed["workflowStatus"], "completed")
+
     def test_blocked_uses_typed_block(self) -> None:
         result = self._controller().submit_acceptance(
             board="project-board",
