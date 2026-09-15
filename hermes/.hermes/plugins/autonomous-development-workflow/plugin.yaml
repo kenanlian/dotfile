@@ -1,0 +1,19 @@
+name: autonomous-development-workflow
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: Durable external development workflow controller for Hermes Kanban
+provides_tools:
+  - autodev_workflow_status
+  - autodev_workflow_advance
+  - autodev_workflow_submit_acceptance
+provides_hooks:
+  - pre_tool_call
+  - pre_llm_call
+config_schema:
+  profile: {type: str, default: autodev}
+  state_root: {type: str, default: "", required: true}
+  harness_command: {type: list, default: []}
+  main_branch: {type: str, default: main}
+  poll_interval_seconds: {type: int, default: 5}
+  advance_wait_seconds: {type: int, default: 60}
