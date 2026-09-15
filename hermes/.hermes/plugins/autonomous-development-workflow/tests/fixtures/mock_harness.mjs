@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 
 const JOB_SCHEMA = "coding-agent.job.v1";
 const RESULT_SCHEMA = "coding-agent.result.v1";
+const ARTIFACT_SCHEMA = "coding-agent.artifact.v1";
 const STAGE_OUTPUT = {
   plan: { kind: "plan", schema: "plan.v1" },
   plan_review: { kind: "plan-review", schema: "plan-review.v1" },
@@ -219,7 +220,7 @@ if (status === "completed") {
     kind: output.kind,
     path: artifactPath,
     sha256: sha256File(artifactPath),
-    schema: output.schema,
+    schema: ARTIFACT_SCHEMA,
     canonical: true,
   });
   structuredOutput = { kind: output.kind, payload };

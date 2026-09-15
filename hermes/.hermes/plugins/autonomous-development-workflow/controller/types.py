@@ -11,6 +11,7 @@ WORKFLOW_TEMPLATE_ID = "autonomous-development.v1"
 WORKFLOW_SCHEMA = "autonomous-development.workflow.v1"
 JOB_SCHEMA = "coding-agent.job.v1"
 RESULT_SCHEMA = "coding-agent.result.v1"
+ARTIFACT_SCHEMA = "coding-agent.artifact.v1"
 
 SHA256_PATTERN = r"^[a-f0-9]{64}$"
 GIT_HEAD_PATTERN = r"^[a-f0-9]{40}$|^[a-f0-9]{64}$"

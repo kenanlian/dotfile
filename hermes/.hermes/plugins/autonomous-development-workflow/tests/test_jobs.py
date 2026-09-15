@@ -17,6 +17,7 @@ _types = import_plugin("controller.types")
 
 JOB_SCHEMA = _types.JOB_SCHEMA
 RESULT_SCHEMA = _types.RESULT_SCHEMA
+ARTIFACT_SCHEMA = _types.ARTIFACT_SCHEMA
 WorkflowConflict = _types.WorkflowConflict
 WorkflowProtocolError = _types.WorkflowProtocolError
 WorkflowStatus = _types.WorkflowStatus
@@ -421,7 +422,7 @@ class ConsumeResultTests(unittest.TestCase):
                     "kind": "plan",
                     "path": str(self.plan_path),
                     "sha256": self.plan_sha,
-                    "schema": "plan.v1",
+                    "schema": ARTIFACT_SCHEMA,
                     "canonical": True,
                 }
             ],
@@ -487,6 +488,24 @@ class ConsumeResultTests(unittest.TestCase):
         self.assertEqual(outcome.kind, "protocol_failure")
         self.assertIsNone(outcome.next_status)
 
+    def test_payload_schema_on_canonical_artifact_is_protocol_failure(self) -> None:
+        outcome = consume_result(
+            self.job,
+            self._result(
+                artifacts=[
+                    {
+                        "kind": "plan",
+                        "path": str(self.plan_path),
+                        "sha256": self.plan_sha,
+                        "schema": "plan.v1",
+                        "canonical": True,
+                    }
+                ]
+            ),
+        )
+        self.assertEqual(outcome.kind, "protocol_failure")
+        self.assertIsNone(outcome.next_status)
+
     def test_transport_failure_does_not_advance_stage(self) -> None:
         outcome = consume_result(
             self.job,
@@ -537,7 +556,7 @@ class ConsumeResultTests(unittest.TestCase):
                     "kind": "plan-review",
                     "path": str(artifact_path),
                     "sha256": hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
-                    "schema": "plan-review.v1",
+                    "schema": ARTIFACT_SCHEMA,
                     "canonical": True,
                 }
             ],
@@ -611,7 +630,7 @@ class ConsumeResultTests(unittest.TestCase):
                     "kind": "implementation",
                     "path": str(impl_path),
                     "sha256": hashlib.sha256(impl_path.read_bytes()).hexdigest(),
-                    "schema": "implementation.v1",
+                    "schema": ARTIFACT_SCHEMA,
                     "canonical": True,
                 }
             ],
@@ -682,7 +701,7 @@ class ConsumeResultTests(unittest.TestCase):
                     "kind": "execute-review",
                     "path": str(path),
                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                    "schema": "execute-review.v1",
+                    "schema": ARTIFACT_SCHEMA,
                     "canonical": True,
                 }
             ],

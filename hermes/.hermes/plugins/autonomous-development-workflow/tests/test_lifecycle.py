@@ -18,6 +18,7 @@ _store = import_plugin("controller.store")
 _types = import_plugin("controller.types")
 
 PluginConfig = _types.PluginConfig
+ARTIFACT_SCHEMA = _types.ARTIFACT_SCHEMA
 RESULT_SCHEMA = _types.RESULT_SCHEMA
 WORKFLOW_SCHEMA = _types.WORKFLOW_SCHEMA
 WORKFLOW_TEMPLATE_ID = _types.WORKFLOW_TEMPLATE_ID
@@ -276,7 +277,7 @@ class LifecycleSagaTests(unittest.TestCase):
                     "kind": "plan",
                     "path": str(plan_path),
                     "sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
-                    "schema": "plan.v1",
+                    "schema": ARTIFACT_SCHEMA,
                     "canonical": True,
                 }
             ],

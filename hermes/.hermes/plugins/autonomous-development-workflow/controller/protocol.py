@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from .types import (
     ALLOWED_TRANSITIONS,
+    ARTIFACT_SCHEMA,
     GIT_HEAD_PATTERN,
     JOB_SCHEMA,
     RESULT_SCHEMA,
@@ -250,7 +251,9 @@ def validate_completed_result(expectation: JobExpectation, result: Any) -> None:
         raise WorkflowProtocolError("result.artifacts must be a list")
     artifacts = tuple(parse_artifact_ref(item) for item in artifacts_raw)
     if not any(
-        item.canonical and item.kind == expectation.output_kind and item.schema == expectation.output_schema
+        item.canonical
+        and item.kind == expectation.output_kind
+        and item.schema == ARTIFACT_SCHEMA
         for item in artifacts
     ):
         raise WorkflowProtocolError(

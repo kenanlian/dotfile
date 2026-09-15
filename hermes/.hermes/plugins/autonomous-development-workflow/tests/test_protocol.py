@@ -19,6 +19,7 @@ parse_artifact_ref = _protocol.parse_artifact_ref
 parse_job_expectation = _protocol.parse_job_expectation
 parse_manifest = _protocol.parse_manifest
 validate_completed_result = _protocol.validate_completed_result
+ARTIFACT_SCHEMA = _types.ARTIFACT_SCHEMA
 JOB_SCHEMA = _types.JOB_SCHEMA
 RESULT_SCHEMA = _types.RESULT_SCHEMA
 WORKFLOW_SCHEMA = _types.WORKFLOW_SCHEMA
@@ -72,16 +73,16 @@ def _result(**overrides):
         "implement": "implementation",
         "execute_review": "execute-review",
     }[stage]
-    schema = f"{kind}.v1" if kind != "plan-review" else "plan-review.v1"
+    payload_schema = f"{kind}.v1" if kind != "plan-review" else "plan-review.v1"
     if kind == "implementation":
-        schema = "implementation.v1"
+        payload_schema = "implementation.v1"
     if kind == "execute-review":
-        schema = "execute-review.v1"
+        payload_schema = "execute-review.v1"
     artifact = {
         "kind": kind,
         "path": f"/abs/artifacts/{kind}.json",
         "sha256": _sha(kind),
-        "schema": schema,
+        "schema": ARTIFACT_SCHEMA,
         "canonical": True,
     }
     data = {
@@ -93,7 +94,7 @@ def _result(**overrides):
         "stage": "plan",
         "status": "completed",
         "sessionId": None,
-        "structuredOutput": {"kind": kind, "payload": {"schema": schema, "summary": "ok"}},
+        "structuredOutput": {"kind": kind, "payload": {"schema": payload_schema, "summary": "ok"}},
         "artifacts": [artifact],
     }
     data.update(overrides)
@@ -296,6 +297,59 @@ class CompletedResultTests(unittest.TestCase):
                 ),
             )
 
+    def test_completed_plan_accepts_harness_artifact_envelope_schema(self) -> None:
+        expectation = parse_job_expectation(_expectation())
+        validate_completed_result(
+            expectation,
+            _result(
+                artifacts=[
+                    {
+                        "kind": "plan",
+                        "path": "/abs/artifacts/plan.json",
+                        "sha256": _sha("plan"),
+                        "schema": ARTIFACT_SCHEMA,
+                        "canonical": True,
+                    }
+                ]
+            ),
+        )
+
+    def test_completed_plan_rejects_payload_schema_on_artifact_entry(self) -> None:
+        expectation = parse_job_expectation(_expectation())
+        with self.assertRaises(WorkflowProtocolError):
+            validate_completed_result(
+                expectation,
+                _result(
+                    artifacts=[
+                        {
+                            "kind": "plan",
+                            "path": "/abs/artifacts/plan.json",
+                            "sha256": _sha("plan"),
+                            "schema": "plan.v1",
+                            "canonical": True,
+                        }
+                    ]
+                ),
+            )
+
+    def test_completed_plan_rejects_wrong_kind_with_envelope_schema(self) -> None:
+        expectation = parse_job_expectation(_expectation())
+        with self.assertRaises(WorkflowProtocolError):
+            validate_completed_result(
+                expectation,
+                _result(
+                    artifacts=[
+                        {
+                            "kind": "implementation",
+                            "path": "/abs/artifacts/implementation.json",
+                            "sha256": _sha("implementation"),
+                            "schema": ARTIFACT_SCHEMA,
+                            "canonical": True,
+                        }
+                    ]
+                ),
+            )
+
     def test_approved_review_cannot_include_blocking_finding(self) -> None:
         expectation = parse_job_expectation(
             _expectation(
@@ -330,7 +384,7 @@ class CompletedResultTests(unittest.TestCase):
                             "kind": "plan-review",
                             "path": "/abs/artifacts/plan-review.json",
                             "sha256": _sha("plan-review"),
-                            "schema": "plan-review.v1",
+                            "schema": ARTIFACT_SCHEMA,
                             "canonical": True,
                         }
                     ],
