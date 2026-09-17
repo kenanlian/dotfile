@@ -162,7 +162,21 @@ function verifyCompletedAssembly(relay, eventsPath, profile) {
     return typedError("extension_manifest_mismatch", "/adapter", "adapter events.jsonl is missing");
   }
   const eventsText = readFileSync(eventsPath, "utf8");
-  const attestation = verifyHarnessAttestation(eventsText, profile.expectedExtensionIds);
+  let attestation = verifyHarnessAttestation(eventsText, profile.expectedExtensionIds);
+  if (!attestation.ok) {
+    // Pi 0.85.1 routes extension process.stdout writes to the relay's stderr
+    // stream, not the NDJSON event stream, so the session_start attestation
+    // line empirically lands in harness-stderr.log rather than events.jsonl.
+    // Fail-closed intent is preserved: the line must still exist and match the
+    // stage profile; only the file it is read from is widened.
+    const adapterDir = dirname(eventsPath);
+    for (const fallbackName of ["harness-stderr.log", "stderr.txt"]) {
+      const fallbackPath = join(adapterDir, fallbackName);
+      if (!existsSync(fallbackPath)) continue;
+      attestation = verifyHarnessAttestation(readFileSync(fallbackPath, "utf8"), profile.expectedExtensionIds);
+      if (attestation.ok) break;
+    }
+  }
   if (!attestation.ok) return attestation.error;
   const argv = relay?.spawn?.argv;
   const argvCheck = verifyArgvConsistency(argv, profile);

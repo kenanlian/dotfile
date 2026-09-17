@@ -173,42 +173,36 @@ const ImplementationParams = Type.Object(
 
 const NonEmptyString = (description: string) => Type.String({ minLength: 1, description });
 
-const DirectImplementationCompleted = Type.Object(
+// Flat object, not a union of outcome arms: GLM (zai-coding-cn) emits empty
+// tool-call arguments for top-level anyOf/union parameter schemas, which makes
+// every submit_direct_implementation call fail validation. The array fields are
+// optional in the schema because GLM reliably omits empty arrays on the first
+// attempt and the relay fails the whole run on any error result from this
+// one-shot tool; the execute hook normalizes them to [] instead. The
+// completed/blocked conditional on blockingIssues is enforced in the execute
+// hook and re-validated host-side in validateDirectImplementationPayload.
+const DirectImplementationParams = Type.Object(
   {
     schema: StringEnum([DIRECT_IMPLEMENTATION_SCHEMA_ID] as const, {
       description: "direct-implementation.v1 schema id",
     }),
-    outcome: StringEnum(["completed"] as const, { description: "Direct implementation outcome" }),
-    summary: NonEmptyString("Summary"),
-    residualRisks: Type.Array(NonEmptyString("Residual risk"), { description: "Residual risks" }),
-    blockingIssues: Type.Array(NonEmptyString("Blocking issue"), {
-      description: "Blocking issues",
-      maxItems: 0,
+    outcome: StringEnum(["completed", "blocked"] as const, {
+      description: "Direct implementation outcome",
     }),
+    summary: NonEmptyString("Summary"),
+    residualRisks: Type.Optional(
+      Type.Array(NonEmptyString("Residual risk"), {
+        description: "Residual risks; pass [] when none",
+      }),
+    ),
+    blockingIssues: Type.Optional(
+      Type.Array(NonEmptyString("Blocking issue"), {
+        description: "Blocking issues; empty when outcome is completed, non-empty when blocked",
+      }),
+    ),
   },
   { additionalProperties: false },
 );
-
-const DirectImplementationBlocked = Type.Object(
-  {
-    schema: StringEnum([DIRECT_IMPLEMENTATION_SCHEMA_ID] as const, {
-      description: "direct-implementation.v1 schema id",
-    }),
-    outcome: StringEnum(["blocked"] as const, { description: "Direct implementation outcome" }),
-    summary: NonEmptyString("Summary"),
-    residualRisks: Type.Array(NonEmptyString("Residual risk"), { description: "Residual risks" }),
-    blockingIssues: Type.Array(NonEmptyString("Blocking issue"), {
-      description: "Blocking issues",
-      minItems: 1,
-    }),
-  },
-  { additionalProperties: false },
-);
-
-const DirectImplementationParams = Type.Union([
-  DirectImplementationCompleted,
-  DirectImplementationBlocked,
-]);
 
 const ExecuteReviewFinding = Type.Object(
   {
@@ -265,6 +259,7 @@ function submitTool(
   description: string,
   parameters: TSchema,
   shapeHint: string,
+  validate?: (params: any) => string | null,
 ) {
   return defineTool({
     name,
@@ -281,6 +276,10 @@ function submitTool(
     ],
     parameters,
     async execute(_toolCallId, params) {
+      const validationError = validate?.(params);
+      if (validationError) {
+        throw new Error(`${name}: ${validationError}`);
+      }
       return {
         content: [{ type: "text", text: `Submitted ${name}` }],
         details: params,
@@ -320,6 +319,19 @@ const submitDirectImplementation = submitTool(
   "Submit the completed direct-implementation payload and end the implementer run. Call this once as the final action.",
   DirectImplementationParams,
   "direct-implementation.v1 fields: schema, outcome, summary, residualRisks[], blockingIssues[].",
+  (params) => {
+    // Normalize optional arrays so the recorded details payload satisfies the
+    // host-side contract (validateDirectImplementationPayload requires both).
+    if (params.residualRisks === undefined) params.residualRisks = [];
+    if (params.blockingIssues === undefined) params.blockingIssues = [];
+    if (params?.outcome === "completed" && Array.isArray(params.blockingIssues) && params.blockingIssues.length > 0) {
+      return "blockingIssues must be empty when outcome is completed";
+    }
+    if (params?.outcome === "blocked" && (!Array.isArray(params.blockingIssues) || params.blockingIssues.length === 0)) {
+      return "blockingIssues must be non-empty when outcome is blocked";
+    }
+    return null;
+  },
 );
 
 const submitExecuteReview = submitTool(

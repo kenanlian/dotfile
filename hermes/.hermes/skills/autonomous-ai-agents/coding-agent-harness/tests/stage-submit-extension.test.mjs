@@ -285,11 +285,33 @@ test("direct implementation TypeBox rejects payloads runtime rejects", async () 
     outcome: "blocked",
     blockingIssues: [""],
   };
-  assert.equal(Check(schema, completedWithBlockers), false);
-  assert.equal(Check(schema, blockedEmpty), false);
   assert.equal(Check(schema, emptySummary), false);
   assert.equal(Check(schema, emptyResidual), false);
   assert.equal(Check(schema, emptyBlocker), false);
+  // The schema is a flat object (GLM emits empty arguments for top-level
+  // anyOf/union parameters), so the completed/blocked conditional on
+  // blockingIssues is enforced by the execute hook, not TypeBox.
+  assert.equal(Check(schema, completedWithBlockers), true);
+  assert.equal(Check(schema, blockedEmpty), true);
+  await assert.rejects(
+    tool.definition.execute("call-bad", completedWithBlockers),
+    /blockingIssues must be empty/,
+  );
+  await assert.rejects(
+    tool.definition.execute("call-bad-2", blockedEmpty),
+    /blockingIssues must be non-empty/,
+  );
+  // Optional arrays may be omitted (GLM drops empty arrays on first attempt);
+  // the execute hook normalizes them to [] so the recorded payload stays
+  // host-contract complete.
+  const minimal = validDirectImplementationPayload();
+  delete minimal.residualRisks;
+  delete minimal.blockingIssues;
+  assert.equal(Check(schema, minimal), true);
+  const normalized = await tool.definition.execute("call-min", JSON.parse(JSON.stringify(minimal)));
+  assert.deepEqual(normalized.details.residualRisks, []);
+  assert.deepEqual(normalized.details.blockingIssues, []);
+  assert.equal(normalized.terminate, true);
 });
 
 test("compileBrief interpolates job fields and does not invent workflow decisions", () => {
