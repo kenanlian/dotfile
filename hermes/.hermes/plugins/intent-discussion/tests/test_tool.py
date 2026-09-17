@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 import sys
 import tempfile
 import types
@@ -90,20 +91,23 @@ class RequirementWriteToolTests(unittest.TestCase):
         self.addCleanup(self._tmpdir.cleanup)
 
     def test_handler_success_persists_file_and_returns_metadata(self) -> None:
-        result = requirement_write(_valid_args(str(self.repo)), ctx=object())
+        raw = requirement_write(_valid_args(str(self.repo)), ctx=object())
         dest = self.repo / ".dev" / "requirements" / "card-filter.md"
-        self.assertIsInstance(result, dict)
+        # Hermes tool-result contract: handlers must return str, not dict.
+        self.assertIsInstance(raw, str)
+        result = json.loads(raw)
         self.assertNotIn("error", result)
         self.assertEqual(result["path"], str(dest))
         self.assertTrue(dest.is_file())
-        raw = dest.read_bytes()
-        self.assertEqual(result["sha256"], hashlib.sha256(raw).hexdigest())
+        raw_bytes = dest.read_bytes()
+        self.assertEqual(result["sha256"], hashlib.sha256(raw_bytes).hexdigest())
         self.assertEqual(result["status"], "ready")
-        self.assertEqual(result["bytes"], len(raw))
+        self.assertEqual(result["bytes"], len(raw_bytes))
 
-    def test_handler_requirement_error_returns_error_dict(self) -> None:
-        result = requirement_write(_valid_args(str(self.repo), slug="Bad_Slug"))
-        self.assertIsInstance(result, dict)
+    def test_handler_requirement_error_returns_error_json(self) -> None:
+        raw = requirement_write(_valid_args(str(self.repo), slug="Bad_Slug"))
+        self.assertIsInstance(raw, str)
+        result = json.loads(raw)
         self.assertIn("error", result)
         self.assertIsInstance(result["error"], str)
         self.assertTrue(result["error"])
