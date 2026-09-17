@@ -42,6 +42,17 @@ if (process.env.PI_STUB_NO_SESSION) {
   process.stdout.write(`${JSON.stringify({ type: "session", id: sessionId })}\n`);
 }
 
+const expected = process.env.PI_HARNESS_EXPECT_EXTENSIONS;
+if (expected && !process.env.PI_STUB_NO_ATTESTATION) {
+  process.stdout.write(`${JSON.stringify({
+    type: "session_start",
+    harnessAttestation: {
+      version: "coding-agent.attestation.v1",
+      expected: expected.split(",").filter(Boolean),
+    },
+  })}\n`);
+}
+
 const extraEvents = process.env.PI_STUB_EVENTS;
 if (extraEvents) {
   const events = JSON.parse(extraEvents);

@@ -39,6 +39,8 @@ import {
   SUBMIT_PLAN,
   SUBMIT_PLAN_REVIEW,
   WORK_PACKAGE_FIELD_KEYS,
+  EXPECT_EXTENSIONS_ENV,
+  buildAttestationLine,
 } from "./keys.mjs";
 
 const Requirement = Type.Object(
@@ -348,4 +350,14 @@ export default function stageSubmitExtension(pi: ExtensionAPI) {
   pi.registerTool(submitImplementation);
   pi.registerTool(submitDirectImplementation);
   pi.registerTool(submitExecuteReview);
+  // Presence proof for the Harness fail-closed check. Pi 0.85.1 print/json
+  // mode already exits 1 on a bad `-e`, but argv still cannot prove this
+  // factory ran; session_start writes one grep-stable JSON line onto the
+  // NDJSON event stream. Third-party extension presence (todos-tool) is a
+  // follow-up: Pi silently ignores unknown `-t` names, so allowlist membership
+  // is not a load proof.
+  pi.on("session_start", () => {
+    const line = buildAttestationLine(process.env[EXPECT_EXTENSIONS_ENV]);
+    if (line) process.stdout.write(line);
+  });
 }

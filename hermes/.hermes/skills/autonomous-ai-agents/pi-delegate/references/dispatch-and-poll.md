@@ -44,6 +44,7 @@ node "<skill-dir>/scripts/relay.mjs" --brief brief.txt --cd /path/to/repo
 | `--structured-output-tool <name>` | Trusted/Harness transport surface. Capture exactly one successful result from this submit tool. Must be paired with `--structured-output-extension`. Allowed with `--write`. Mutually exclusive with `--review-output`. |
 | `--structured-output-extension <dir>` | Absolute extension root containing `index.ts` or `index.js`. Must be paired with `--structured-output-tool`. |
 | `--structured-output-recovery` | Single output-only recovery turn. Requires `--session` plus the generic tool/extension pair. Child allowlist is only that submit tool. |
+| `--extra-tools <names>` | Comma-separated extra `--tools` names; repeatable, de-duplicated. Required for extension-registered tools (e.g. `todo`) because `-t` filters them the same as builtins. Recovery turns do not append them. Empty lists or invalid names fail at parse time (exit 2). |
 | `-h`, `--help` | Print the relay's header help. |
 
 A fresh run defaults to read-only. Writing requires an explicit `--write`. The relay
@@ -56,8 +57,11 @@ extension and the stage submit tool is added to the read-only allowlist. When
 `--structured-output-tool` and `--structured-output-extension` are present, one
 additional `-e` loads that trusted extension root and the named submit tool is
 added to the current mode allowlist (including `--write`). The two flag families
-are mutually exclusive. Global Skills discovery stays enabled; the relay never
-copies or mirrors Skills.
+are mutually exclusive. `--no-skills`/`-ns` plus repeatable `--skill <abs>`
+assemble Skills the same way; omit both flags to keep Pi's default discovery.
+The relay never copies or mirrors Skills. `--extra-tools` appends names onto
+the child `--tools` allowlist so extension tools survive `-t`; recovery still
+uses only the submit tool.
 
 There is no `call_allowlist` in this relay: a `--read-only` parent can still ask
 `delegate_agent` for a write-access child. Tool-gating applies only to the top-level
@@ -186,6 +190,7 @@ pi --mode json -p --no-extensions -e ~/.pi/agent/extensions/delegate-agent \
   [-e <pi-delegate>/extensions/review-submit]         # only with --review-output
   [-e <absolute-extension-root>]                      # only with --structured-output-extension
   --tools read,grep,find,ls,delegate_agent            # or write set; structured-output appends the submit tool
+                                                      # --extra-tools names are appended here (not in recovery)
                                                       # --review-output-recovery / --structured-output-recovery: only the submit tool
   [--model provider/model] --thinking high \
   [--session <existing-id>] \

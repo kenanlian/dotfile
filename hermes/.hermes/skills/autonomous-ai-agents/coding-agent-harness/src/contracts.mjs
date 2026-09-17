@@ -225,6 +225,7 @@ export const ERROR_KINDS = new Set([
   "structured_output_invalid",
   "read_only_violation",
   "artifact_write_failed",
+  "extension_manifest_mismatch",
   "aborted",
   "timed_out",
 ]);

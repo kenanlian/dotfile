@@ -490,6 +490,7 @@ test("typedError factory is stable and error kinds cover the protocol set", () =
     "structured_output_invalid",
     "read_only_violation",
     "artifact_write_failed",
+    "extension_manifest_mismatch",
     "aborted",
     "timed_out",
   ]) {

@@ -201,6 +201,32 @@ test("generic recovery allowlist is only the submit tool and requires --session"
   }
 });
 
+test("recovery allowlist ignores --extra-tools", () => {
+  const ctx = setupRun();
+  try {
+    const spawned = runRelay(
+      [
+        ...ctx.args,
+        ...genericFlags(ctx.genericRoot),
+        "--extra-tools", "todo",
+        "--structured-output-recovery",
+        "--session", "stub-sess-1",
+      ],
+      {
+        ...ctx.env,
+        PI_STUB_SESSION: "stub-sess-1",
+        PI_STUB_EVENTS: JSON.stringify([toolEnd("submit_plan", PLAN_PAYLOAD)]),
+      },
+    );
+    assert.equal(spawned.status, 0, spawned.stderr);
+    const dump = readDump(ctx.dumpPath);
+    assert.equal(toolsArg(dump.argv), "submit_plan");
+    assert.ok(!toolsArg(dump.argv).split(",").includes("todo"));
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test("generic missing, duplicate, and tool-error captures stay null plus diagnostic", () => {
   const missing = setupRun();
   try {

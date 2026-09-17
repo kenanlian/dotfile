@@ -1,0 +1,73 @@
+{
+  "schema": "coding-agent.stage-profiles.v1",
+  "profiles": {
+    "plan": {
+      "extensions": [],
+      "skills": {
+        "mode": "explicit",
+        "inline": "write-plan",
+        "paths": ["skills/write-plan", "skills/delegate-work"]
+      },
+      "env": {}
+    },
+    "plan-review": {
+      "extensions": [],
+      "skills": {
+        "mode": "explicit",
+        "inline": "review-plan",
+        "paths": ["skills/review-plan", "skills/delegate-work"]
+      },
+      "env": {}
+    },
+    "implement-plan": {
+      "extensions": [
+        {
+          "id": "auto-handoff",
+          "rootEnv": "PI_AUTO_HANDOFF_ROOT",
+          "rootDefault": "~/Secret-Projects/pi-auto-handoff",
+          "enabled": true,
+          "channel": "auto-handoff-plan"
+        }
+      ],
+      "skills": {
+        "mode": "explicit",
+        "inline": "execute-plan",
+        "paths": ["skills/execute-plan", "skills/delegate-work", "skills/audit-persistence"]
+      },
+      "env": {}
+    },
+    "execute-review": {
+      "extensions": [],
+      "skills": {
+        "mode": "explicit",
+        "inline": "review-execute-candidate",
+        "paths": ["skills/review-execute-candidate", "skills/delegate-work"]
+      },
+      "env": {}
+    },
+    "implement-direct": {
+      "extensions": [
+        {
+          "id": "todos-tool",
+          "rootEnv": "PI_TODOS_TOOL_ROOT",
+          "root": "~/.pi/agent/npm/node_modules/@gamaraan/todos-tool/src",
+          "enabled": true,
+          "note": "OMP 风格阶段化 todo；@gamaraan/todos-tool 0.3.0，入口 src/index.ts"
+        }
+      ],
+      "skills": {
+        "mode": "explicit",
+        "paths": ["skills/delegate-work"]
+      },
+      "toolsExtra": ["todo"],
+      "env": {}
+    }
+  },
+  "stageToProfile": {
+    "plan": "plan",
+    "plan_review": "plan-review",
+    "implement": "implement-plan",
+    "execute_review": "execute-review",
+    "direct_implement": "implement-direct"
+  }
+}

@@ -16,14 +16,22 @@
  * explicit `-e` pointing at the delegate-agent extension root, so `delegate_agent`
  * exists and nothing implicit loads. Under `--auto-handoff-plan`, one additional
  * `-e` loads the auto-handoff extension and two scoped env vars configure it;
- * delegated children are unaffected. Under `--review-output plan|execute`, one
- * additional `-e` loads the review-submit extension and the stage submit tool is
- * added to the read-only allowlist. Global Skills discovery is NOT disabled:
- * Skills come from the single global root via the user's own Pi configuration;
- * the relay never copies or mirrors Skills.
+ * delegated children are unaffected. Repeatable `--extension <abs>` adds further
+ * `-e` roots. `--env KEY=VALUE` injects child env except a fixed blacklist
+ * (PATH/HOME/...). Under `--review-output plan|execute`, one additional `-e`
+ * loads the review-submit extension and the stage submit tool is added to the
+ * read-only allowlist. Repeatable `--skill <abs>` plus `--no-skills`/`-ns`
+ * assemble Skills the same way: `-ns` turns off discovery (`~/.pi/agent/skills`,
+ * project `.agents/skills`, and the rest); each `--skill` still loads. Without
+ * those flags, Pi's default Skill discovery stays on. Harness profiles with
+ * `skills.mode=explicit` always pass both; `mode=auto` passes neither.
  *
  * Read-only enforcement is the tool allowlist (`--tools read,grep,find,ls,delegate_agent`);
  * Pi has no permission wall. Write mode adds `bash,edit,write` to the allowlist.
+ * `--extra-tools` appends extension-registered names (e.g. `todo`) onto that
+ * list: Pi's `-t` whitelist applies to them too, and unknown names are
+ * silently ignored, so omitting the extra name drops the tool with no error.
+ * Recovery turns ignore `--extra-tools` (allowlist is the submit tool only).
  * Per the settled user decision, there is NO call_allowlist against a read-only
  * parent invoking a write child; this relay intentionally does not gate that.
  *
@@ -71,6 +79,27 @@
  *   --structured-output-recovery  Single output-only recovery turn. Requires
  *                        --session plus the generic tool/extension pair; child
  *                        allowlist is only that submit tool.
+ *   --extension <dir>    Additional absolute extension root; repeatable. Each
+ *                        path must exist. Loaded via an extra `-e` after the
+ *                        delegate-agent / auto-handoff / structured-output
+ *                        roots. Does not replace `--auto-handoff-plan`.
+ *   --env KEY=VALUE      Inject KEY into the pi child environment; repeatable.
+ *                        Cannot override PATH, HOME, USER, LOGNAME, SHELL,
+ *                        TMPDIR/TEMP/TMP, PWD/OLDPWD, NODE_OPTIONS/NODE_PATH,
+ *                        LD_PRELOAD/LD_LIBRARY_PATH, DYLD_*, PI_BIN, or the
+ *                        auto-handoff plan/handoff env keys. Values are never
+ *                        written to result.json; only key names are audited.
+ *   --skill <dir>        Additional absolute Skill directory (must contain
+ *                        SKILL.md); repeatable. Passed through as Pi `--skill`.
+ *                        Additive even under `--no-skills`.
+ *   --no-skills, -ns     Pass Pi `-ns`: disable Skill auto-discovery. Explicit
+ *                        `--skill` paths still load.
+ *   --extra-tools <names>  Comma-separated extra `--tools` names; repeatable,
+ *                        de-duplicated. Required for extension-registered
+ *                        tools (e.g. `todo`): `-t` filters them the same as
+ *                        builtins. Recovery mode does not append them.
+ *                        Empty lists or invalid names fail at parse time
+ *                        (exit 2).
  *   -h, --help           Show this help.
  *
  * Result: written to <out-dir>/result.json —
@@ -78,8 +107,8 @@
  *   piVersion, sessionId, cwd, mode, requestedModel, resolvedModel, thinking,
  *   resumed, startedAt, finishedAt, finalMessage, structuredOutput,
  *   structuredOutputError, touchedFiles (git porcelain under --cd), usage,
- *   autoHandoff, briefPath/finalPath/eventsPath/stderrPath, and
- *   error/stderrTail on failure.
+ *   autoHandoff, spawn ({ argv, envKeys }; env values are never persisted),
+ *   briefPath/finalPath/eventsPath/stderrPath, and error/stderrTail on failure.
  *
  * Completion requires: process exit + exit code 0 + Pi agent_settled observed
  * + a valid session id + atomically written result.json. On any failure the
@@ -115,6 +144,31 @@ const REVIEW_SUBMIT_TOOLS = Object.freeze({
   execute: "submit_execute_review",
 });
 const REVIEW_OUTPUT_STAGES = new Set(Object.keys(REVIEW_SUBMIT_TOOLS));
+const ENV_INJECT_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Mirrored in coding-agent-harness/src/stage-profiles.mjs. */
+export const ENV_INJECT_BLACKLIST = Object.freeze([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "PWD",
+  "OLDPWD",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "DYLD_FALLBACK_LIBRARY_PATH",
+  "PI_BIN",
+  "PI_AUTO_HANDOFF_PLAN_FILE",
+  "PI_AUTO_HANDOFF_HANDOFF_DIR",
+]);
+const ENV_INJECT_BLACKLIST_SET = new Set(ENV_INJECT_BLACKLIST);
 
 function outputOnlyInstruction(tool) {
   return (
@@ -175,12 +229,20 @@ function reviewSubmitRoot() {
   return null;
 }
 
-function childTools(opts) {
+export function childTools(opts) {
   const submit = opts.structuredOutput?.tool ?? null;
   if (opts.structuredOutput?.recovery) return [submit];
-  if (opts.write) return submit ? [...WRITE_TOOLS, submit] : WRITE_TOOLS;
-  if (submit) return [...READ_ONLY_TOOLS, submit];
-  return READ_ONLY_TOOLS;
+  // extraTools covers tools registered by --extension-mounted packages (e.g.
+  // todos-tool registers `todo`). Pi silently ignores unknown `--tools` names,
+  // so a stale extra name degrades gracefully rather than failing the run.
+  const extras = (opts.extraTools || []).filter((name) => typeof name === "string" && name.length > 0);
+  const base = opts.write
+    ? submit ? [...WRITE_TOOLS, submit] : [...WRITE_TOOLS]
+    : submit ? [...READ_ONLY_TOOLS, submit] : [...READ_ONLY_TOOLS];
+  for (const name of extras) {
+    if (!base.includes(name)) base.push(name);
+  }
+  return base;
 }
 
 function fail(message, code = 2) {
@@ -198,7 +260,7 @@ function parseDuration(duration) {
   return Number(milliseconds);
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const opts = {
     brief: null,
     cd: process.cwd(),
@@ -216,6 +278,11 @@ function parseArgs(argv) {
     structuredOutputExtension: null,
     structuredOutputRecovery: false,
     structuredOutput: null,
+    extensions: [],
+    envInject: [],
+    skills: [],
+    extraTools: [],
+    noSkills: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -253,6 +320,62 @@ function parseArgs(argv) {
         break;
       }
       case "--structured-output-recovery": opts.structuredOutputRecovery = true; break;
+      case "--extension": {
+        const raw = next();
+        if (!raw || !isAbsolute(raw)) {
+          fail("--extension must be an absolute path");
+        }
+        const resolved = resolve(raw);
+        if (!existsSync(resolved)) {
+          fail(`--extension not found: ${resolved}`);
+        }
+        opts.extensions.push(resolved);
+        break;
+      }
+      case "--extra-tools": {
+        const raw = next();
+        if (!raw) fail("--extra-tools requires a comma-separated value");
+        const names = raw.split(",").map((s) => s.trim()).filter(Boolean);
+        if (names.length === 0) fail("--extra-tools requires at least one tool name");
+        for (const name of names) {
+          if (!/^[a-zA-Z0-9_-]+$/.test(name)) fail(`--extra-tools invalid tool name: ${name}`);
+          if (!opts.extraTools.includes(name)) opts.extraTools.push(name);
+        }
+        break;
+      }
+      case "--env": {
+        const raw = next();
+        const eq = raw.indexOf("=");
+        if (eq <= 0) fail("--env requires KEY=VALUE");
+        const key = raw.slice(0, eq);
+        const value = raw.slice(eq + 1);
+        if (!ENV_INJECT_KEY.test(key)) fail(`--env key is invalid: ${key}`);
+        if (ENV_INJECT_BLACKLIST_SET.has(key)) fail(`--env cannot override ${key}`);
+        if (opts.envInject.some((item) => item.key === key)) {
+          fail(`--env ${key} specified more than once`);
+        }
+        opts.envInject.push({ key, value });
+        break;
+      }
+      case "--skill": {
+        const raw = next();
+        if (!raw || !isAbsolute(raw)) {
+          fail("--skill must be an absolute path");
+        }
+        const resolved = resolve(raw);
+        if (!existsSync(resolved)) {
+          fail(`--skill not found: ${resolved}`);
+        }
+        if (!existsSync(join(resolved, "SKILL.md"))) {
+          fail(`--skill missing SKILL.md: ${resolved}`);
+        }
+        opts.skills.push(resolved);
+        break;
+      }
+      case "--no-skills":
+      case "-ns":
+        opts.noSkills = true;
+        break;
       default:
         fail(`unknown option: ${arg}`);
     }
@@ -423,13 +546,21 @@ function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
-function buildArgv(opts, extensionRoot, autoHandoff, structuredExtension) {
+export function buildArgv(opts, extensionRoot, autoHandoff, structuredExtension) {
   // Deterministic extension loading: -ne disables implicit discovery; the
-  // explicit -e still loads under it. Skills discovery is left enabled.
+  // explicit -e still loads under it. Skills: -ns disables discovery
+  // (global ~/.pi/agent/skills and project .agents/skills included);
+  // repeatable --skill still loads. Verified Pi 0.85.1: a Skill with
+  // disable-model-invocation: true mounted via --skill is loaded and
+  // `/skill:<name> ` expansion inlines SKILL.md, but it does NOT appear
+  // in <available_skills>.
   const argv = ["--mode", "json", "-p", "--no-extensions"];
   if (extensionRoot) argv.push("-e", extensionRoot);
   if (autoHandoff?.enabled) argv.push("-e", autoHandoff.extensionRoot);
   if (structuredExtension) argv.push("-e", structuredExtension);
+  for (const extra of opts.extensions || []) argv.push("-e", extra);
+  if (opts.noSkills) argv.push("-ns");
+  for (const skill of opts.skills || []) argv.push("--skill", skill);
   argv.push("--tools", childTools(opts).join(","));
   if (opts.model) argv.push("--model", opts.model);
   argv.push("--thinking", opts.thinking);
@@ -481,6 +612,22 @@ function validateSkillPrefix(brief) {
   return brief;
 }
 
+export function makeAutoHandoffState(opts, outDir) {
+  return opts.autoHandoffPlan
+    ? {
+      enabled: true,
+      planFile: opts.autoHandoffPlan,
+      handoffDir: join(outDir, "auto-handoff"),
+      extensionRoot: autoHandoffRoot(),
+    }
+    : {
+      enabled: false,
+      planFile: null,
+      handoffDir: null,
+      extensionRoot: null,
+    };
+}
+
 function prepareRunDir(opts, brief) {
   const startedAt = new Date().toISOString();
   const outDir = opts.outDir
@@ -494,19 +641,8 @@ function prepareRunDir(opts, brief) {
     eventsPath: join(outDir, "events.jsonl"),
     stderrPath: join(outDir, "stderr.txt"),
     resultPath: join(outDir, "result.json"),
-    autoHandoff: opts.autoHandoffPlan
-      ? {
-        enabled: true,
-        planFile: opts.autoHandoffPlan,
-        handoffDir: join(outDir, "auto-handoff"),
-        extensionRoot: autoHandoffRoot(),
-      }
-      : {
-        enabled: false,
-        planFile: null,
-        handoffDir: null,
-        extensionRoot: null,
-      },
+    autoHandoff: makeAutoHandoffState(opts, outDir),
+    spawn: null,
   };
   rmSync(run.finalPath, { force: true });
   rmSync(run.resultPath, { force: true });
@@ -534,6 +670,7 @@ function makeResultWriter(opts, version, run) {
       eventsPath: run.eventsPath,
       stderrPath: run.stderrPath,
       autoHandoff: run.autoHandoff,
+      spawn: run.spawn,
       structuredOutput: extra.structuredOutput !== undefined ? extra.structuredOutput : null,
       structuredOutputError: extra.structuredOutputError !== undefined ? extra.structuredOutputError : null,
       ...extra,
@@ -745,88 +882,87 @@ function printSummary(result, resultPath) {
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 
-function dispatchToPi(opts, brief, run, writeResult, bin) {
+export function assembleChildInvocation(opts, run) {
   const extensionRoot = delegateAgentRoot();
   if (!extensionRoot) {
-    const result = writeResult({
-      status: "failed",
-      exitCode: 1,
-      signal: null,
-      sessionId: opts.session,
-      resolvedModel: null,
-      finalMessage: "",
-      touchedFiles: gitTouchedFiles(opts.cd),
+    return {
+      ok: false,
       error: "delegate-agent extension root not found (expected ~/.pi/agent/extensions/delegate-agent or PI_DELEGATE_AGENT_ROOT)",
-    });
-    printSummary(result, run.resultPath);
-    process.exit(1);
+    };
   }
-
   if (run.autoHandoff.enabled && !run.autoHandoff.extensionRoot) {
-    const result = writeResult({
-      status: "failed",
-      exitCode: 1,
-      signal: null,
-      sessionId: opts.session,
-      resolvedModel: null,
-      finalMessage: "",
-      touchedFiles: gitTouchedFiles(opts.cd),
+    return {
+      ok: false,
       error: "auto-handoff extension root not found (expected ~/Secret-Projects/pi-auto-handoff or PI_AUTO_HANDOFF_ROOT)",
-    });
-    printSummary(result, run.resultPath);
-    process.exit(1);
+    };
   }
-
   let structuredExtension = null;
   if (opts.structuredOutput?.source === "review") {
     structuredExtension = reviewSubmitRoot();
     if (!structuredExtension) {
-      const result = writeResult({
-        status: "failed",
-        exitCode: 1,
-        signal: null,
-        sessionId: opts.session,
-        resolvedModel: null,
-        finalMessage: "",
-        touchedFiles: gitTouchedFiles(opts.cd),
+      return {
+        ok: false,
         error: "review-submit extension root not found (expected <pi-delegate>/extensions/review-submit or PI_REVIEW_SUBMIT_ROOT)",
-      });
-      printSummary(result, run.resultPath);
-      process.exit(1);
+      };
     }
   } else if (opts.structuredOutput?.source === "generic") {
     structuredExtension = opts.structuredOutput.extensionRoot;
     if (!hasExtensionIndex(structuredExtension)) {
-      const result = writeResult({
-        status: "failed",
-        exitCode: 1,
-        signal: null,
-        sessionId: opts.session,
-        resolvedModel: null,
-        finalMessage: "",
-        touchedFiles: gitTouchedFiles(opts.cd),
+      return {
+        ok: false,
         error: `structured-output extension root not found or missing index.ts/index.js: ${structuredExtension}`,
-      });
-      printSummary(result, run.resultPath);
-      process.exit(1);
+      };
     }
   }
-
-  // The brief rides the child's stdin: argv carries only fixed flags plus the
-  // trailing "-" positional (see buildArgv). Pi's readPipedStdin waits for
-  // stdin END before it starts, so the relay must write the whole brief and
-  // close the pipe promptly. EPIPE here only means the child died before
-  // consuming stdin; the close handler records the real exit status.
   const argv = buildArgv(opts, extensionRoot, run.autoHandoff, structuredExtension);
-  const spawnOpts = { cwd: opts.cd, stdio: ["pipe", "pipe", "pipe"], detached: true };
+  const injected = {};
+  for (const item of opts.envInject || []) injected[item.key] = item.value;
   if (run.autoHandoff.enabled) {
-    spawnOpts.env = {
-      ...process.env,
-      PI_AUTO_HANDOFF_PLAN_FILE: run.autoHandoff.planFile,
-      PI_AUTO_HANDOFF_HANDOFF_DIR: run.autoHandoff.handoffDir,
-    };
+    injected.PI_AUTO_HANDOFF_PLAN_FILE = run.autoHandoff.planFile;
+    injected.PI_AUTO_HANDOFF_HANDOFF_DIR = run.autoHandoff.handoffDir;
   }
-  const child = spawn(bin, argv, spawnOpts);
+  const envKeys = Object.keys(injected).sort();
+  const env = { ...process.env, ...injected };
+  return {
+    ok: true,
+    argv,
+    env,
+    envKeys,
+    extensionRoot,
+    structuredExtension,
+  };
+}
+
+function dispatchToPi(opts, brief, run, writeResult, bin) {
+  const assembled = assembleChildInvocation(opts, run);
+  if (!assembled.ok) {
+    const result = writeResult({
+      status: "failed",
+      exitCode: 1,
+      signal: null,
+      sessionId: opts.session,
+      resolvedModel: null,
+      finalMessage: "",
+      touchedFiles: gitTouchedFiles(opts.cd),
+      error: assembled.error,
+    });
+    printSummary(result, run.resultPath);
+    process.exit(1);
+  }
+
+  // The brief rides the child's stdin: argv carries only fixed flags. Pi's
+  // readPipedStdin waits for stdin END before it starts, so the relay must
+  // write the whole brief and close the pipe promptly. EPIPE here only means
+  // the child died before consuming stdin; the close handler records the
+  // real exit status.
+  run.spawn = { argv: assembled.argv, envKeys: assembled.envKeys };
+  const spawnOpts = {
+    cwd: opts.cd,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: true,
+    env: assembled.env,
+  };
+  const child = spawn(bin, assembled.argv, spawnOpts);
   child.stdin.on("error", () => { /* EPIPE: child exited before reading stdin */ });
   child.stdin.end(brief, "utf8");
 
@@ -1048,4 +1184,16 @@ async function main() {
   dispatchToPi(opts, brief, run, writeResult, bin);
 }
 
-main();
+function isMainModule() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return fileURLToPath(import.meta.url) === resolve(entry);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  main();
+}

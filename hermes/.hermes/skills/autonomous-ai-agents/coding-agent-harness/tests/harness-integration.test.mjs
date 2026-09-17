@@ -142,9 +142,16 @@ function setupWorld() {
   const repo = join(tmp, "repo");
   const outRoot = join(tmp, "out");
   const delegate = join(tmp, "delegate-agent");
+  const autoHandoff = join(tmp, "pi-auto-handoff");
   mkdirSync(outRoot, { recursive: true });
   mkdirSync(delegate, { recursive: true });
   writeFileSync(join(delegate, "index.ts"), "export {};\n");
+  mkdirSync(join(autoHandoff, "src"), { recursive: true });
+  writeFileSync(join(autoHandoff, "package.json"), '{"name":"pi-auto-handoff"}\n');
+  writeFileSync(join(autoHandoff, "src", "index.ts"), "export {};\n");
+  const todos = join(tmp, "todos-tool", "src");
+  mkdirSync(todos, { recursive: true });
+  writeFileSync(join(todos, "index.ts"), "export {};\n");
   cpSync(FIXTURE_REPO, repo, { recursive: true });
   git(repo, ["init", "-b", "main"]);
   git(repo, ["config", "user.email", "test@example.com"]);
@@ -155,7 +162,7 @@ function setupWorld() {
   const head = git(repoRoot, ["rev-parse", "HEAD"]).stdout.trim();
   const requirementPath = join(repoRoot, "requirement.md");
   return {
-    tmp, repoRoot, outRoot, delegate, head, requirementPath,
+    tmp, repoRoot, outRoot, delegate, autoHandoff, todos, head, requirementPath,
     requirementSha: sha256File(requirementPath),
     cleanup() { rmSync(tmp, { recursive: true, force: true }); },
   };
@@ -189,6 +196,8 @@ function runHarness(world, jobPath, outDir, envExtra = {}, { createOutDir = true
     ...process.env,
     PI_BIN: STUB,
     PI_DELEGATE_AGENT_ROOT: world.delegate,
+    PI_AUTO_HANDOFF_ROOT: world.autoHandoff,
+    PI_TODOS_TOOL_ROOT: world.todos,
   };
   for (const key of Object.keys(env)) {
     if (key.startsWith("PI_STUB_")) delete env[key];
@@ -999,6 +1008,85 @@ test("trusted idempotent replay is bound to the current Job identity", () => {
       const after = JSON.parse(readFileSync(first.resultPath, "utf8"));
       assert.equal(after[field], value, field);
     }
+  } finally {
+    world.cleanup();
+  }
+});
+
+test("missing harnessAttestation fail-closes with extension_manifest_mismatch", () => {
+  const world = setupWorld();
+  try {
+    const { jobPath } = materialize("plan.job.template.json", world);
+    const run = runHarness(world, jobPath, join(world.outRoot, "no-attest"), {
+      PI_STUB_NO_ATTESTATION: "1",
+      PI_STUB_EVENTS: JSON.stringify([toolEnd("submit_plan", planPayload())]),
+    });
+    assert.equal(run.spawned.status, 1, run.spawned.stderr);
+    assert.equal(run.result.status, "failed");
+    assert.equal(run.result.error.kind, "extension_manifest_mismatch");
+    assert.equal(run.result.structuredOutput, null);
+  } finally {
+    world.cleanup();
+  }
+});
+
+test("spawn-record.json follows the stage profile (implement vs direct_implement vs plan)", () => {
+  const world = setupWorld();
+  try {
+    const plan = writeCanonicalPlan(world);
+    const implement = materialize("implement.job.template.json", world, {
+      planPath: plan.path,
+      planSha: plan.sha256,
+    });
+    const implementRun = runHarness(world, implement.jobPath, join(world.outRoot, "spawn-implement"), {
+      PI_STUB_EVENTS: JSON.stringify([toolEnd("submit_implementation", implementationPayload())]),
+    });
+    assert.equal(implementRun.spawned.status, 0, implementRun.spawned.stderr);
+    const implementSpawn = JSON.parse(readFileSync(
+      join(world.outRoot, "spawn-implement", "adapter", "primary", "spawn-record.json"),
+      "utf8",
+    ));
+    assert.equal(implementSpawn.profileId, "implement-plan");
+    assert.deepEqual(implementSpawn.expectedExtensionIds, ["stage-submit", "auto-handoff"]);
+    assert.ok(implementSpawn.argv.includes(world.autoHandoff));
+    assert.ok(implementSpawn.envKeys.includes("PI_AUTO_HANDOFF_PLAN_FILE"));
+
+    const direct = materialize("direct-implement.job.template.json", world);
+    const directRun = runHarness(world, direct.jobPath, join(world.outRoot, "spawn-direct"), {
+      PI_STUB_EVENTS: JSON.stringify([toolEnd("submit_direct_implementation", directImplementationPayload())]),
+    });
+    assert.equal(directRun.spawned.status, 0, directRun.spawned.stderr);
+    const directSpawn = JSON.parse(readFileSync(
+      join(world.outRoot, "spawn-direct", "adapter", "primary", "spawn-record.json"),
+      "utf8",
+    ));
+    assert.equal(directSpawn.profileId, "implement-direct");
+    assert.deepEqual(directSpawn.expectedExtensionIds, ["stage-submit", "todos-tool"]);
+    assert.deepEqual(directSpawn.disabledEntries, []);
+    assert.ok(!JSON.stringify(directSpawn.argv).includes("auto-handoff"));
+    assert.ok(!directSpawn.envKeys.includes("PI_AUTO_HANDOFF_PLAN_FILE"));
+    assert.ok(JSON.stringify(directSpawn.argv).includes("todos-tool"));
+    const directTools = (directSpawn.argv[directSpawn.argv.indexOf("--tools") + 1] || "").split(",");
+    assert.ok(directTools.includes("todo"), "direct_implement pi --tools must include todo");
+
+    const planRun = runHarness(world, materialize("plan.job.template.json", world).jobPath, join(world.outRoot, "spawn-plan"), {
+      PI_STUB_EVENTS: JSON.stringify([toolEnd("submit_plan", planPayload())]),
+    });
+    assert.equal(planRun.spawned.status, 0, planRun.spawned.stderr);
+    const planSpawn = JSON.parse(readFileSync(
+      join(world.outRoot, "spawn-plan", "adapter", "primary", "spawn-record.json"),
+      "utf8",
+    ));
+    assert.equal(planSpawn.profileId, "plan");
+    assert.deepEqual(planSpawn.expectedExtensionIds, ["stage-submit"]);
+    assert.deepEqual(planSpawn.disabledEntries, []);
+    assert.ok(!JSON.stringify(planSpawn.argv).includes("auto-handoff"));
+    assert.ok(planSpawn.argv.includes("-ns"));
+    const planSkills = [];
+    for (let i = 0; i < planSpawn.argv.length; i += 1) {
+      if (planSpawn.argv[i] === "--skill") planSkills.push(planSpawn.argv[i + 1]);
+    }
+    assert.deepEqual(planSkills.map((item) => item.split("/").at(-1)), ["write-plan", "delegate-work"]);
   } finally {
     world.cleanup();
   }

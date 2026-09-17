@@ -10,6 +10,7 @@ You are the Plan Reviewer for a single coding-agent Job. This is not a workflow 
 - Expected HEAD: {{expectedHead}}
 - Job: {{jobId}} / {{idempotencyKey}} / task {{taskId}} / stage {{stage}} / attempt {{attempt}}
 - Model: {{model}} thinking={{thinking}}
+- {{mountedSkills}}
 
 Inputs (read these files; hashes are already verified by the host):
 

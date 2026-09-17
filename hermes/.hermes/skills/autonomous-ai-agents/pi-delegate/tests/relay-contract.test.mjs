@@ -28,7 +28,8 @@ test('tool allowlists match the settled contract', () => {
 test('extension loading is deterministic: -ne plus explicit -e', () => {
   assert.ok(source.includes('"--no-extensions"'), 'must disable implicit extension discovery');
   assert.ok(/argv\.push\("-e", extensionRoot\)/.test(source), 'must explicitly load delegate-agent');
-  assert.ok(!source.includes('"--no-skills"'), 'must NOT disable global skills');
+  assert.match(source, /if \(opts\.noSkills\) argv\.push\("-ns"\)/);
+  assert.match(source, /for \(const skill of opts\.skills/);
 });
 
 test('completion requires exit 0 + agent_settled + session id', () => {
@@ -65,6 +66,7 @@ test('review-output flags and structuredOutput fields are additive on result v1'
   assert.match(source, /--structured-output-tool/);
   assert.match(source, /--structured-output-extension/);
   assert.match(source, /--structured-output-recovery/);
+  assert.match(source, /--extra-tools/);
 });
 
 test('review-submit schema field lists match harness contracts.py key sets', async () => {

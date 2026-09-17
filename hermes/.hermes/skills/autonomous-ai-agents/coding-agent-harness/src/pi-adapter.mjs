@@ -4,7 +4,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { STAGE_CONTRACTS, typedError } from "./contracts.mjs";
 import { createPiEventNormalizer } from "./events.mjs";
-import { sha256Text } from "./util.mjs";
+import {
+  EXPECT_EXTENSIONS_ENV,
+  assertProfileResourcesExist,
+  expectedExtensionsEnvValue,
+  resolveStageProfile,
+  verifyArgvConsistency,
+  verifyHarnessAttestation,
+} from "./stage-profiles.mjs";
+import { canonicalJson, sha256Text } from "./util.mjs";
 
 const HARNESS_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const DEFAULT_RELAY_PATH = join(HARNESS_ROOT, "..", "pi-delegate", "scripts", "relay.mjs");
@@ -33,15 +41,47 @@ function timeoutFlag(timeoutSeconds) {
   return ["--timeout", `${timeoutSeconds}s`];
 }
 
-export function buildRelayArgs({
+function emptyAdapterFailure(error, expectedSession = null) {
+  return {
+    status: error.kind === "adapter_unavailable" ? "unavailable"
+      : error.kind === "timed_out" ? "timed_out"
+        : error.kind === "aborted" ? "aborted"
+          : "failed",
+    sessionId: expectedSession,
+    structuredOutput: null,
+    structuredOutputError: null,
+    usage: {},
+    resolvedModel: null,
+    adapterRuns: [],
+    recovered: false,
+    error,
+    relay: null,
+    raw: { primary: null },
+  };
+}
+
+export function tryBuildRelayArgs({
   briefPath,
   repoRoot,
   outDir,
   job,
   recovery = false,
   extensionRoot = DEFAULT_STAGE_SUBMIT_ROOT,
+  profile,
+  env = process.env,
 }) {
+  let resolved = profile;
+  if (!resolved) {
+    const loaded = resolveStageProfile(job.stage, { env });
+    if (!loaded.ok) return loaded;
+    const roots = assertProfileResourcesExist(loaded.value);
+    if (!roots.ok) return roots;
+    resolved = roots.value;
+  }
   const contract = STAGE_CONTRACTS[job.stage];
+  if (!contract) {
+    return { ok: false, error: typedError("invalid_job", "/stage", `unknown stage ${job.stage}`) };
+  }
   const args = [
     "--brief", briefPath,
     "--cd", repoRoot,
@@ -55,8 +95,79 @@ export function buildRelayArgs({
   const sessionId = recovery ? job._recoverySessionId || job.agent.sessionId : job.agent.sessionId;
   if (sessionId) args.push("--session", sessionId);
   if (recovery) args.push("--structured-output-recovery");
+  for (const ext of resolved.extensionRoots) {
+    if (ext.channel === "auto-handoff-plan") {
+      const plan = (job.inputs || []).find((item) => item.kind === "plan");
+      if (!plan?.path) {
+        return {
+          ok: false,
+          error: typedError(
+            "invalid_job",
+            "/inputs",
+            `stage ${job.stage} profile ${resolved.profileId} requires a plan input for auto-handoff`,
+          ),
+        };
+      }
+      args.push("--auto-handoff-plan", plan.path);
+    } else {
+      args.push("--extension", ext.root);
+    }
+  }
+  for (const [key, value] of Object.entries(resolved.env)) {
+    args.push("--env", `${key}=${value}`);
+  }
+  if (resolved.toolsExtra.length > 0) args.push("--extra-tools", resolved.toolsExtra.join(","));
+  const skills = resolved.skills || { mode: "auto", paths: [] };
+  if (skills.mode === "explicit") {
+    args.push("--no-skills");
+    for (const skillPath of skills.paths) args.push("--skill", skillPath);
+  }
+  args.push("--env", `${EXPECT_EXTENSIONS_ENV}=${expectedExtensionsEnvValue(resolved)}`);
   args.push(...timeoutFlag(job.limits?.timeoutSeconds ?? null));
-  return args;
+  return { ok: true, args, profile: resolved };
+}
+
+export function buildRelayArgs(options) {
+  const built = tryBuildRelayArgs(options);
+  if (!built.ok) {
+    const error = new Error(built.error.message);
+    error.typedError = built.error;
+    throw error;
+  }
+  return built.args;
+}
+
+function writeSpawnRecord(adapterOutDir, job, profile, relay) {
+  const spawn = relay?.spawn && typeof relay.spawn === "object" ? relay.spawn : { argv: null, envKeys: [] };
+  writeFileSync(join(adapterOutDir, "spawn-record.json"), canonicalJson({
+    stage: job.stage,
+    profileId: profile.profileId,
+    expectedExtensionIds: profile.expectedExtensionIds,
+    disabledEntries: profile.disabledEntries,
+    argv: Array.isArray(spawn.argv) ? spawn.argv : null,
+    envKeys: Array.isArray(spawn.envKeys) ? spawn.envKeys : [],
+  }));
+}
+
+function verifyCompletedAssembly(relay, eventsPath, profile) {
+  // Fail-closed after agent_settled: stage-submit must have written the
+  // attestation line, and pi argv must match the resolved profile.
+  // Pi 0.85.1 print/json empirically exits 1 on a bad `-e` (does not
+  // warn-and-continue); attestation still proves this factory ran.
+  // Skill mounting is not part of attestation — argv golden tests cover
+  // `-ns` plus the exact `--skill` set. `toolsExtra` (e.g. `todo`) is
+  // the `-t` allowlist hook, not a load proof: Pi silently ignores
+  // unknown `-t` names.
+  if (!existsSync(eventsPath)) {
+    return typedError("extension_manifest_mismatch", "/adapter", "adapter events.jsonl is missing");
+  }
+  const eventsText = readFileSync(eventsPath, "utf8");
+  const attestation = verifyHarnessAttestation(eventsText, profile.expectedExtensionIds);
+  if (!attestation.ok) return attestation.error;
+  const argv = relay?.spawn?.argv;
+  const argvCheck = verifyArgvConsistency(argv, profile);
+  if (!argvCheck.ok) return argvCheck.error;
+  return null;
 }
 
 function classifyAdapterError(relay, job, expectedSession) {
@@ -157,20 +268,39 @@ async function runOneRelay({
   env,
   events,
   recovery,
+  profile,
 }) {
   mkdirSync(adapterOutDir, { recursive: true });
   const harnessStdout = join(adapterOutDir, "harness-stdout.log");
   const harnessStderr = join(adapterOutDir, "harness-stderr.log");
   writeFileSync(harnessStdout, "");
   writeFileSync(harnessStderr, "");
-  const args = buildRelayArgs({
+  const built = tryBuildRelayArgs({
     briefPath,
     repoRoot: job.workspace.repoRoot,
     outDir: adapterOutDir,
     job,
     recovery,
     extensionRoot,
+    profile,
+    env,
   });
+  if (!built.ok) {
+    return {
+      phase,
+      relay: null,
+      spawned: null,
+      assembleError: built.error,
+      paths: {
+        phase,
+        result: join(adapterOutDir, "result.json"),
+        events: join(adapterOutDir, "events.jsonl"),
+        stderr: join(adapterOutDir, "stderr.txt"),
+        final: join(adapterOutDir, "final.txt"),
+      },
+      diagnostics: { ignored: 0 },
+    };
+  }
   const normalizer = createPiEventNormalizer(events);
   const offsetRef = { value: 0 };
   const eventsPath = join(adapterOutDir, "events.jsonl");
@@ -179,7 +309,7 @@ async function runOneRelay({
   try {
     spawned = await spawnRelay({
       relayPath,
-      args,
+      args: built.args,
       cwd: job.workspace.repoRoot,
       env,
       stdoutPath: harnessStdout,
@@ -191,6 +321,7 @@ async function runOneRelay({
     normalizer.flush();
   }
   const relay = readJsonIfExists(join(adapterOutDir, "result.json"));
+  writeSpawnRecord(adapterOutDir, job, profile, relay);
   return {
     phase,
     relay,
@@ -217,6 +348,11 @@ export async function runPiAdapter(context) {
     env = process.env,
   } = context;
   const contract = STAGE_CONTRACTS[job.stage];
+  const loaded = resolveStageProfile(job.stage, { env });
+  if (!loaded.ok) return emptyAdapterFailure(loaded.error, job.agent.sessionId);
+  const rooted = assertProfileResourcesExist(loaded.value);
+  if (!rooted.ok) return emptyAdapterFailure(rooted.error, job.agent.sessionId);
+  const profile = rooted.value;
   const adapterRoot = join(outDir, "adapter");
   const primaryDir = join(adapterRoot, "primary");
   mkdirSync(primaryDir, { recursive: true });
@@ -235,10 +371,36 @@ export async function runPiAdapter(context) {
     env,
     events,
     recovery: false,
+    profile,
   });
+  if (primary.assembleError) {
+    return {
+      ...emptyAdapterFailure(primary.assembleError, expectedSession),
+      adapterRuns: [primary.paths],
+    };
+  }
   const adapterRuns = [primary.paths];
   let relay = primary.relay;
   let recovered = false;
+
+  if (relay?.status === "completed") {
+    const assemblyError = verifyCompletedAssembly(relay, primary.paths.events, profile);
+    if (assemblyError) {
+      return {
+        status: "failed",
+        sessionId: relay.sessionId ?? expectedSession,
+        structuredOutput: null,
+        structuredOutputError: relay.structuredOutputError ?? null,
+        usage: relay.usage ?? {},
+        resolvedModel: relay.resolvedModel ?? null,
+        adapterRuns,
+        recovered: false,
+        error: assemblyError,
+        relay,
+        raw: { primary: primary.paths },
+      };
+    }
+  }
 
   const missing = relay
     && relay.status === "completed"
@@ -262,10 +424,44 @@ export async function runPiAdapter(context) {
       env,
       events,
       recovery: true,
+      profile,
     });
     adapterRuns.push(recovery.paths);
     relay = recovery.relay;
     recovered = true;
+    if (recovery.assembleError) {
+      return {
+        status: "failed",
+        sessionId: expectedSession,
+        structuredOutput: null,
+        structuredOutputError: null,
+        usage: {},
+        resolvedModel: null,
+        adapterRuns,
+        recovered,
+        error: recovery.assembleError,
+        relay,
+        raw: { primary: primary.paths },
+      };
+    }
+    if (relay?.status === "completed") {
+      const assemblyError = verifyCompletedAssembly(relay, recovery.paths.events, profile);
+      if (assemblyError) {
+        return {
+          status: "failed",
+          sessionId: relay.sessionId ?? expectedSession,
+          structuredOutput: null,
+          structuredOutputError: relay.structuredOutputError ?? null,
+          usage: relay.usage ?? {},
+          resolvedModel: relay.resolvedModel ?? null,
+          adapterRuns,
+          recovered,
+          error: assemblyError,
+          relay,
+          raw: { primary: primary.paths },
+        };
+      }
+    }
   }
 
   const status = mapRelayStatus(relay);

@@ -14,6 +14,7 @@ if (dumpPath) {
       argv: process.argv.slice(2),
       planEnv: process.env.PI_AUTO_HANDOFF_PLAN_FILE ?? null,
       handoffEnv: process.env.PI_AUTO_HANDOFF_HANDOFF_DIR ?? null,
+      expectExtensions: process.env.PI_HARNESS_EXPECT_EXTENSIONS ?? null,
     })}\n`,
     "utf8",
   );
@@ -21,6 +22,16 @@ if (dumpPath) {
 
 const sessionId = process.env.PI_STUB_SESSION ?? "stub-session-1";
 process.stdout.write(`${JSON.stringify({ type: "session", id: sessionId })}\n`);
+const expected = process.env.PI_HARNESS_EXPECT_EXTENSIONS;
+if (expected && !process.env.PI_STUB_NO_ATTESTATION) {
+  process.stdout.write(`${JSON.stringify({
+    type: "session_start",
+    harnessAttestation: {
+      version: "coding-agent.attestation.v1",
+      expected: expected.split(",").filter(Boolean),
+    },
+  })}\n`);
+}
 const extraEvents = process.env.PI_STUB_EVENTS;
 if (extraEvents) {
   const events = JSON.parse(extraEvents);

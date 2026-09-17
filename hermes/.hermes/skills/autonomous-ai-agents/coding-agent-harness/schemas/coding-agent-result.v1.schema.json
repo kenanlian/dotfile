@@ -166,6 +166,7 @@
             "adapter_unavailable",
             "agent_not_settled",
             "artifact_write_failed",
+            "extension_manifest_mismatch",
             "idempotency_conflict",
             "input_hash_mismatch",
             "invalid_job",

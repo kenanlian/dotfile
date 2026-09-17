@@ -25,6 +25,10 @@ import {
   SUBMIT_IMPLEMENTATION,
   SUBMIT_PLAN,
   SUBMIT_PLAN_REVIEW,
+  ATTESTATION_VERSION,
+  EXPECT_EXTENSIONS_ENV,
+  buildAttestationLine,
+  parseExpectedExtensions,
 } from "../extensions/stage-submit/keys.mjs";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
@@ -204,6 +208,17 @@ test("keys match contracts and JSON schema property order", () => {
   assert.deepEqual(Object.keys(planSchema.properties), [...PLAN_FIELD_KEYS]);
 });
 
+test("attestation helpers emit a grep-stable JSON line", () => {
+  assert.equal(EXPECT_EXTENSIONS_ENV, "PI_HARNESS_EXPECT_EXTENSIONS");
+  const line = buildAttestationLine("stage-submit,auto-handoff");
+  assert.match(line, /"harnessAttestation"/);
+  const parsed = JSON.parse(line);
+  assert.equal(parsed.type, "session_start");
+  assert.equal(parsed.harnessAttestation.version, ATTESTATION_VERSION);
+  assert.deepEqual(parsed.harnessAttestation.expected, ["stage-submit", "auto-handoff"]);
+  assert.deepEqual(parseExpectedExtensions("stage-submit"), ["stage-submit"]);
+});
+
 test("valid payloads terminate and round-trip details, including unicode", async () => {
   const loaded = await loadStageSubmit();
   const tools = loaded.extensions[0].tools;
@@ -279,22 +294,29 @@ test("direct implementation TypeBox rejects payloads runtime rejects", async () 
 
 test("compileBrief interpolates job fields and does not invent workflow decisions", () => {
   const plan = compileBrief(sampleJob("plan"));
+  assert.equal(plan.split("\n", 1)[0], "/skill:write-plan ");
   assert.match(plan, /submit_plan/);
   assert.match(plan, /job_1/);
   assert.match(plan, /\/abs\/requirement\.md/);
   assert.match(plan, /read-only/);
+  assert.match(plan, /This run mounts Skills \(read the SKILL\.md at each path/);
+  assert.match(plan, /- write-plan: .*agent_skills\/skills\/write-plan\/SKILL\.md/);
+  assert.match(plan, /- delegate-work: .*agent_skills\/skills\/delegate-work\/SKILL\.md/);
   assert.doesNotMatch(plan, /kanban|ready\/running|Workflow Manifest/i);
   const review = compileBrief(sampleJob("execute_review"), {
     workspaceEvidencePath: "/out/derived/workspace-evidence.json",
     candidatePatchPath: "/out/derived/candidate.patch",
   });
+  assert.equal(review.split("\n", 1)[0], "/skill:review-execute-candidate ");
   assert.match(review, /submit_execute_review/);
   assert.match(review, /workspace-evidence\.json/);
   assert.match(review, /candidate\.patch/);
   assert.match(review, /every delegated child must remain read-only/);
   const direct = compileBrief(sampleJob("direct_implement"));
+  assert.ok(!direct.startsWith("/skill:"));
   assert.match(direct, /submit_direct_implementation/);
   assert.match(direct, /Implement the Requirement directly/);
+  assert.match(direct, /- delegate-work: .*agent_skills\/skills\/delegate-work\/SKILL\.md/);
   assert.doesNotMatch(direct, /accepted plan/);
   assert.doesNotMatch(direct, /kanban|ready\/running|Workflow Manifest/i);
 });
