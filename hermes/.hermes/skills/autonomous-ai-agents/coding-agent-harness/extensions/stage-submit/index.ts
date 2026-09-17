@@ -183,9 +183,11 @@ const NonEmptyString = (description: string) => Type.String({ minLength: 1, desc
 // hook and re-validated host-side in validateDirectImplementationPayload.
 const DirectImplementationParams = Type.Object(
   {
-    schema: StringEnum([DIRECT_IMPLEMENTATION_SCHEMA_ID] as const, {
-      description: "direct-implementation.v1 schema id",
-    }),
+    schema: Type.Optional(
+      StringEnum([DIRECT_IMPLEMENTATION_SCHEMA_ID] as const, {
+        description: "direct-implementation.v1 schema id",
+      }),
+    ),
     outcome: StringEnum(["completed", "blocked"] as const, {
       description: "Direct implementation outcome",
     }),
@@ -320,8 +322,9 @@ const submitDirectImplementation = submitTool(
   DirectImplementationParams,
   "direct-implementation.v1 fields: schema, outcome, summary, residualRisks[], blockingIssues[].",
   (params) => {
-    // Normalize optional arrays so the recorded details payload satisfies the
-    // host-side contract (validateDirectImplementationPayload requires both).
+    // Normalize optional fields so the recorded details payload satisfies the
+    // host-side contract (validateDirectImplementationPayload requires all).
+    if (params.schema === undefined) params.schema = DIRECT_IMPLEMENTATION_SCHEMA_ID;
     if (params.residualRisks === undefined) params.residualRisks = [];
     if (params.blockingIssues === undefined) params.blockingIssues = [];
     if (params?.outcome === "completed" && Array.isArray(params.blockingIssues) && params.blockingIssues.length > 0) {
