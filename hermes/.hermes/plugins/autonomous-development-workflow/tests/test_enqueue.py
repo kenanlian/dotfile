@@ -25,10 +25,12 @@ WorkflowProtocolError = _types.WorkflowProtocolError
 WorkflowStore = _store.WorkflowStore
 build_kanban_create_argv = _cli.build_kanban_create_argv
 build_kanban_link_argv = _cli.build_kanban_link_argv
+build_kanban_notify_subscribe_argv = _service.build_kanban_notify_subscribe_argv
 build_kanban_show_argv = _cli.build_kanban_show_argv
 build_kanban_unblock_argv = _cli.build_kanban_unblock_argv
 enqueue_workflow = _service.enqueue_workflow
 load_plugin_config = _config.load_plugin_config
+normalize_notify_target = _service.normalize_notify_target
 run_argv = _service.run_argv
 setup_autodev_cli = _cli.setup_autodev_cli
 
@@ -68,6 +70,8 @@ class FakeKanban:
         self.cards_by_id: dict[str, dict] = {}
         self.links: list[tuple[str, str]] = []
         self.unblocked: set[str] = set()
+        self.subs: list[dict] = []
+        self.notify_exit = 0
         self.fail_on: str | None = None
         self.human_create = False
         self._n = 0
@@ -100,6 +104,20 @@ class FakeKanban:
             task["status"] = "todo" if parents else "ready"
             self.unblocked.add(task_id)
             return 0, f"Unblocked {task_id}\n", ""
+        if action == "notify-subscribe":
+            if self.notify_exit:
+                return self.notify_exit, "", "notify-subscribe failed"
+            self.subs.append(
+                {
+                    "task_id": argv[argv.index("notify-subscribe") + 1],
+                    "platform": _flag(argv, "--platform"),
+                    "chat_id": _flag(argv, "--chat-id"),
+                    "chat_type": _opt_flag(argv, "--chat-type"),
+                    "user_id_alt": _opt_flag(argv, "--user-id-alt"),
+                    "delivery_mode": _opt_flag(argv, "--delivery-mode"),
+                }
+            )
+            return 0, "Subscribed\n", ""
         raise AssertionError(f"unexpected argv {argv}")
 
     def _create(self, argv: list[str]) -> tuple[int, str, str]:
@@ -127,7 +145,7 @@ class FakeKanban:
 
 
 def _kanban_action(argv: list[str]) -> str:
-    for name in ("create", "link", "show", "unblock"):
+    for name in ("create", "link", "show", "unblock", "notify-subscribe"):
         if name in argv:
             return name
     return "unknown"
@@ -135,6 +153,10 @@ def _kanban_action(argv: list[str]) -> str:
 
 def _flag(argv: list[str], name: str) -> str:
     return argv[argv.index(name) + 1]
+
+
+def _opt_flag(argv: list[str], name: str) -> str | None:
+    return argv[argv.index(name) + 1] if name in argv else None
 
 
 class ArgvBuilderTests(unittest.TestCase):
@@ -246,6 +268,55 @@ class ArgvBuilderTests(unittest.TestCase):
             )
 
 
+    def test_cli_parser_accepts_notify_flags(self) -> None:
+        parser = argparse.ArgumentParser()
+        setup_autodev_cli(parser)
+        args = parser.parse_args(
+            [
+                "enqueue",
+                "--board",
+                "proj",
+                "--repo",
+                "/abs/repo",
+                "--title",
+                "Ship login",
+                "--requirement",
+                "/abs/requirement.md",
+                "--notify-platform",
+                "feishu",
+                "--notify-chat-id",
+                "oc_123",
+                "--notify-chat-type",
+                "group",
+                "--notify-user-id-alt",
+                "on_456",
+                "--notify-mode",
+                "notify+wake",
+            ]
+        )
+        self.assertEqual(args.notify_platform, "feishu")
+        self.assertEqual(args.notify_chat_id, "oc_123")
+        self.assertEqual(args.notify_chat_type, "group")
+        self.assertEqual(args.notify_user_id_alt, "on_456")
+        self.assertEqual(args.notify_mode, "notify+wake")
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "enqueue",
+                    "--board",
+                    "proj",
+                    "--repo",
+                    "/abs/repo",
+                    "--title",
+                    "Ship login",
+                    "--requirement",
+                    "/abs/requirement.md",
+                    "--notify-mode",
+                    "shout",
+                ]
+            )
+
+
 class EnqueueWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="autodev-enqueue-")
@@ -320,6 +391,66 @@ class EnqueueWorkflowTests(unittest.TestCase):
             )[1]
         )
         self.assertEqual(show["parents"], [first["task_id"]])
+
+    def test_notify_subscribes_after_publish(self) -> None:
+        result = self._enqueue(
+            notify={
+                "platform": "feishu",
+                "chat_id": "oc_123",
+                "chat_type": "group",
+                "user_id_alt": "on_456",
+                "delivery_mode": "notify+wake",
+            }
+        )
+        self.assertEqual(result["status"], "published")
+        self.assertIs(result["notify_subscribed"], True)
+        self.assertNotIn("notify_error", result)
+        self.assertEqual(
+            self.kanban.subs,
+            [
+                {
+                    "task_id": result["task_id"],
+                    "platform": "feishu",
+                    "chat_id": "oc_123",
+                    "chat_type": "group",
+                    "user_id_alt": "on_456",
+                    "delivery_mode": "notify+wake",
+                }
+            ],
+        )
+
+    def test_notify_defaults_to_no_subscription(self) -> None:
+        result = self._enqueue()
+        self.assertIs(result["notify_subscribed"], False)
+        self.assertEqual(self.kanban.subs, [])
+
+    def test_notify_requires_platform_and_chat_id_pair(self) -> None:
+        with self.assertRaises(WorkflowProtocolError):
+            self._enqueue(notify={"platform": "feishu"})
+        with self.assertRaises(WorkflowProtocolError):
+            self._enqueue(notify={"chat_id": "oc_123"})
+        # Validation fires before any kanban side effect.
+        self.assertEqual(self.kanban.calls, [])
+        self.assertIsNone(self.store.get_intake("key-1"))
+        self.assertIsNone(normalize_notify_target(None))
+        self.assertIsNone(normalize_notify_target({}))
+
+    def test_notify_failure_does_not_fail_published_card(self) -> None:
+        self.kanban.notify_exit = 1
+        result = self._enqueue(notify={"platform": "feishu", "chat_id": "oc_123"})
+        self.assertEqual(result["status"], "published")
+        self.assertIs(result["notify_subscribed"], False)
+        self.assertTrue(result["notify_error"])
+        self.assertEqual(self.kanban.cards_by_id[result["task_id"]]["status"], "ready")
+
+    def test_replay_with_notify_heals_missing_subscription(self) -> None:
+        first = self._enqueue()
+        self.assertEqual(self.kanban.subs, [])
+        again = self._enqueue(notify={"platform": "feishu", "chat_id": "oc_123"})
+        self.assertEqual(again["task_id"], first["task_id"])
+        self.assertIs(again["notify_subscribed"], True)
+        self.assertEqual(len(self.kanban.subs), 1)
+        self.assertEqual(len(self.kanban.cards_by_id), 1)
 
     def test_inconsistent_tails_fail_closed_and_keep_blocked(self) -> None:
         self._enqueue(idempotency_key="key-1", title="First")

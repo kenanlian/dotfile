@@ -54,6 +54,35 @@ def setup_autodev_cli(parser) -> None:
         default=None,
         help="Absolute autodev.verification.v1 JSON path (required for --flow direct)",
     )
+    enqueue.add_argument(
+        "--notify-platform",
+        default=None,
+        help="Subscribe a chat to card completion/block events (requires --notify-chat-id)",
+    )
+    enqueue.add_argument(
+        "--notify-chat-id",
+        default=None,
+        help="Chat id to notify (requires --notify-platform)",
+    )
+    enqueue.add_argument(
+        "--notify-chat-type",
+        choices=("dm", "group", "channel", "thread"),
+        default=None,
+        help="Optional chat type recorded for wake routing",
+    )
+    enqueue.add_argument("--notify-thread-id", default=None, help="Optional thread/topic id")
+    enqueue.add_argument("--notify-user-id", default=None, help="Optional operator user id")
+    enqueue.add_argument(
+        "--notify-user-id-alt",
+        default=None,
+        help="Optional alternate user id (Feishu union_id, Signal UUID, ...)",
+    )
+    enqueue.add_argument(
+        "--notify-mode",
+        choices=("notify", "notify+wake", "wake"),
+        default=None,
+        help="Delivery mode (default: kanban CLI default)",
+    )
 
     status = sub.add_parser("status", help="Show the external workflow checkpoint")
     status.add_argument("--board", required=True, help="Kanban board slug")
@@ -101,6 +130,15 @@ def handle_autodev(
             idempotency_key=args.idempotency_key,
             flow=getattr(args, "flow", "full"),
             verification=getattr(args, "verification", None),
+            notify={
+                "platform": args.notify_platform,
+                "chat_id": args.notify_chat_id,
+                "chat_type": args.notify_chat_type,
+                "thread_id": args.notify_thread_id,
+                "user_id": args.notify_user_id,
+                "user_id_alt": args.notify_user_id_alt,
+                "delivery_mode": args.notify_mode,
+            },
             config=config,
             store=store,
             run_argv=run_command,

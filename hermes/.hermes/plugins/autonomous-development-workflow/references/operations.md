@@ -42,6 +42,17 @@ Rules:
 - Replay the same `--idempotency-key` to reuse a published card.
 - The plugin does not start a Worker. Hermes Dispatcher claims `ready` cards.
 
+Completion notifications: CLI enqueue carries no chat session, so unlike
+in-chat `kanban_create` there is no automatic subscription. Pass
+`--notify-platform <platform> --notify-chat-id <chat-id>` (both required
+together) to subscribe a destination at publish time; optional
+`--notify-chat-type`, `--notify-thread-id`, `--notify-user-id`,
+`--notify-user-id-alt`, and `--notify-mode` (`notify` | `notify+wake` |
+`wake`) refine delivery. The subscription is best-effort bookkeeping: a
+failed subscribe never fails an already-published card, and replaying an
+enqueue with notify flags heals a missing subscription. The result JSON
+reports `notify_subscribed` (and `notify_error` on failure).
+
 ## Status
 
 ```bash

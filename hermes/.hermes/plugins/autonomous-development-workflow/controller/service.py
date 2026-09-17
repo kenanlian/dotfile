@@ -112,6 +112,53 @@ def build_kanban_unblock_argv(*, board: str, task_id: str) -> list[str]:
     return ["hermes", "kanban", "--board", board, "unblock", task_id]
 
 
+# Optional notify target fields forwarded to `kanban notify-subscribe` (see
+# normalize_notify_target). platform/chat_id are mandatory together.
+_NOTIFY_OPTIONAL_FLAGS = (
+    ("chat_type", "--chat-type"),
+    ("thread_id", "--thread-id"),
+    ("user_id", "--user-id"),
+    ("user_id_alt", "--user-id-alt"),
+    ("delivery_mode", "--delivery-mode"),
+)
+
+
+def normalize_notify_target(notify: Mapping[str, Any] | None) -> dict[str, str] | None:
+    """Validate operator-supplied notify flags; None when no subscription wanted."""
+    if notify is None:
+        return None
+    platform = str(notify.get("platform") or "").strip()
+    chat_id = str(notify.get("chat_id") or "").strip()
+    if not platform and not chat_id:
+        return None
+    if not platform or not chat_id:
+        raise WorkflowProtocolError(
+            "notify requires both platform and chat_id"
+        )
+    target = {"platform": platform, "chat_id": chat_id}
+    for field, _flag_name in _NOTIFY_OPTIONAL_FLAGS:
+        value = notify.get(field)
+        if value is not None and str(value).strip():
+            target[field] = str(value)
+    return target
+
+
+def build_kanban_notify_subscribe_argv(
+    *, board: str, task_id: str, notify: Mapping[str, str]
+) -> list[str]:
+    argv = [
+        "hermes", "kanban", "--board", board,
+        "notify-subscribe", task_id,
+        "--platform", str(notify["platform"]),
+        "--chat-id", str(notify["chat_id"]),
+    ]
+    for field, flag_name in _NOTIFY_OPTIONAL_FLAGS:
+        value = notify.get(field)
+        if value:
+            argv.extend([flag_name, str(value)])
+    return argv
+
+
 def run_argv(argv: list[str], *, timeout: int = 60) -> tuple[int, str, str]:
     if not isinstance(argv, (list, tuple)) or not argv:
         raise WorkflowProtocolError("command must be a non-empty argv list, not a shell string")
@@ -195,9 +242,11 @@ def enqueue_workflow(
     inspect_repo: InspectRepo | None = None,
     flow: str = "full",
     verification: str | None = None,
+    notify: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not board.strip() or not title.strip():
         raise WorkflowProtocolError("board and title must be non-empty")
+    notify_target = normalize_notify_target(notify)
     template = template_for_flow(flow)
     requirement_path = Path(require_absolute_path(requirement, "requirement"))
     if not requirement_path.is_file():
@@ -242,7 +291,10 @@ def enqueue_workflow(
     if intake is not None:
         _assert_intake_fingerprint(intake, template_id=template.id, verification_sha=verification_sha)
     if intake is not None and intake["status"] == "published" and intake["task_id"]:
-        return _enqueue_result(intake["task_id"], intake["predecessor_task_id"], key, template)
+        return _enqueue_result(
+            intake["task_id"], intake["predecessor_task_id"], key, template,
+            **_subscribe_notify(run_argv, board=board, task_id=intake["task_id"], notify=notify_target),
+        )
 
     task_id = intake["task_id"] if intake and intake["task_id"] else None
     if task_id is None:
@@ -407,7 +459,32 @@ def enqueue_workflow(
             verification_sha256=verification_sha,
         )
 
-    return _enqueue_result(task_id, predecessor, key, template)
+    return _enqueue_result(
+        task_id, predecessor, key, template,
+        **_subscribe_notify(run_argv, board=board, task_id=task_id, notify=notify_target),
+    )
+
+
+def _subscribe_notify(
+    run_argv: RunArgv, *, board: str, task_id: str, notify: Mapping[str, str] | None
+) -> dict[str, Any]:
+    """Best-effort notify-subscribe after publication. Bookkeeping must not fail
+    an already-published card, and kanban notify-subscribe is idempotent on
+    (task, platform, chat, thread), so replay is safe."""
+    if notify is None:
+        return {"notify_subscribed": False}
+    try:
+        code, stdout, stderr = run_argv(
+            build_kanban_notify_subscribe_argv(board=board, task_id=task_id, notify=notify)
+        )
+    except Exception as exc:
+        return {"notify_subscribed": False, "notify_error": str(exc)}
+    if code != 0:
+        return {
+            "notify_subscribed": False,
+            "notify_error": (stderr.strip() or stdout.strip() or "kanban notify-subscribe failed"),
+        }
+    return {"notify_subscribed": True}
 
 
 def _derive_idempotency_key(
@@ -423,7 +500,9 @@ def _derive_idempotency_key(
     return "autodev-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
 
 
-def _enqueue_result(task_id: str, predecessor: str | None, key: str, template) -> dict[str, Any]:
+def _enqueue_result(
+    task_id: str, predecessor: str | None, key: str, template, **extra: Any
+) -> dict[str, Any]:
     return {
         "task_id": task_id,
         "status": "published",
@@ -431,6 +510,7 @@ def _enqueue_result(task_id: str, predecessor: str | None, key: str, template) -
         "idempotency_key": key,
         "templateId": template.id,
         "flow": template.flow,
+        **extra,
     }
 
 
