@@ -19,3 +19,11 @@ opencode 走本地代理挂死已加直连规则；复发查代理路由。
 Pi 工作流用全局 Agent Skills；expert 后端按配置灵活选。
 §
 skill_manage 对软链 skill 不可写（patch/write 报 not found，重试一次即止；skill_view 读子文件正常）；自定义/覆盖 Skill 的学习改动走前台编辑 dotfile 仓。
+§
+Cursor 委派返工偏好：默认续用原 session；但用户担心原 session 上下文占用过多时会明确指示开全新 session（brief 须自带完整计划路径+既往发现+约束，模型由用户当次指定）。长跑监控按 ~1200 秒间隔检查（terminal wait 单次上限约 400s，需连等）。
+§
+GLM 5.3（zai-coding-cn/glm-5.3，thinking=high）
+§
+Harness 4 类 agent 用 zai-coding-cn/glm-5.3
+§
+autodev CLI enqueue 不带聊天上下文，不会自动订阅完成通知（自动订阅只挂在聊天会话里的 kanban_create 工具上）。从聊天会话代为入队后，须补一条 hermes kanban notify-subscribe <task_id> 到当前群。
