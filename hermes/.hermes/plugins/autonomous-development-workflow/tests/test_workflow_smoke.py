@@ -13,6 +13,7 @@ from plugin_imports import import_plugin
 
 _cli = import_plugin("cli")
 _hooks = import_plugin("hooks")
+_jobs = import_plugin("controller.jobs")
 _service = import_plugin("controller.service")
 _store = import_plugin("controller.store")
 _types = import_plugin("controller.types")
@@ -51,7 +52,7 @@ class WorkflowSmokeTests(unittest.TestCase):
                     "id": "V1",
                     "argv": ["node", "-e", "process.exit(0)"],
                     "cwd": str(self.env.repo.resolve()),
-                    "timeoutSeconds": 300,
+                    "timeoutSeconds": _jobs.DEFAULT_CHECK_TIMEOUT_SECONDS,
                     "expectedExitCode": 0,
                 }
             ],

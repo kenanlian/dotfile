@@ -88,6 +88,45 @@ def lifecycle_already_applied(shown: Mapping[str, Any], pending: Mapping[str, An
     return kanban_status_of(shown) == pending.get("kanbanStatus")
 
 
+def claimed_from_review(shown: Mapping[str, Any], run_id: str) -> bool:
+    """True when the current run's latest ``claimed`` event carries
+    ``source_status == "review"`` (i.e. the kernel will accept
+    ``kanban_request_changes`` from it)."""
+    events = shown.get("events")
+    if not isinstance(events, list):
+        return False
+    latest: Mapping[str, Any] | None = None
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        if event.get("kind") != "claimed":
+            continue
+        if str(event.get("run_id")) != str(run_id):
+            continue
+        latest = event
+    if latest is None:
+        return False
+    payload = latest.get("payload")
+    return isinstance(payload, Mapping) and payload.get("source_status") == "review"
+
+
+def is_in_run_implement_rework(
+    pending: Mapping[str, Any], shown: Mapping[str, Any], *, current_run_id: str
+) -> bool:
+    """kanban_request_changes only exists for review-claimed runs. When the
+    workflow itself (verify stage) requests implementer rework, the active
+    run was claimed from a non-review lane, so the kernel has no transition
+    to apply — and none is needed: the implement_rework lane set already
+    accepts ``running``, which is where the task sits."""
+    if pending.get("tool") != "kanban_request_changes":
+        return False
+    if pending.get("targetStatus") != WorkflowStatus.IMPLEMENT_REWORK.value:
+        return False
+    if kanban_status_of(shown) != "running":
+        return False
+    return not claimed_from_review(shown, current_run_id)
+
+
 def parse_dispatch_json(raw: str, *, what: str) -> dict[str, Any]:
     try:
         payload = json.loads(raw)
@@ -119,6 +158,13 @@ def apply_pending_lifecycle(
     shown = show_task(dispatch, task_id=task_id, board=board)
     if lifecycle_already_applied(shown, pending):
         return {"applied": True, "dispatched": False, "shown": shown}
+    if is_in_run_implement_rework(pending, shown, current_run_id=current_run_id):
+        return {
+            "applied": True,
+            "dispatched": False,
+            "shown": shown,
+            "skipped": "in_run_implement_rework",
+        }
     args = dict(pending.get("args") or {})
     args.setdefault("task_id", task_id)
     parse_dispatch_json(dispatch(str(pending["tool"]), args), what=str(pending["tool"]))

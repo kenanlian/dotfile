@@ -1097,6 +1097,63 @@ class VerifyDecisionTests(unittest.TestCase):
         )
 
 
+class PlanVerificationTimeoutTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="autodev-plan-verify-")
+        self.root = Path(self._tmp.name).resolve()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _plan_input(self, verification: list[dict]) -> dict:
+        document = {
+            "schema": ARTIFACT_SCHEMA,
+            "kind": "plan",
+            "payload": {
+                "schema": "plan.v1",
+                "outcome": "completed",
+                "verification": verification,
+            },
+        }
+        path = self.root / "plan.json"
+        text = json.dumps(document)
+        path.write_text(text, encoding="utf-8")
+        return {
+            "kind": "plan",
+            "path": str(path),
+            "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        }
+
+    def _checks(self, verification: list[dict]):
+        return _jobs.verification_from_plan_input(
+            self._plan_input(verification), repo_root=str(self.root)
+        )
+
+    def test_default_timeout_applies_without_override(self) -> None:
+        checks = self._checks([{"id": "v", "argv": ["true"], "cwd": "."}])
+        self.assertEqual(
+            checks[0]["timeoutSeconds"], _jobs.DEFAULT_CHECK_TIMEOUT_SECONDS
+        )
+
+    def test_per_check_timeout_override(self) -> None:
+        checks = self._checks(
+            [
+                {"id": "fast", "argv": ["true"], "cwd": ".", "timeoutSeconds": 60},
+                {"id": "slow", "argv": ["true"], "cwd": ".", "timeoutSeconds": 3600},
+            ]
+        )
+        self.assertEqual(checks[0]["timeoutSeconds"], 60)
+        self.assertEqual(checks[1]["timeoutSeconds"], 3600)
+
+    def test_invalid_timeout_override_rejected(self) -> None:
+        for bad in (0, -5, "300", True, 30.5):
+            with self.subTest(bad=bad):
+                with self.assertRaises(WorkflowProtocolError):
+                    self._checks(
+                        [{"id": "v", "argv": ["true"], "cwd": ".", "timeoutSeconds": bad}]
+                    )
+
+
 class BoundResultCheckTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="autodev-bound-checks-")

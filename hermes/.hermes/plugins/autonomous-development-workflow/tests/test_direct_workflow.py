@@ -127,7 +127,10 @@ class DirectWorkflowSmokeTests(unittest.TestCase):
         self.assertEqual(result["workflowStatus"], "completed")
         manifest = self.env.store.get_manifest("project-board", task_id)
         self.assertEqual(int(manifest.get("implementReworkCount") or 0), 1)
-        self.assertTrue(any(name == "kanban_request_changes" for name, _ in self.env.kanban.tool_calls))
+        # In-run rework: the worker run was not claimed from review, so the
+        # review-lane kanban_request_changes handoff is skipped; the task
+        # stays in the running lane (allowed for implement_rework).
+        self.assertFalse(any(name == "kanban_request_changes" for name, _ in self.env.kanban.tool_calls))
         rows = [
             row
             for row in self.env.store.list_jobs("project-board", task_id)

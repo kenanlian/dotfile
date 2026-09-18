@@ -41,7 +41,7 @@ from .types import (
 )
 
 ConsumeKind = Literal["noop", "consumed", "protocol_failure", "transport_failure"]
-DEFAULT_CHECK_TIMEOUT_SECONDS = 300
+DEFAULT_CHECK_TIMEOUT_SECONDS = 1800  # real-CLI smoke checks legitimately take minutes
 
 
 @dataclass(frozen=True)
@@ -344,12 +344,21 @@ def verification_from_plan_input(
             raise WorkflowProtocolError(
                 f"plan.verification[{index}].cwd escapes repo_root"
             ) from exc
+        raw_timeout = raw.get("timeoutSeconds")
+        if raw_timeout is None:
+            check_timeout = timeout_seconds
+        elif isinstance(raw_timeout, bool) or not isinstance(raw_timeout, int) or raw_timeout < 1:
+            raise WorkflowProtocolError(
+                f"plan.verification[{index}].timeoutSeconds must be a positive integer"
+            )
+        else:
+            check_timeout = raw_timeout
         checks.append(
             {
                 "id": check_id,
                 "argv": list(argv),
                 "cwd": str(cwd),
-                "timeoutSeconds": timeout_seconds,
+                "timeoutSeconds": check_timeout,
                 "expectedExitCode": 0,
             }
         )

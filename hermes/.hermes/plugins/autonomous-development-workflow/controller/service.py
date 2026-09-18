@@ -1307,6 +1307,8 @@ class WorkflowController:
                 "appliedAt": int(time.time()),
                 "workflowRevision": pending["workflowRevision"],
             }
+            if result.get("skipped"):
+                updated["lastLifecycle"]["skipped"] = str(result["skipped"])
             updated["pendingLifecycle"] = None
             self.store.cas_update_manifest(
                 manifest["board"],

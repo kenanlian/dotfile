@@ -231,6 +231,7 @@ class FakeKanban:
     def __init__(self, *, status: str = "running", run_id: str = "7") -> None:
         self.status = status
         self.run_id = run_id
+        self.events: list[dict] = []
         self.calls: list[tuple[str, dict]] = []
 
     def __call__(self, name: str, args: dict, **kwargs) -> str:
@@ -249,7 +250,7 @@ class FakeKanban:
                     "parents": [],
                     "children": [],
                     "comments": [],
-                    "events": [],
+                    "events": list(self.events),
                     "runs": [{"id": self.run_id, "status": "running"}],
                 }
             )
@@ -725,6 +726,77 @@ class LifecycleSagaTests(unittest.TestCase):
                 board="project-board",
                 dispatch=self.kanban,
             )
+
+    def test_in_run_implement_rework_skips_review_lane_tool(self) -> None:
+        pending = make_pending_lifecycle(
+            target_status="implement_rework", run_id="7", workflow_revision=10
+        )
+        self.kanban.status = "running"
+        self.kanban.events = [
+            {"kind": "claimed", "run_id": "7", "payload": {"lock": "host:1"}}
+        ]
+        self.store.put_manifest(
+            _manifest(
+                workflowStatus="implement_rework",
+                pendingLifecycle=pending,
+                revision=10,
+                implementReworkCount=1,
+            )
+        )
+        controller = self._controller()
+        outcome = controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        dispatched = [name for name, _ in self.kanban.calls if name == "kanban_request_changes"]
+        self.assertEqual(dispatched, [])
+        manifest = self.store.get_manifest("project-board", "t_abc")
+        self.assertIsNone(manifest["pendingLifecycle"])
+        self.assertEqual(manifest["workflowStatus"], "implement_rework")
+        receipt = manifest["lastLifecycle"]
+        self.assertEqual(receipt["tool"], "kanban_request_changes")
+        self.assertFalse(receipt["dispatched"])
+        self.assertEqual(receipt["skipped"], "in_run_implement_rework")
+        self.assertEqual(outcome["workflowStatus"], "implement_rework")
+
+    def test_review_claimed_implement_rework_still_dispatches(self) -> None:
+        pending = make_pending_lifecycle(
+            target_status="implement_rework", run_id="7", workflow_revision=10
+        )
+        self.kanban.status = "running"
+        self.kanban.events = [
+            {
+                "kind": "claimed",
+                "run_id": "7",
+                "payload": {"lock": "host:1", "source_status": "review"},
+            }
+        ]
+        result = apply_pending_lifecycle(
+            pending,
+            current_run_id="7",
+            task_id="t_abc",
+            board="project-board",
+            dispatch=self.kanban,
+        )
+        dispatched = [name for name, _ in self.kanban.calls if name == "kanban_request_changes"]
+        self.assertEqual(len(dispatched), 1)
+        self.assertTrue(result["applied"])
+        self.assertTrue(result["dispatched"])
+        self.assertNotIn("skipped", result)
+
+    def test_implement_rework_outside_running_lane_still_dispatches(self) -> None:
+        pending = make_pending_lifecycle(
+            target_status="implement_rework", run_id="7", workflow_revision=10
+        )
+        self.kanban.status = "review"
+        result = apply_pending_lifecycle(
+            pending,
+            current_run_id="7",
+            task_id="t_abc",
+            board="project-board",
+            dispatch=self.kanban,
+        )
+        dispatched = [name for name, _ in self.kanban.calls if name == "kanban_request_changes"]
+        self.assertEqual(len(dispatched), 1)
+        self.assertTrue(result["dispatched"])
+        self.assertNotIn("skipped", result)
 
 
 class ProcessGoneRecoveryTests(unittest.TestCase):
