@@ -380,6 +380,7 @@ def enqueue_workflow(
                 "approvedPlan": None,
                 "lastConsumedJobId": None,
                 "pendingLifecycle": None,
+                "lastLifecycle": None,
                 "resumeStatus": None,
             }
         )
@@ -905,13 +906,18 @@ class WorkflowController:
             else implement_rework_count + 1
         )
         baseline = manifest.get("baseline") or {}
+        # A transport retry deliberately continues on the tree the failed Job
+        # left behind (a reused implementer session expects its work in place),
+        # so the clean-tree requirement must not re-arm for it. expectedHead
+        # stays pinned to the baseline: agents must never move HEAD.
+        require_clean_at_start = template.require_clean_at_start(
+            stage, implement_rework_count=implement_rework_count
+        ) and action.reason != "transport_retry"
         workspace = {
             "repoRoot": manifest["repoRoot"],
             "branch": baseline.get("branch") or self.config.main_branch,
             "expectedHead": baseline.get("head") or "0" * 40,
-            "requireCleanAtStart": template.require_clean_at_start(
-                stage, implement_rework_count=implement_rework_count
-            ),
+            "requireCleanAtStart": require_clean_at_start,
         }
         job = build_job(
             board=board,
@@ -1291,6 +1297,16 @@ class WorkflowController:
         if result["applied"]:
             updated = dict(manifest)
             updated["revision"] = int(manifest["revision"]) + 1
+            # Receipt for the saga close-out: once pendingLifecycle clears,
+            # later observers can still tell "applied" from "stuck".
+            updated["lastLifecycle"] = {
+                "tool": pending["tool"],
+                "targetStatus": pending["targetStatus"],
+                "kanbanStatus": pending["kanbanStatus"],
+                "dispatched": result["dispatched"],
+                "appliedAt": int(time.time()),
+                "workflowRevision": pending["workflowRevision"],
+            }
             updated["pendingLifecycle"] = None
             self.store.cas_update_manifest(
                 manifest["board"],
@@ -1342,6 +1358,7 @@ class WorkflowController:
             "nextAction": action.kind,
             "inProgress": in_progress,
             "pendingLifecycle": manifest.get("pendingLifecycle"),
+            "lastLifecycle": manifest.get("lastLifecycle"),
             "outcome": outcome,
             "templateId": template.id,
             "flow": template.flow,

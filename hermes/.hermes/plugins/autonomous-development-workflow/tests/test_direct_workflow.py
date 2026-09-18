@@ -257,6 +257,80 @@ class DirectWorkflowSmokeTests(unittest.TestCase):
         second = json.loads(Path(rows[1]["job_path"]).read_text(encoding="utf-8"))
         self.assertEqual(second["agent"]["sessionId"], "sess_keep")
 
+    def test_transport_retry_relaxes_clean_tree_and_reuses_implementer_session(self) -> None:
+        self.env.set_script(
+            {
+                "direct_implement:1:0": {"status": "failed", "sessionId": "sess_dirty_tree"},
+                "direct_implement:1:1": {
+                    "status": "completed",
+                    "checks": "passed",
+                    "sessionId": "sess_dirty_tree",
+                },
+            }
+        )
+        created = self._enqueue_direct()
+        task_id = created["task_id"]
+        self.env.kanban.claim_ready(task_id)
+        controller = self.env.controller()
+        env = self.env.harness_env()
+        with _patched_env(env):
+            failed = controller.advance(
+                board="project-board",
+                task_id=task_id,
+                run_id=str(self.env.kanban.run_id),
+                wait_seconds=8,
+            )
+        self.assertTrue(failed["inProgress"])
+        manifest = self.env.store.get_manifest("project-board", task_id)
+        self.assertEqual(manifest.get("implementerSessionId"), "sess_dirty_tree")
+        self.assertEqual(manifest.get("runFailureCounts"), {"direct_implement": 1})
+        # The failed Job leaves a dirty tree behind; the transport retry must
+        # continue on it instead of being fenced out by requireCleanAtStart.
+        dirty = self.env.repo / "src" / "app.txt"
+        dirty.parent.mkdir(parents=True, exist_ok=True)
+        dirty.write_text("half-finished transport retry\n", encoding="utf-8")
+        result = None
+        for _ in range(20):
+            with _patched_env(env):
+                result = controller.advance(
+                    board="project-board",
+                    task_id=task_id,
+                    run_id=str(self.env.kanban.run_id),
+                    wait_seconds=8,
+                )
+            if result["workflowStatus"] == "completed":
+                break
+        else:
+            raise AssertionError(f"did not complete: last={result}")
+        rows = [
+            row
+            for row in self.env.store.list_jobs("project-board", task_id)
+            if row["stage"] == "direct_implement"
+        ]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row["business_attempt"] for row in rows], [1, 1])
+        self.assertEqual([row["transport_retry"] for row in rows], [0, 1])
+        first = json.loads(Path(rows[0]["job_path"]).read_text(encoding="utf-8"))
+        second = json.loads(Path(rows[1]["job_path"]).read_text(encoding="utf-8"))
+        self.assertTrue(first["workspace"]["requireCleanAtStart"])
+        self.assertFalse(second["workspace"]["requireCleanAtStart"])
+        self.assertEqual(second["workspace"]["expectedHead"], manifest["baseline"]["head"])
+        self.assertIsNone(first["agent"]["sessionId"])
+        self.assertEqual(second["agent"]["sessionId"], "sess_dirty_tree")
+        self.assertEqual(result["lastLifecycle"]["tool"], "kanban_complete")
+
+    def test_first_implement_job_still_requires_a_clean_tree(self) -> None:
+        created = self.env.enqueue()
+        task_id = created["task_id"]
+        self.env.kanban.claim_ready(task_id)
+        self.env.advance_until(task_id=task_id, statuses={"review_requested"})
+        jobs = {
+            row["stage"]: json.loads(Path(row["job_path"]).read_text(encoding="utf-8"))
+            for row in self.env.store.list_jobs("project-board", task_id)
+        }
+        self.assertTrue(jobs["plan"]["workspace"]["requireCleanAtStart"])
+        self.assertTrue(jobs["implement"]["workspace"]["requireCleanAtStart"])
+
     def test_product_acceptance_is_rejected_for_direct_template(self) -> None:
         created = self._enqueue_direct()
         task_id = created["task_id"]

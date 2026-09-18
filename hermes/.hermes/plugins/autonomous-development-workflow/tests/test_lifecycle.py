@@ -326,6 +326,47 @@ class LifecycleSagaTests(unittest.TestCase):
         completes = [name for name, _ in self.kanban.calls if name == "kanban_complete"]
         self.assertEqual(len(completes), 1)
 
+    def test_applied_pending_lifecycle_records_last_lifecycle_receipt(self) -> None:
+        self.kanban.status = "review"
+        pending = make_pending_lifecycle(
+            target_status="completed",
+            run_id="7",
+            workflow_revision=8,
+        )
+        self.store.put_manifest(
+            _manifest(workflowStatus="completed", pendingLifecycle=pending, revision=8)
+        )
+        controller = self._controller()
+        first = controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        manifest = self.store.get_manifest("project-board", "t_abc")
+        self.assertIsNone(manifest["pendingLifecycle"])
+        receipt = manifest["lastLifecycle"]
+        self.assertEqual(receipt["tool"], "kanban_complete")
+        self.assertEqual(receipt["targetStatus"], "completed")
+        self.assertEqual(receipt["kanbanStatus"], "done")
+        self.assertTrue(receipt["dispatched"])
+        self.assertEqual(receipt["workflowRevision"], 8)
+        self.assertIsInstance(receipt["appliedAt"], int)
+        self.assertNotIsInstance(receipt["appliedAt"], bool)
+        self.assertIn("lastLifecycle", first)
+        self.assertEqual(first["lastLifecycle"], receipt)
+
+    def test_already_applied_pending_lifecycle_receipt_records_no_dispatch(self) -> None:
+        self.kanban.status = "done"
+        pending = make_pending_lifecycle(
+            target_status="completed",
+            run_id="7",
+            workflow_revision=8,
+        )
+        self.store.put_manifest(
+            _manifest(workflowStatus="completed", pendingLifecycle=pending, revision=8)
+        )
+        controller = self._controller()
+        result = controller.advance(board="project-board", task_id="t_abc", run_id="7")
+        self.assertFalse(any(name == "kanban_complete" for name, _ in self.kanban.calls))
+        self.assertEqual(result["lastLifecycle"]["tool"], "kanban_complete")
+        self.assertFalse(result["lastLifecycle"]["dispatched"])
+
     def test_pending_lifecycle_bound_to_old_run_is_refused(self) -> None:
         pending = make_pending_lifecycle(
             target_status="review_requested",

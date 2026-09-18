@@ -5,8 +5,9 @@ STATUS = {
     "description": (
         "Read the current external workflow checkpoint for the active Kanban "
         "task. Returns workflowStatus, revision, stageAttempt, activeJobId, "
-        "nextAction, inProgress, pendingLifecycle, and lastActivity. Does not "
-        "change workflow or Kanban state."
+        "nextAction, inProgress, pendingLifecycle, lastLifecycle (receipt of "
+        "the most recently applied lifecycle transition), and lastActivity. "
+        "Does not change workflow or Kanban state."
     ),
     "parameters": {
         "type": "object",
