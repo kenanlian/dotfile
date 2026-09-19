@@ -21,7 +21,9 @@ hermes -p <control-profile> autodev enqueue \
   --repo /absolute/git/root \
   --title "Card title" \
   --requirement /absolute/requirement.md \
-  --profile autodev
+  --profile autodev \
+  --notify-platform feishu \
+  --notify-chat-id <chat-id>
 ```
 
 `--flow` is `full` or `direct` (default `full`). Direct mode also requires
@@ -43,9 +45,10 @@ Rules:
 - The plugin does not start a Worker. Hermes Dispatcher claims `ready` cards.
 
 Completion notifications: CLI enqueue carries no chat session, so unlike
-in-chat `kanban_create` there is no automatic subscription. Pass
-`--notify-platform <platform> --notify-chat-id <chat-id>` (both required
-together) to subscribe a destination at publish time; optional
+in-chat `kanban_create` there is no automatic subscription.
+`--notify-platform <platform> --notify-chat-id <chat-id>` are therefore
+**required**: enqueue refuses to run without them and exits non-zero with
+guidance to re-invoke with the flags. Optional
 `--notify-chat-type`, `--notify-thread-id`, `--notify-user-id`,
 `--notify-user-id-alt`, and `--notify-mode` (`notify` | `notify+wake` |
 `wake`) refine delivery. The subscription is best-effort bookkeeping: a

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import subprocess
 import tempfile
@@ -29,6 +31,7 @@ build_kanban_notify_subscribe_argv = _service.build_kanban_notify_subscribe_argv
 build_kanban_show_argv = _cli.build_kanban_show_argv
 build_kanban_unblock_argv = _cli.build_kanban_unblock_argv
 enqueue_workflow = _service.enqueue_workflow
+handle_autodev = _cli.handle_autodev
 load_plugin_config = _config.load_plugin_config
 normalize_notify_target = _service.normalize_notify_target
 run_argv = _service.run_argv
@@ -698,6 +701,107 @@ class EnqueueWorkflowTests(unittest.TestCase):
         self.assertNotEqual(full["task_id"], first["task_id"])
         with self.assertRaises(WorkflowConflict):
             self._enqueue(flow="full", idempotency_key=first["idempotency_key"])
+
+
+class EnqueueNotifyRequiredCliTests(unittest.TestCase):
+    """CLI enqueue requires an explicit notify target (no chat session to fall back on)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="autodev-cli-notify-")
+        self.root = Path(self._tmp.name)
+        self.state_root = self.root / "state"
+        self.state_root.mkdir()
+        self.parser = argparse.ArgumentParser()
+        setup_autodev_cli(self.parser)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _loader(self, key, default=None):
+        mapping = {
+            "profile": "autodev",
+            "state_root": str(self.state_root),
+            "harness_command": ["/usr/bin/node", "/abs/harness.mjs"],
+            "main_branch": "main",
+        }
+        return mapping.get(key, default)
+
+    def _enqueue_args(self, repo: Path, requirement: Path, *extra: str):
+        return self.parser.parse_args(
+            [
+                "enqueue",
+                "--board",
+                "proj",
+                "--repo",
+                str(repo),
+                "--title",
+                "Ship login",
+                "--requirement",
+                str(requirement),
+                *extra,
+            ]
+        )
+
+    def _git_repo(self) -> Path:
+        repo = self.root / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "dev@example.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Dev"], cwd=repo, check=True)
+        (repo / "README").write_text("ok\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+        return repo
+
+    def test_enqueue_without_notify_flags_is_rejected_with_guidance(self) -> None:
+        repo = self._git_repo()
+        requirement = self.root / "requirement.md"
+        requirement.write_text("# Need login\n", encoding="utf-8")
+        kanban = FakeKanban()
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+            rc = handle_autodev(
+                self._enqueue_args(repo, requirement),
+                config_loader=self._loader,
+                run_command=kanban,
+            )
+        self.assertEqual(rc, 2)
+        message = stderr.getvalue()
+        self.assertIn("--notify-platform", message)
+        self.assertIn("--notify-chat-id", message)
+        # Rejected before any kanban side effect or card creation.
+        self.assertEqual(kanban.calls, [])
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_enqueue_with_notify_flags_passes_gate_and_subscribes(self) -> None:
+        repo = self._git_repo()
+        requirement = self.root / "requirement.md"
+        requirement.write_text("# Need login\n", encoding="utf-8")
+        kanban = FakeKanban()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = handle_autodev(
+                self._enqueue_args(
+                    repo,
+                    requirement,
+                    "--notify-platform",
+                    "feishu",
+                    "--notify-chat-id",
+                    "oc_123",
+                    "--notify-chat-type",
+                    "dm",
+                ),
+                config_loader=self._loader,
+                run_command=kanban,
+            )
+        self.assertEqual(rc, 0)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["status"], "published")
+        self.assertIs(result["notify_subscribed"], True)
+        self.assertEqual(len(kanban.subs), 1)
+        self.assertEqual(kanban.subs[0]["platform"], "feishu")
+        self.assertEqual(kanban.subs[0]["chat_id"], "oc_123")
 
 
 if __name__ == "__main__":

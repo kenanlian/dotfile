@@ -57,12 +57,12 @@ def setup_autodev_cli(parser) -> None:
     enqueue.add_argument(
         "--notify-platform",
         default=None,
-        help="Subscribe a chat to card completion/block events (requires --notify-chat-id)",
+        help="Chat platform for completion/block notifications (required; rejected without it)",
     )
     enqueue.add_argument(
         "--notify-chat-id",
         default=None,
-        help="Chat id to notify (requires --notify-platform)",
+        help="Chat id to notify (required; rejected without it)",
     )
     enqueue.add_argument(
         "--notify-chat-type",
@@ -131,6 +131,26 @@ def handle_autodev(
     )
     store = WorkflowStore(config.state_root)
     if command == "enqueue":
+        missing_notify = [
+            flag
+            for flag, value in (
+                ("--notify-platform", getattr(args, "notify_platform", None)),
+                ("--notify-chat-id", getattr(args, "notify_chat_id", None)),
+            )
+            if not value
+        ]
+        if missing_notify:
+            print(
+                "enqueue rejected: missing required notification target "
+                + ", ".join(missing_notify)
+                + ". CLI enqueue has no chat session, so without an explicit "
+                "subscription nobody is notified on completion or block. "
+                "Re-run the same command with the notify flags added, e.g. "
+                "--notify-platform feishu --notify-chat-id <chat_id> "
+                "[--notify-chat-type dm|group] [--notify-mode notify].",
+                file=sys.stderr,
+            )
+            return 2
         result = enqueue_workflow(
             board=args.board,
             repo=args.repo,
