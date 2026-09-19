@@ -38,7 +38,8 @@
     "status": {
       "enum": ["completed", "failed", "timed_out", "aborted", "unavailable"]
     },
-    "adapter": { "const": "pi" },
+    "adapter": { "enum": ["pi", "cursor"] },
+    "resolvedModel": { "type": ["string", "null"], "minLength": 1 },
     "sessionId": { "type": ["string", "null"], "minLength": 1 },
     "startedAt": {
       "type": "string",

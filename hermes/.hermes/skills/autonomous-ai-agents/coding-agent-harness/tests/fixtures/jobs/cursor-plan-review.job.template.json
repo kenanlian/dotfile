@@ -1,0 +1,37 @@
+{
+  "schema": "coding-agent.job.v1",
+  "jobId": "job_cursor_plan_review",
+  "idempotencyKey": "task_fixture:cursor:plan_review:1",
+  "taskId": "task_fixture",
+  "stage": "plan_review",
+  "attempt": 1,
+  "workspace": {
+    "repoRoot": "__REPO_ROOT__",
+    "branch": "main",
+    "expectedHead": "__HEAD__",
+    "requireCleanAtStart": true
+  },
+  "agent": {
+    "adapter": "cursor",
+    "profile": "plan-reviewer",
+    "model": "claude-opus-5-thinking-high",
+    "thinking": "high",
+    "sessionId": null
+  },
+  "permissions": { "mode": "read-only" },
+  "inputs": [
+    {
+      "kind": "requirement",
+      "path": "__REQUIREMENT_PATH__",
+      "sha256": "__REQUIREMENT_SHA256__"
+    },
+    {
+      "kind": "plan",
+      "path": "__PLAN_PATH__",
+      "sha256": "__PLAN_SHA256__"
+    }
+  ],
+  "expectedOutput": { "kind": "plan-review", "schema": "plan-review.v1" },
+  "verification": [],
+  "limits": { "timeoutSeconds": null }
+}

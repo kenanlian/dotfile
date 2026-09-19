@@ -57,8 +57,10 @@ Important options:
 | `--resume-last` | Fallback only when no exact ID exists |
 | `--sandbox enabled\|disabled` | Explicit sandbox override |
 | `--add-dir <dir>` | Additional workspace root |
+| `--plugin-dir <dir>` | Repeatable. Absolute existing directory passed through to `agent --plugin-dir` after the base flags. Recorded on the result as `pluginDirs`. |
 | `--timeout <dur>` | Optional Relay watchdog; default off. Use only when the user asks for a hard bound or the environment requires one; prefer a very long guard such as `4h` over a short task estimate. |
 | `--out-dir <dir>` | Stable artifact directory |
+| `CURSOR_AGENT_BIN` | Test/CI hook only. Overrides the `agent` binary (default `agent`) at the version probe and both spawn sites. Not a production workflow flag. |
 
 The brief is passed through stdin, not argv. The relay never commits.
 
@@ -89,6 +91,8 @@ The relay writes `result.json` with fields including:
 - `sessionId`;
 - `resolvedModel`;
 - permission and requested sandbox data;
+- `pluginDirs` (the `--plugin-dir` list; empty when none);
+- `spawn` — `{ argv, envKeys }` written on every terminal result (`completed`, `failed`, `timeout`, `aborted`, `unavailable`, and preflight failures). `argv` is the agent argument array. `envKeys` lists names of relay-relevant env vars actually consulted (`CURSOR_AGENT_BIN`, and `CURSOR_API_KEY` when present); values are never persisted;
 - `finalMessage`;
 - `touchedFiles`; and
 - paths to brief, final text, events, and stderr artifacts.

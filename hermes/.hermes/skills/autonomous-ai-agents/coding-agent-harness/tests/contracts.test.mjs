@@ -9,6 +9,7 @@ const SCHEMA_DIR = join(ROOT, "schemas");
 
 const {
   ADAPTER_RUN_FIELD_KEYS,
+  ADAPTERS,
   ARTIFACT_ENTRY_FIELD_KEYS,
   ARTIFACT_FIELD_KEYS,
   ARTIFACT_JOB_FIELD_KEYS,
@@ -460,6 +461,91 @@ test("input cardinality, uniqueness, hashes, and absolute paths fail closed", ()
   assertInvalidJob(setPath(validPlanJob(), "/workspace/repoRoot", "repo"), "/workspace/repoRoot");
 });
 
+test("cursor adapter accepts Cursor model slugs per stage and rejects provider-qualified models", () => {
+  assert.deepEqual([...ADAPTERS], ["pi", "cursor"]);
+  const cursorJobs = [
+    validPlanJob(),
+    validPlanReviewJob(),
+    validImplementJob(),
+    validExecuteReviewJob(),
+    validDirectImplementJob(),
+  ];
+  for (const job of cursorJobs) {
+    job.agent.adapter = "cursor";
+    job.agent.model = "claude-opus-5-thinking-high";
+    const original = clone(job);
+    const result = validateJob(job);
+    assert.equal(result.ok, true, result.error && result.error.message);
+    assert.deepEqual(job, original);
+  }
+
+  const slashModel = validPlanJob();
+  slashModel.agent.adapter = "cursor";
+  slashModel.agent.model = "org/model";
+  assertInvalidJob(slashModel, "/agent/model");
+
+  const whitespaceModel = validPlanJob();
+  whitespaceModel.agent.adapter = "cursor";
+  whitespaceModel.agent.model = "bad model";
+  assertInvalidJob(whitespaceModel, "/agent/model");
+
+  assertInvalidJob(setPath(validPlanJob(), "/agent/model", "claude-opus-5-thinking-high"), "/agent/model");
+});
+
+test("result adapter axis accepts cursor and treats resolvedModel as optional", () => {
+  const replay = validCompletedResult();
+  assert.equal(Object.hasOwn(replay, "resolvedModel"), false);
+  assert.equal(validateResult(replay).ok, true, validateResult(replay).error && validateResult(replay).error.message);
+
+  const cursor = validCompletedResult();
+  cursor.adapter = "cursor";
+  cursor.resolvedModel = "Claude Opus 5 1M Thinking";
+  assert.equal(validateResult(cursor).ok, true, validateResult(cursor).error && validateResult(cursor).error.message);
+
+  const nullResolved = validCompletedResult();
+  nullResolved.resolvedModel = null;
+  assert.equal(validateResult(nullResolved).ok, true);
+
+  const emptyResolved = validCompletedResult();
+  emptyResolved.resolvedModel = "";
+  assert.equal(validateResult(emptyResolved).ok, false);
+  assert.equal(validateResult(emptyResolved).error.path, "/resolvedModel");
+
+  const schema = loadSchema("coding-agent-result.v1.schema.json");
+  assert.equal(schemaAccepts(schema, replay), true);
+  assert.equal(schemaAccepts(schema, cursor), true);
+  assert.equal(schemaAccepts(schema, nullResolved), true);
+  assert.equal(schemaAccepts(schema, emptyResolved), false);
+});
+
+test("coding-agent-job.v1 JSON Schema encodes adapter enum and model anyOf", () => {
+  const schema = loadSchema("coding-agent-job.v1.schema.json");
+  assert.deepEqual(schema.properties.agent.properties.adapter.enum, [...ADAPTERS]);
+  assert.ok(Array.isArray(schema.properties.agent.properties.model.anyOf));
+  assert.equal(schema.properties.agent.properties.model.anyOf.length, 2);
+
+  const pi = validPlanJob();
+  assert.equal(validateJob(pi).ok, true);
+  assert.equal(schemaAccepts(schema, pi), true);
+
+  const cursor = validPlanJob();
+  cursor.agent.adapter = "cursor";
+  cursor.agent.model = "claude-opus-5-thinking-high";
+  assert.equal(validateJob(cursor).ok, true);
+  assert.equal(schemaAccepts(schema, cursor), true);
+
+  const codex = validPlanJob();
+  codex.agent.adapter = "codex";
+  assert.equal(validateJob(codex).ok, false);
+  assert.equal(schemaAccepts(schema, codex), false);
+
+  const cursorSlash = validPlanJob();
+  cursorSlash.agent.adapter = "cursor";
+  cursorSlash.agent.model = "org/model";
+  assert.equal(validateJob(cursorSlash).ok, false);
+  assert.equal(schemaAccepts(schema, cursorSlash), true);
+});
+
 test("unknown fields, empty identity, and bad model fail with invalid_job", () => {
   assertInvalidJob(setPath(validPlanJob(), "/extra", true), "/extra");
   assertInvalidJob(setPath(validPlanJob(), "/workspace/extra", true), "/workspace/extra");
@@ -775,7 +861,10 @@ test("JSON schemas match runtime top-level required and property sets", () => {
   for (const [file, keys] of cases) {
     const schema = loadSchema(file);
     assert.deepEqual(Object.keys(schema.properties), [...keys], file);
-    assert.deepEqual(schema.required, [...keys], file);
+    const required = file === "coding-agent-result.v1.schema.json"
+      ? keys.filter((key) => key !== "resolvedModel")
+      : [...keys];
+    assert.deepEqual(schema.required, required, file);
     assert.equal(schema.additionalProperties, false, file);
   }
 });
@@ -829,7 +918,7 @@ test("canonical artifacts reject malformed wrappers, wrong kinds, and nested pay
 test("result schema recursively mirrors validateResult nested keys, enums, and invalid values", () => {
   const schema = loadSchema("coding-agent-result.v1.schema.json");
   const exactNodes = [
-    { pointer: "", keys: RESULT_FIELD_KEYS },
+    { pointer: "", keys: RESULT_FIELD_KEYS, optional: ["resolvedModel"] },
     { pointer: "/structuredOutput", keys: STRUCTURED_OUTPUT_FIELD_KEYS },
     { pointer: "/artifacts", keys: ARTIFACT_ENTRY_FIELD_KEYS, items: true },
     { pointer: "/checks", keys: CHECK_RESULT_FIELD_KEYS, items: true },
@@ -844,7 +933,10 @@ test("result schema recursively mirrors validateResult nested keys, enums, and i
     if (item.items) node = node.items;
     assert.equal(node.additionalProperties, false, item.pointer || "/");
     assert.deepEqual(Object.keys(node.properties), [...item.keys], item.pointer || "/");
-    assert.deepEqual(node.required, [...item.keys], item.pointer || "/");
+    const required = item.optional
+      ? item.keys.filter((key) => !item.optional.includes(key))
+      : item.keys;
+    assert.deepEqual(node.required, [...required], item.pointer || "/");
   }
 
   assert.equal(schema.properties.usage.additionalProperties, undefined);
@@ -852,6 +944,9 @@ test("result schema recursively mirrors validateResult nested keys, enums, and i
   assert.equal(schema.properties.error.properties.details.additionalProperties, undefined);
 
   assert.deepEqual(schema.properties.status.enum, ["completed", "failed", "timed_out", "aborted", "unavailable"]);
+  assert.deepEqual(schema.properties.adapter.enum, [...ADAPTERS]);
+  assert.deepEqual(schema.properties.resolvedModel, { type: ["string", "null"], minLength: 1 });
+  assert.equal(schema.required.includes("resolvedModel"), false);
   assert.deepEqual(schema.properties.artifacts.items.properties.kind.enum, [...OUTPUT_KINDS, "plan-markdown"]);
   assert.deepEqual(schema.properties.checks.items.properties.status.enum, [...CHECK_STATUSES]);
   assert.deepEqual(
@@ -1000,5 +1095,13 @@ function applyJsonSchema(schema, value, path, errors) {
   }
   if (Array.isArray(schema.allOf)) {
     for (const part of schema.allOf) applyJsonSchema(part, value, path, errors);
+  }
+  if (Array.isArray(schema.anyOf)) {
+    const matched = schema.anyOf.some((part) => {
+      const probe = [];
+      applyJsonSchema(part, value, path, probe);
+      return probe.length === 0;
+    });
+    if (!matched) errors.push(`${path || "/"} anyOf`);
   }
 }

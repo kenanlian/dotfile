@@ -1,17 +1,17 @@
 ---
 name: coding-agent-harness
-description: Run coding-agent Jobs via Pi; write Result, not workflow.
+description: Run coding-agent Jobs via Pi or Cursor; write Result, not workflow.
 license: MIT
-compatibility: Requires Node 18+, git, and the Pi CLI 0.85.1 with the bundled stage-submit extension.
+compatibility: Requires Node 18+, git, and either the Pi CLI 0.85.1 with the bundled stage-submit extension (adapter pi) or the Cursor Agent CLI with cursor-delegate (adapter cursor).
 metadata:
   version: 0.1.0
   hermes:
-    related_skills: [pi-delegate]
+    related_skills: [pi-delegate, cursor-delegate]
 ---
 
 # Coding Agent Harness
 
-Execute one `coding-agent.job.v1` through the Pi adapter and persist host-authored `coding-agent.result.v1`, canonical Artifacts, and an event stream. This Skill is an execution protocol, not a Workflow, Kanban adapter, or product-acceptance authority. It does not commit, push, open a PR, tag, release, or deploy.
+Execute one `coding-agent.job.v1` through the Pi or Cursor adapter and persist host-authored `coding-agent.result.v1`, canonical Artifacts, and an event stream. This Skill is an execution protocol, not a Workflow, Kanban adapter, or product-acceptance authority. It does not commit, push, open a PR, tag, release, or deploy.
 
 ## When to Use
 
@@ -30,6 +30,40 @@ node <this-skill>/scripts/harness.mjs \
 
 Exit codes: `0` completed, `1` other failure, `2` CLI/ownership conflict, `75` run in progress, `124` timed out, `127` unavailable, `130` aborted.
 
+## Adapters (pi | cursor)
+
+Dispatch reads `job.agent.adapter`. `"cursor"` runs `runCursorAdapter` via the sibling `cursor-delegate` relay (default `../cursor-delegate/scripts/relay.mjs`; override `CODING_AGENT_CURSOR_RELAY_PATH`). `"pi"` keeps the existing `runPiAdapter` path unchanged. The Result records `adapter` from the Job that actually ran. `resolvedModel` is `null` or the CLI-resolved non-empty model string; new Results always write it (Pi from the relay `resolvedModel`, Cursor from the stream init/model); `validateResult` tolerates absence so pre-change `result.json` files still replay.
+
+### Models and thinking
+
+- Pi: `agent.model` is provider-qualified `provider/model` (SAFE_MODEL charset plus a mandatory slash). `--thinking` is passed through.
+- Cursor: `agent.model` is a slug `^[A-Za-z0-9][A-Za-z0-9._:-]*$` (no whitespace, no slash). `agent.thinking` is still validated against the shared thinking levels for both adapters; on Cursor it is audit-only and no thinking flag is passed (effort lives in the slug).
+
+### Skills, subagents, Auto Handoff, compaction
+
+- Pi: explicit Skill mounting from `stage-profiles.json` (`-ns` plus `--skill` per directory) and a `/skill:<inline> ` first-line prefix. Unchanged.
+- Cursor: native global/project Skill discovery only. The brief's first line invokes the stage entry token (`/write-plan`, `/review-plan`, `/execute-plan`, `/review-execute-candidate`; `direct_implement` has none). The harness does not pass `--no-skills` or `--skill`, does not apply a whitelist or allowlist, and does not precisely mount Skill paths. That difference is real: Cursor Skill loading is discovery-only, not a filtered mount list.
+- Cursor-internal delegation uses Cursor-native Subagents. There is no `delegate_agent` port.
+- Auto Handoff is Pi `implement` only (`--auto-handoff-plan`). Cursor runs never load it, including `direct_implement`.
+- Cursor long-context relies on native compaction plus persistent artifacts. The harness does not configure, expose, or claim a compaction ratio or threshold.
+
+### Structured output
+
+- Pi: the stage-submit extension tool. Capture is exactly one successful `tool_execution_end` and the tool uses terminate semantics.
+- Cursor: a run-scoped Stage Submit Bridge MCP server (zero-dependency stdio, loaded via `--plugin-dir` with the Agent Plugin layout `plugin.json` + `mcp.json`). Exactly one registered tool per stage. Binding `{jobId, jobSha256, stage, expectedTool, runNonce, phase, submitDir}`. O_EXCL attempt receipts (`coding-agent.submit-attempt.v1`) under `<out-dir>/adapter/<phase>/submit/`. Host-side reconciliation precedence: duplicate > invalid > ok > missing. No `terminate:true` — the harness waits for relay exit and receipts are the protocol fact. Host `validatePayload` stays authoritative. Final message / Markdown / YAML / fences are never parsed.
+
+### Transport, sessions, events, resources
+
+Cursor relay flags the harness sets: `--brief`, `--cd`, `--out-dir`, `--read-only` or `--force`, `--model`, `--session` (maps to `agent --resume`), `--plugin-dir` (repeatable), `--timeout`. Status mapping: relay `timeout` → `timed_out`; `completed` / `failed` / `aborted` / `unavailable` 1:1. `CURSOR_AGENT_BIN` is a test/CI hook. Spawn audit `{argv, envKeys}` (names only). `--sandbox` is never set by the harness.
+
+Session and recovery rules match Pi: exact-session resume; reviewer stages fresh; missing (0 attempts) on a completed run with a session → exactly one same-session output-only recovery (`--read-only` regardless of stage, fresh nonce and submit dir); duplicate/invalid never recovered; timeout/abort/unavailable/failed never retried.
+
+Events: `createCursorEventNormalizer` projects stream-json (`agent_session_started` once, `stage_message`, `agent_tool_started` / `agent_tool_finished`, `agent_settled`; unknown/malformed lines increment `diagnostics.ignored`). Raw `events.jsonl` is preserved verbatim.
+
+Run-scoped plugin dir, config, and receipts live under the harness out-dir (already repo-external by containment). Nothing writes user-global Cursor config.
+
+Real-CLI smoke (scenarios A/B/C PASS on Cursor CLI 2026.09.15) used a `SMOKE_SUPPRESS` marker file in the primary submit dir because the CLI sanitizes MCP-server child environments. That marker is a smoke-only note, not production protocol.
+
 ## Stage matrix
 
 | stage | agent profile | stage profile | permission | output | session |
@@ -40,9 +74,11 @@ Exit codes: `0` completed, `1` other failure, `2` CLI/ownership conflict, `75` r
 | `direct_implement` | implementer | `implement-direct` | write | `direct-implementation.v1` via `submit_direct_implementation` | fresh or exact resume |
 | `execute_review` | execute-reviewer | `execute-review` | read-only | `execute-review.v1` via `submit_execute_review` | Job must be fresh |
 
-Each run exposes exactly one submit tool. Semantic results come only from that tool's native `details`. Final message text is diagnostic only. The `plan` / `plan-review` / `implement-plan` / `execute-review` / `implement-direct` names are stage-profile ids from `stage-profiles.json`; they are not the Job `agent.profile` field.
+Each run exposes exactly one submit tool. Semantic results come only from that tool: Pi captures exactly one successful `tool_execution_end` `details` object; Cursor records Stage Submit Bridge receipts and classifies them host-side. Final message text is diagnostic only. The `plan` / `plan-review` / `implement-plan` / `execute-review` / `implement-direct` names are stage-profile ids from `stage-profiles.json` (Pi); they are not the Job `agent.profile` field. Cursor briefs invoke a first-line entry token instead of those Pi profile flags (`/write-plan`, `/review-plan`, `/execute-plan`, `/review-execute-candidate`; `direct_implement` has none).
 
 ## Stage profiles
+
+This section applies to `adapter: pi`. Cursor does not use `stage-profiles.json` for Skill mounting, extension roots, or tool allowlists.
 
 Pi extensions, Skill invocation, tool allowlists, and child env are assembled from declarative data in [`stage-profiles.json`](stage-profiles.json) (`schema: coding-agent.stage-profiles.v1`). The Harness does not branch on stage names when building relay argv: `src/stage-profiles.mjs` (`loadProfiles`, `resolveStageProfile`) returns a normalized `{extensionRoots, skills, env, toolsExtra, disabledEntries, expectedExtensionIds}`.
 
@@ -96,7 +132,11 @@ Harness briefs name each mounted Skill with its SKILL.md **absolute path** (the 
   artifacts/execute-review-attempt-<N>.json
   adapter/primary/
     spawn-record.json                # argv + injected env key names (no values)
+    submit-bridge/                   # Cursor: plugin.json + mcp.json + config.json
+    submit/                          # Cursor: O_EXCL attempt receipts
   adapter/output-recovery/               # at most one missing-output recovery
+    submit-bridge/
+    submit/
 ```
 
 ## Status and errors
@@ -107,11 +147,11 @@ Typed `error.kind` values include `invalid_job`, `idempotency_conflict`, `run_in
 
 ## Resume and recovery
 
-Planner/Implementer Jobs may set `agent.sessionId` to resume one exact Pi session. A completed resume must report that same session; a missing or different session is `session_mismatch`. Reviewer Jobs must be fresh (`sessionId: null`). If the first completed relay never called the expected submit tool, the Harness issues at most one same-session output-only recovery. Duplicate, error, or invalid payloads are not recovered. `run.lock` records `pid`, `startedAt`, `jobId`, `jobSha256`, and `outDir` so a supervisor can distinguish a live process from an orphan lock; the Harness does not delete an orphan lock and retry in place.
+Planner/Implementer Jobs may set `agent.sessionId` to resume one exact adapter session. A completed resume must report that same session; a missing or different session is `session_mismatch`. Reviewer Jobs must be fresh (`sessionId: null`). If the first completed relay never produced expected submit output (Pi: no successful `tool_execution_end`; Cursor: 0 attempt receipts), the Harness issues at most one same-session output-only recovery (`--read-only` regardless of stage; Cursor uses a fresh nonce and submit dir). Duplicate, error, or invalid payloads are not recovered. `run.lock` records `pid`, `startedAt`, `jobId`, `jobSha256`, and `outDir` so a supervisor can distinguish a live process from an orphan lock; the Harness does not delete an orphan lock and retry in place.
 
 ## Permissions
 
-Read-only stages use the relay read-only allowlist plus the stage submit tool. Implementer runs `--write`. Read-only is not an OS sandbox: delegated children might still write. The Harness fail-closes on net workspace change, HEAD/branch drift, and never stash/reset/revert.
+Read-only stages use the relay read-only posture (Pi: tool allowlist plus the stage submit tool; Cursor: `--read-only` / plan mode). Implementer runs `--write` on Pi and `--force` on Cursor. Read-only is not an OS sandbox: delegated children might still write. The Harness fail-closes on net workspace change, HEAD/branch drift, and never stash/reset/revert.
 
 ## Boundary
 

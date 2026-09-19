@@ -314,7 +314,7 @@ const result = {
   taskId: job.taskId,
   stage: job.stage,
   status,
-  adapter: "pi",
+  adapter: job.agent?.adapter || "pi",
   sessionId,
   startedAt,
   finishedAt: isoNow(),

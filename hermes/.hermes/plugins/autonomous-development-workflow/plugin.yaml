@@ -17,3 +17,4 @@ config_schema:
   main_branch: {type: str, default: main}
   poll_interval_seconds: {type: int, default: 5}
   advance_wait_seconds: {type: int, default: 60}
+  stage_agents: {type: dict, default: {}}

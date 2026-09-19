@@ -46,6 +46,58 @@ Both profiles must share the same absolute `state_root` and
 | `profile` | Worker profile name used as Kanban assignee (default `autodev`) |
 | `main_branch` | Required clean branch at enqueue (default `main`) |
 
+### Per-Stage agent routing (`stage_agents`)
+
+Optional. When absent, every Stage keeps the legacy behavior: the profile
+spec from `agents[profile]` with adapter `pi`. When set, `stage_agents` keys
+the exact Harness Stage — not the profile — so `implement` and
+`direct_implement` (which share the implementer profile) can run different
+adapters:
+
+```yaml
+stage_agents:
+  plan:
+    adapter: cursor
+    model: claude-opus-5-thinking-high
+    thinking: high
+  plan_review:
+    adapter: pi
+    model: zai-coding-cn/glm-5.3
+    thinking: high
+  implement:
+    adapter: cursor
+    model: gpt-5.6-sol-high
+    thinking: high
+  execute_review:
+    adapter: pi
+    model: zai-coding-cn/glm-5.3
+    thinking: high
+  direct_implement:
+    adapter: cursor
+    model: cursor-grok-4.6-high
+    thinking: high
+```
+
+Rules:
+
+- Allowed keys: `plan | plan_review | implement | execute_review | direct_implement`;
+  `adapter`: `pi | cursor`; each entry needs a non-empty `model` and a legal
+  `thinking` level.
+- Precedence per Job: frozen lineage binding (see below) > `stage_agents[stage]` >
+  legacy `agents[STAGE_PROFILES[stage]]` (adapter defaults to `pi` when the
+  legacy spec omits it).
+- **Lineage freezing:** the first Job created for a Stage in a workflow run
+  freezes `{adapter, model, thinking}` into the Manifest (`stageAgents`).
+  Later transport retries, business rework, and exact-session resume for that
+  Stage reuse the frozen selection — editing config mid-run never reroutes an
+  in-flight lineage, including after controller restarts.
+- A Stage lineage never switches adapters automatically. To change the
+  adapter for a Stage, start a new workflow/card lineage; a Cursor session is
+  never handed to Pi and vice versa. Reviewer Stages always run fresh sessions;
+  planner/implementer rework resumes the Stage adapter's exact session.
+- Result consumption requires `result.adapter == job.agent.adapter` on top of
+  the existing job hash, artifact, session, and verdict binding checks.
+
 See [references/operations.md](references/operations.md) for enqueue, status,
 human unblock/abandon, Hermes-upgrade checks, harness-failure recovery, and
 unsupported work.

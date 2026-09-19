@@ -4,7 +4,7 @@ Runtime validators in `src/contracts.mjs` are authoritative. JSON Schema files d
 
 ## C2 Job (`coding-agent.job.v1`)
 
-Every object is `additionalProperties: false`. The caller must supply identity, workspace, adapter/profile/model/thinking/session, permissions, inputs with hashes, expected output, verification, and limits. The Harness does not guess defaults. Stage/profile/permission/output/session/input-cardinality must match the stage matrix in `SKILL.md`. `verification` is allowed only on `implement` (optional) and `direct_implement` (required, non-empty). Reviewer Jobs require `sessionId: null`. SHA-1 or SHA-256 is accepted only for `expectedHead`; content digests are SHA-256. `direct_implement` inputs are exactly one `requirement` and no plan. Do not reuse the `implement` / `implementation.v1` contract for direct mode.
+Every object is `additionalProperties: false`. The caller must supply identity, workspace, adapter/profile/model/thinking/session, permissions, inputs with hashes, expected output, verification, and limits. The Harness does not guess defaults. `agent.adapter` is `pi` or `cursor`. Model validation is adapter-conditional: Pi requires a provider-qualified `provider/model` (SAFE_MODEL charset plus a mandatory slash); Cursor requires a slug matching `^[A-Za-z0-9][A-Za-z0-9._:-]*$` (no whitespace, no slash). `agent.thinking` is validated against the shared thinking levels for both; on Cursor it is recorded for audit only and no thinking flag is passed. Stage/profile/permission/output/session/input-cardinality must match the stage matrix in `SKILL.md`. `verification` is allowed only on `implement` (optional) and `direct_implement` (required, non-empty). Reviewer Jobs require `sessionId: null`. SHA-1 or SHA-256 is accepted only for `expectedHead`; content digests are SHA-256. `direct_implement` inputs are exactly one `requirement` and no plan. Do not reuse the `implement` / `implementation.v1` contract for direct mode.
 
 ## C3 Stage submit payloads
 
@@ -20,15 +20,27 @@ Successful submit tools become `coding-agent.artifact.v1` JSON with host-bound j
 
 ## C5 Result (`coding-agent.result.v1`)
 
-Atomic `result.json` is the only terminal truth. `status` is transport/protocol. `error` is `null` or `{kind,message,details}`. Completed Results require identity and structured output. Deterministic check failures do not change `status`.
+Atomic `result.json` is the only terminal truth. `status` is transport/protocol. `error` is `null` or `{kind,message,details}`. `adapter` equals `job.agent.adapter` of the run that produced the Result. `resolvedModel` is `null` or a non-empty string carrying the CLI-resolved model; new Results always write it, and `validateResult` tolerates its absence so pre-change `result.json` files still replay. Completed Results require identity and structured output. Deterministic check failures do not change `status`.
 
-## C6 Pi relay generic output
+## C6 Structured output transports (Pi relay and Cursor Submit Bridge)
 
-Harness transport uses `--structured-output-tool`, `--structured-output-extension`, and `--structured-output-recovery` on `pi-delegate` `relay.mjs`. Legacy `--review-output` remains a compatible wrapper and must not be mixed with the generic flags. Scanner capture is exactly one successful `tool_execution_end.result.details` object. Any error result from the expected tool, including an earlier failed call followed by a later success, returns `structuredOutput: null` plus a typed diagnostic. The extension root is validated as an absolute path on the raw CLI value before resolve.
+Payload contracts (C3) and host `validatePayload()` stay the same across adapters. Capture is adapter-specific. The Harness never parses `finalMessage`, Markdown, YAML, or fences as protocol output.
+
+### Pi relay generic output
+
+Harness transport uses `--structured-output-tool`, `--structured-output-extension`, and `--structured-output-recovery` on `pi-delegate` `relay.mjs`. Legacy `--review-output` remains a compatible wrapper and must not be mixed with the generic flags. Scanner capture is exactly one successful `tool_execution_end.result.details` object. Any error result from the expected tool, including an earlier failed call followed by a later success, returns `structuredOutput: null` plus a typed diagnostic. The extension root is validated as an absolute path on the raw CLI value before resolve. The stage-submit tool uses terminate semantics.
+
+### Cursor Stage Submit Bridge
+
+A run-scoped zero-dependency Node stdio MCP server (`extensions/cursor-stage-submit/server.mjs`) is generated into `<out-dir>/adapter/<phase>/submit-bridge/` with the Agent Plugin layout (`plugin.json` + `mcp.json`) and `config.json` binding `{jobId, jobSha256, stage, expectedTool, runNonce, phase, submitDir}`. It is loaded via Cursor `--plugin-dir`. Exactly one tool is registered — the stage's expected submit tool. Structural payload checks import field-key constants from `extensions/stage-submit/keys.mjs`; host `validatePayload()` remains authoritative. Every tool call appends `<submitDir>/attempt-<zero-padded-seq>.json` via O_EXCL exclusive create (`schema: coding-agent.submit-attempt.v1`, `outcome: accepted|rejected`). Classification reads attempts in seq order with deterministic precedence: ≥2 accepted → `structured_output_duplicate`; else any rejected → `structured_output_invalid`; else exactly one accepted and zero rejected → ok (payload then passes through `validatePayload`); else 0 attempts → `structured_output_missing`. The Cursor tool does not emulate Pi `terminate:true` — the Harness waits for normal relay process exit and treats receipts as the protocol fact. The bridge contains no Skills, Subagents, DAG scheduling, Auto Handoff, or compaction control.
+
+### Cursor transport
+
+The harness spawns `cursor-delegate/scripts/relay.mjs` (override `CODING_AGENT_CURSOR_RELAY_PATH`) with `--brief`, `--cd` (`workspace.repoRoot`), `--out-dir` (`<out-dir>/adapter/<phase>`), `--read-only` or `--force` (write stages, non-recovery), `--model` (Cursor slug), `--session` when resuming (relay maps to `agent --resume`), `--plugin-dir` (repeatable, absolute, existence-checked), and `--timeout <N>s` when `limits.timeoutSeconds` is set. `--sandbox` is never set by the harness. Relay status mapping: `timeout` → `timed_out`; `completed` / `failed` / `aborted` / `unavailable` 1:1; missing `result.json` → `adapter_failed`. `CURSOR_AGENT_BIN` is a test/CI hook. Spawn audit `{argv, envKeys}` records names only.
 
 ## C7 Exact session and bounded recovery
 
-Fresh Jobs omit `--session`. Non-null `sessionId` is passed verbatim and a completed relay must explicitly report the same session; a missing or different session is `session_mismatch`. Missing expected-tool output may recover once on the same session with only the submit tool. Duplicate/error/invalid output is not recovered. Failed/timed-out/aborted/unavailable transport is not retried by the Harness.
+The same rules apply to both adapters. Fresh Jobs omit `--session`. Non-null `sessionId` is passed verbatim and a completed relay must explicitly report the same session; a missing or different session is `session_mismatch`. Reviewer stages remain `sessionId: null`. Missing expected-tool output (Pi: no successful `tool_execution_end`; Cursor: 0 attempt receipts) may recover once on the same session with only the submit tool, in read-only mode regardless of stage (Cursor: fresh `runNonce` and phase-scoped submit dir, output-only recovery brief). Duplicate/error/invalid output is not recovered. Failed/timed-out/aborted/unavailable transport is not retried by the Harness.
 
 ## C8 Workspace and permission guard
 
@@ -40,11 +52,11 @@ Only after a valid `submit_implementation` or `submit_direct_implementation`. Se
 
 ## C10 Events
 
-`events.jsonl` uses `coding-agent.event.v1` with monotonic `seq`. Allowed types: `run_started`, `agent_session_started`, `heartbeat`, `stage_message`, `agent_tool_started`, `agent_tool_finished`, `artifact_written`, `check_started`, `check_finished`, `agent_settled`, `run_finished`. Heartbeats are host-timed. `run_finished` is written before Result publish. Events are not a workflow driver.
+`events.jsonl` uses `coding-agent.event.v1` with monotonic `seq`. Allowed types: `run_started`, `agent_session_started`, `heartbeat`, `stage_message`, `agent_tool_started`, `agent_tool_finished`, `artifact_written`, `check_started`, `check_finished`, `agent_settled`, `run_finished`. Heartbeats are host-timed. `run_finished` is written before Result publish. Pi and Cursor both project adapter streams into these types (`createPiEventNormalizer` / `createCursorEventNormalizer`); unknown or malformed adapter lines increment `diagnostics.ignored`. Raw `adapter/<phase>/events.jsonl` is preserved verbatim. Events are not a workflow driver.
 
 ## C11 Idempotency / out-dir ownership
 
-The caller maps `idempotencyKey` to a stable out-dir. First run `O_EXCL`s `run.lock` (`pid`, `startedAt`, `jobId`, `jobSha256`, `outDir`) and stores canonical `job.json` + `job.sha256`. Matching hash + valid Result replays without starting Pi. Different hash is `idempotency_conflict`. Lock without Result is `run_in_progress` (exit 75) and is not silently deleted. Successful publish deletes the lock.
+The caller maps `idempotencyKey` to a stable out-dir. First run `O_EXCL`s `run.lock` (`pid`, `startedAt`, `jobId`, `jobSha256`, `outDir`) and stores canonical `job.json` + `job.sha256`. Matching hash + valid Result replays without starting the adapter. Different hash is `idempotency_conflict`. Lock without Result is `run_in_progress` (exit 75) and is not silently deleted. Successful publish deletes the lock.
 
 ## C12 No prose fallback
 

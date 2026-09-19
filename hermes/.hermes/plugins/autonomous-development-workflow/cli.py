@@ -117,6 +117,7 @@ def handle_autodev(
             "main_branch": config_loader("main_branch", "main"),
             "poll_interval_seconds": config_loader("poll_interval_seconds", 5),
             "advance_wait_seconds": config_loader("advance_wait_seconds", 60),
+            "stage_agents": config_loader("stage_agents", {}),
         }
     )
     store = WorkflowStore(config.state_root)
@@ -147,7 +148,13 @@ def handle_autodev(
         return 0
     if command == "status":
         shown = _show_task(run_command, board=args.board, task_id=args.task_id)
-        controller = _readonly_controller(store, config, run_command, board=args.board)
+        controller = _readonly_controller(
+            store,
+            config,
+            run_command,
+            board=args.board,
+            agents=config_loader("agents", None),
+        )
         result = controller.status(board=args.board, task_id=args.task_id)
         result["kanbanStatus"] = (shown.get("task") or shown).get("status") if shown else None
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
@@ -162,7 +169,13 @@ def handle_autodev(
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
         return 0 if result.get("ok") else 1
     if command == "reconcile":
-        controller = _readonly_controller(store, config, run_command, board=args.board)
+        controller = _readonly_controller(
+            store,
+            config,
+            run_command,
+            board=args.board,
+            agents=config_loader("agents", None),
+        )
         result = controller.reconcile(board=args.board, task_id=args.task_id)
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
         return 0
@@ -175,7 +188,14 @@ def handle_autodev(
     return 2
 
 
-def _readonly_controller(store, config, run_command, *, board: str) -> WorkflowController:
+def _readonly_controller(
+    store,
+    config,
+    run_command,
+    *,
+    board: str,
+    agents: Any = None,
+) -> WorkflowController:
     def dispatch(name: str, args: dict, **kwargs) -> str:
         if name != "kanban_show":
             raise WorkflowProtocolError("CLI cannot dispatch Kanban lifecycle tools")
@@ -186,7 +206,13 @@ def _readonly_controller(store, config, run_command, *, board: str) -> WorkflowC
             raise WorkflowProtocolError(stderr.strip() or stdout.strip() or "kanban show failed")
         return stdout
 
-    return WorkflowController(store=store, config=config, dispatch_tool=dispatch)
+    return WorkflowController(
+        store=store,
+        config=config,
+        dispatch_tool=dispatch,
+        agents=agents,
+        stage_agents=config.stage_agents,
+    )
 
 
 def _show_task(run_command, *, board: str, task_id: str) -> dict[str, Any] | None:

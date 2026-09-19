@@ -12,6 +12,7 @@ import {
   verifyArgvConsistency,
   verifyHarnessAttestation,
 } from "./stage-profiles.mjs";
+import { setActiveAdapterChild } from "./active-adapter-child.mjs";
 import { canonicalJson, sha256Text } from "./util.mjs";
 
 const HARNESS_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -233,6 +234,7 @@ function spawnRelay({ relayPath, args, cwd, env, stdoutPath, stderrPath, onEvent
       detached: true,
     });
     activeRelayChild = child;
+    setActiveAdapterChild(child);
     const stdoutChunks = [];
     const stderrChunks = [];
     child.stdout.on("data", (chunk) => {

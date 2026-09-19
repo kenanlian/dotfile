@@ -42,11 +42,18 @@
       "additionalProperties": false,
       "required": ["adapter", "profile", "model", "thinking", "sessionId"],
       "properties": {
-        "adapter": { "const": "pi" },
+        "adapter": { "enum": ["pi", "cursor"] },
         "profile": {
           "enum": ["planner", "plan-reviewer", "implementer", "execute-reviewer"]
         },
-        "model": { "type": "string", "minLength": 1 },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "anyOf": [
+            { "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]*/[A-Za-z0-9._:@/-]+$" },
+            { "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }
+          ]
+        },
         "thinking": {
           "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
         },

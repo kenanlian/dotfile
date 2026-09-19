@@ -26,12 +26,14 @@ from .protocol import (
     validate_job_document,
 )
 from .types import (
+    ALLOWED_ADAPTERS,
     ARTIFACT_SCHEMA,
     JOB_SCHEMA,
     STAGE_INPUT_KINDS,
     STAGE_OUTPUT,
     STAGE_PERMISSIONS,
     STAGE_PROFILES,
+    THINKING_LEVELS,
     TRANSPORT_FAILURE_STATUSES,
     VERIFICATION_STAGES,
     ArtifactRef,
@@ -77,6 +79,67 @@ def input_sha_prefix(inputs: Sequence[Mapping[str, Any]]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
 
 
+def _require_adapter(value: Any, what: str) -> str:
+    if value not in ALLOWED_ADAPTERS:
+        raise WorkflowProtocolError(f"{what} must be one of {sorted(ALLOWED_ADAPTERS)}, got {value!r}")
+    return str(value)
+
+
+def resolve_agent_selection(
+    *,
+    stage: str,
+    agents: Mapping[str, Mapping[str, str]] | None,
+    stage_agents: Mapping[str, Mapping[str, str]] | None = None,
+    agent_selection: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Resolve {adapter, model, thinking} for one Job.
+
+    Precedence: frozen ``agent_selection`` (manifest binding / restart
+    recovery) > ``stage_agents[stage]`` (exact Stage config) > legacy
+    ``agents[STAGE_PROFILES[stage]]`` with adapter defaulting to ``pi``.
+    """
+    if stage not in STAGE_PROFILES:
+        raise WorkflowProtocolError(f"unknown job stage {stage!r}")
+    if agent_selection is not None:
+        if not isinstance(agent_selection, Mapping):
+            raise WorkflowProtocolError("agent_selection must be an object")
+        return {
+            "adapter": _require_adapter(agent_selection.get("adapter"), "agent_selection.adapter"),
+            "model": _require_nonempty(agent_selection.get("model"), "agent_selection.model"),
+            "thinking": _require_nonempty(agent_selection.get("thinking"), "agent_selection.thinking"),
+        }
+    spec = (stage_agents or {}).get(stage)
+    if spec is not None:
+        if not isinstance(spec, Mapping):
+            raise WorkflowProtocolError(f"stage_agents[{stage}] must be an object")
+        thinking = spec.get("thinking")
+        if thinking not in THINKING_LEVELS:
+            raise WorkflowProtocolError(
+                f"stage_agents[{stage}].thinking must be one of {sorted(THINKING_LEVELS)}"
+            )
+        return {
+            "adapter": _require_adapter(spec.get("adapter"), f"stage_agents[{stage}].adapter"),
+            "model": _require_nonempty(spec.get("model"), f"stage_agents[{stage}].model"),
+            "thinking": str(thinking),
+        }
+    profile = STAGE_PROFILES[stage]
+    legacy = (agents or {}).get(profile)
+    if not isinstance(legacy, Mapping) or not legacy.get("model") or not legacy.get("thinking"):
+        raise WorkflowProtocolError(f"missing model/thinking for profile {profile}")
+    adapter = legacy.get("adapter") or "pi"
+    return {
+        "adapter": _require_adapter(adapter, f"agents[{profile}].adapter"),
+        "model": str(legacy["model"]),
+        "thinking": str(legacy["thinking"]),
+    }
+
+
+def _require_nonempty(value: Any, what: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise WorkflowProtocolError(f"{what} must be a non-empty string")
+    return value
+
+
 def build_job(
     *,
     board: str,
@@ -91,6 +154,8 @@ def build_job(
     verification: Sequence[Mapping[str, Any]] = (),
     timeout_seconds: int | None = None,
     template_id: str | None = None,
+    stage_agents: Mapping[str, Mapping[str, str]] | None = None,
+    agent_selection: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if stage not in STAGE_OUTPUT:
         raise WorkflowProtocolError(f"unknown job stage {stage!r}")
@@ -105,9 +170,12 @@ def build_job(
     if stage in VERIFICATION_STAGES and not verification:
         raise WorkflowProtocolError(f"{stage} jobs require at least one verification check")
     profile = STAGE_PROFILES[stage]
-    agent_spec = agents.get(profile)
-    if not isinstance(agent_spec, Mapping) or not agent_spec.get("model") or not agent_spec.get("thinking"):
-        raise WorkflowProtocolError(f"missing model/thinking for profile {profile}")
+    selection = resolve_agent_selection(
+        stage=stage,
+        agents=agents,
+        stage_agents=stage_agents,
+        agent_selection=agent_selection,
+    )
     if verification and stage not in VERIFICATION_STAGES:
         raise WorkflowProtocolError("verification is only allowed on implement and direct_implement jobs")
     bound_inputs = tuple(_bind_input(item, index) for index, item in enumerate(inputs))
@@ -150,10 +218,10 @@ def build_job(
             "requireCleanAtStart": bool(workspace.get("requireCleanAtStart", True)),
         },
         "agent": {
-            "adapter": "pi",
+            "adapter": selection["adapter"],
             "profile": profile,
-            "model": agent_spec["model"],
-            "thinking": agent_spec["thinking"],
+            "model": selection["model"],
+            "thinking": selection["thinking"],
             "sessionId": agent_session,
         },
         "permissions": {"mode": STAGE_PERMISSIONS[stage]},

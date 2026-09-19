@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 
 from .templates import get_template
 from .types import (
+    ALLOWED_ADAPTERS,
     ARTIFACT_SCHEMA,
     GIT_HEAD_PATTERN,
     ISO_TIMESTAMP_PATTERN,
@@ -21,6 +22,7 @@ from .types import (
     REVIEWER_STAGES,
     RESUME_STAGES,
     SHA256_PATTERN,
+    STAGE_AGENT_STAGES,
     STAGE_INPUT_KINDS,
     STAGE_OUTPUT,
     STAGE_PERMISSIONS,
@@ -176,6 +178,9 @@ def parse_manifest(value: Any) -> WorkflowManifest:
     fingerprint = data.get("candidateFingerprint")
     if fingerprint is not None:
         fingerprint = require_sha256(fingerprint, "candidateFingerprint")
+    stage_agents = data.get("stageAgents")
+    if stage_agents is not None:
+        validate_stage_agent_binding(stage_agents)
     status = parse_status(data.get("workflowStatus"))
     if status not in template.allowed_statuses:
         raise WorkflowProtocolError(
@@ -193,6 +198,41 @@ def parse_manifest(value: Any) -> WorkflowManifest:
         candidate_fingerprint=fingerprint,
         approved_plan=_optional_str(data.get("approvedPlan"), "approvedPlan"),
     )
+
+
+def validate_stage_agent_binding(value: Any) -> dict[str, dict[str, str]]:
+    """Validate a frozen per-Stage {adapter, model, thinking} manifest binding.
+
+    Adapters are strictly allowlisted; model/thinking only need to be
+    non-empty strings because a frozen binding must round-trip whatever the
+    legacy ``agents[profile]`` config legitimately produced at freeze time.
+    """
+    if not isinstance(value, Mapping):
+        raise WorkflowProtocolError("stageAgents must be a mapping of stage to agent selection")
+    unknown = set(value) - set(STAGE_AGENT_STAGES)
+    if unknown:
+        raise WorkflowProtocolError(f"stageAgents has unknown stages {sorted(unknown)}")
+    parsed: dict[str, dict[str, str]] = {}
+    for stage, spec in value.items():
+        if not isinstance(spec, Mapping):
+            raise WorkflowProtocolError(f"stageAgents[{stage}] must be an object")
+        adapter = spec.get("adapter")
+        if adapter not in ALLOWED_ADAPTERS:
+            raise WorkflowProtocolError(
+                f"stageAgents[{stage}].adapter must be one of {sorted(ALLOWED_ADAPTERS)}"
+            )
+        model = spec.get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise WorkflowProtocolError(f"stageAgents[{stage}].model must be a non-empty string")
+        thinking = spec.get("thinking")
+        if not isinstance(thinking, str) or not thinking.strip():
+            raise WorkflowProtocolError(f"stageAgents[{stage}].thinking must be a non-empty string")
+        parsed[str(stage)] = {
+            "adapter": str(adapter),
+            "model": model,
+            "thinking": thinking,
+        }
+    return parsed
 
 
 def parse_verification_document(value: Any, *, repo_root: str) -> dict[str, Any]:
@@ -295,6 +335,9 @@ def parse_job_expectation(value: Any, *, saved_session: str | None = None) -> Jo
             raise WorkflowProtocolError(f"{stage} cannot resume a saved session")
         if session_id != saved_session:
             raise WorkflowProtocolError("rework sessionId must exactly match the saved session")
+    adapter = data.get("adapter", "pi")
+    if adapter not in ALLOWED_ADAPTERS:
+        raise WorkflowProtocolError(f"adapter must be one of {sorted(ALLOWED_ADAPTERS)}")
     return JobExpectation(
         job_id=_require_str(data.get("jobId"), "jobId"),
         task_id=_require_str(data.get("taskId"), "taskId"),
@@ -304,6 +347,7 @@ def parse_job_expectation(value: Any, *, saved_session: str | None = None) -> Jo
         session_id=session_id,
         output_kind=output_kind,
         output_schema=output_schema,
+        adapter=str(adapter),
     )
 
 
@@ -317,6 +361,7 @@ def bind_result(expectation: JobExpectation, result: Any) -> None:
     _match(expectation.stage, data.get("stage"), "stage")
     _match(expectation.idempotency_key, data.get("idempotencyKey"), "idempotencyKey")
     _match(expectation.job_sha256, data.get("jobSha256"), "jobSha256")
+    _match(expectation.adapter, data.get("adapter"), "adapter")
     actual_session = data.get("sessionId")
     if expectation.session_id is not None:
         if actual_session != expectation.session_id:
@@ -769,6 +814,7 @@ def expectation_from_job(job: Mapping[str, Any], *, job_sha256: str | None = Non
             "sessionId": agent.get("sessionId"),
             "outputKind": kind,
             "outputSchema": schema,
+            "adapter": agent.get("adapter", "pi"),
         }
     )
 
@@ -793,8 +839,11 @@ def validate_job_document(job: Mapping[str, Any]) -> Mapping[str, Any]:
         raise WorkflowProtocolError("workspace.expectedHead must be a 40- or 64-char git SHA")
     _require_bool(workspace.get("requireCleanAtStart"), "workspace.requireCleanAtStart")
     agent = _require_mapping(data.get("agent"), "agent")
-    if agent.get("adapter") != "pi":
-        raise WorkflowProtocolError("agent.adapter must be pi")
+    adapter = _require_str(agent.get("adapter"), "agent.adapter")
+    if adapter not in ALLOWED_ADAPTERS:
+        raise WorkflowProtocolError(
+            f"agent.adapter must be one of {sorted(ALLOWED_ADAPTERS)}, got {adapter!r}"
+        )
     profile = _require_str(agent.get("profile"), "agent.profile")
     if profile != STAGE_PROFILES[stage]:
         raise WorkflowProtocolError(f"stage {stage} requires profile {STAGE_PROFILES[stage]}")

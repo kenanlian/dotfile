@@ -14,6 +14,7 @@ export const EXECUTE_REVIEW_SCHEMA_ID = "execute-review.v1";
 export const STAGES = Object.freeze([
   "plan", "plan_review", "implement", "execute_review", "direct_implement",
 ]);
+export const ADAPTERS = Object.freeze(["pi", "cursor"]);
 
 export const SUBMIT_TOOLS = Object.freeze({
   plan: "submit_plan",
@@ -102,7 +103,7 @@ export const LIMITS_FIELD_KEYS = Object.freeze(["timeoutSeconds"]);
 
 export const RESULT_FIELD_KEYS = Object.freeze([
   "schema", "jobId", "idempotencyKey", "jobSha256", "taskId", "stage",
-  "status", "adapter", "sessionId", "startedAt", "finishedAt",
+  "status", "adapter", "resolvedModel", "sessionId", "startedAt", "finishedAt",
   "structuredOutput", "artifacts", "touchedFiles", "checks", "usage",
   "workspace", "error", "paths",
 ]);
@@ -231,6 +232,7 @@ export const ERROR_KINDS = new Set([
 ]);
 
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/;
+const CURSOR_MODEL_SLUG = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const SHA1 = /^[a-f0-9]{40}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
@@ -258,7 +260,7 @@ function joinPath(base, key) {
   return `${base}/${key}`;
 }
 
-function exactObject(value, keys, path) {
+function exactObject(value, keys, path, optionalKeys = []) {
   if (!isPlainObject(value)) return fail(path, "expected object");
   const actual = Object.keys(value);
   for (const key of actual) {
@@ -266,8 +268,11 @@ function exactObject(value, keys, path) {
       return fail(joinPath(path, key), `unknown field ${key}`);
     }
   }
-  if (actual.length !== keys.length) {
-    return fail(path, `expected exact keys [${keys.join(", ")}]`);
+  for (const key of keys) {
+    if (optionalKeys.includes(key)) continue;
+    if (!Object.hasOwn(value, key)) {
+      return fail(path, `expected exact keys [${keys.join(", ")}]`);
+    }
   }
   return null;
 }
@@ -326,6 +331,13 @@ function providerQualifiedModel(value, path) {
   const slash = value.indexOf("/");
   if (slash <= 0 || slash === value.length - 1) {
     return fail(path, "model must be provider-qualified (provider/model)");
+  }
+  return null;
+}
+
+function cursorModelSlug(value, path) {
+  if (typeof value !== "string" || !CURSOR_MODEL_SLUG.test(value)) {
+    return fail(path, "model does not match the Cursor model slug character set");
   }
   return null;
 }
@@ -414,10 +426,13 @@ export function validateJob(value) {
 
   const agentErr = exactObject(value.agent, AGENT_FIELD_KEYS, "/agent");
   if (agentErr) return agentErr;
-  if (value.agent.adapter !== "pi") return fail("/agent/adapter", "expected pi");
+  const adapterErr = enumValue(value.agent.adapter, "/agent/adapter", ADAPTERS);
+  if (adapterErr) return adapterErr;
   const thinkingErr = enumValue(value.agent.thinking, "/agent/thinking", THINKING_LEVELS);
   if (thinkingErr) return thinkingErr;
-  const modelErr = providerQualifiedModel(value.agent.model, "/agent/model");
+  const modelErr = value.agent.adapter === "cursor"
+    ? cursorModelSlug(value.agent.model, "/agent/model")
+    : providerQualifiedModel(value.agent.model, "/agent/model");
   if (modelErr) return modelErr;
   if (value.agent.sessionId !== null) {
     const sessionErr = nonEmptyString(value.agent.sessionId, "/agent/sessionId");
@@ -1003,12 +1018,17 @@ function validateExecuteReviewPayload(value) {
 }
 
 export function validateResult(value) {
-  const objectError = exactObject(value, RESULT_FIELD_KEYS, "");
+  const objectError = exactObject(value, RESULT_FIELD_KEYS, "", ["resolvedModel"]);
   if (objectError) return objectError;
   if (value.schema !== RESULT_SCHEMA_ID) return fail("/schema", `expected ${RESULT_SCHEMA_ID}`);
   const statusErr = enumValue(value.status, "/status", RESULT_STATUSES);
   if (statusErr) return statusErr;
-  if (value.adapter !== "pi") return fail("/adapter", "expected pi");
+  const adapterErr = enumValue(value.adapter, "/adapter", ADAPTERS);
+  if (adapterErr) return adapterErr;
+  if (Object.hasOwn(value, "resolvedModel") && value.resolvedModel !== null) {
+    const resolvedErr = nonEmptyString(value.resolvedModel, "/resolvedModel");
+    if (resolvedErr) return resolvedErr;
+  }
   const completed = value.status === "completed";
   for (const key of ["jobId", "idempotencyKey", "taskId"]) {
     const err = nullableIdentity(value[key], `/${key}`, { allowNull: !completed });

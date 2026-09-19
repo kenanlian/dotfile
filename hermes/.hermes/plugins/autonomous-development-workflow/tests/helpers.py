@@ -193,6 +193,9 @@ class SmokeEnv:
         self.script_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         self.kanban = SmokeKanban()
         self.store = WorkflowStore(str(self.state_root))
+        self.agents: Any = AGENTS
+        # Optional exact-Stage agent routing (stage_agents) for controller tests.
+        self.stage_agents: Any = None
         self.config = PluginConfig(
             profile="autodev",
             state_root=str(self.state_root),
@@ -215,7 +218,8 @@ class SmokeEnv:
             store=self.store,
             config=self.config,
             dispatch_tool=self.kanban.dispatch,
-            agents=AGENTS,
+            agents=self.agents,
+            stage_agents=self.stage_agents,
             sleep_fn=lambda seconds: __import__("time").sleep(min(float(seconds), 0.05)),
         )
 

@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from .controller.protocol import require_absolute_path
-from .controller.types import PluginConfig, WorkflowProtocolError
+from .controller.types import (
+    ALLOWED_ADAPTERS,
+    STAGE_AGENT_STAGES,
+    THINKING_LEVELS,
+    PluginConfig,
+    WorkflowProtocolError,
+)
 
 
 def load_plugin_config(raw: Mapping[str, Any] | None) -> PluginConfig:
@@ -22,7 +28,48 @@ def load_plugin_config(raw: Mapping[str, Any] | None) -> PluginConfig:
         main_branch=_optional_nonempty(raw.get("main_branch"), "main_branch") or "main",
         poll_interval_seconds=poll,
         advance_wait_seconds=wait,
+        stage_agents=_parse_stage_agents(raw.get("stage_agents")),
     )
+
+
+def _parse_stage_agents(value: Any) -> dict[str, dict[str, str]]:
+    """Parse optional per-Stage agent selection (adapter/model/thinking).
+
+    Keys are exact Harness Stages (not profiles) so `implement` and
+    `direct_implement` can select different adapters.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise WorkflowProtocolError("stage_agents must be a mapping of stage to adapter selection")
+    unknown = set(value) - set(STAGE_AGENT_STAGES)
+    if unknown:
+        raise WorkflowProtocolError(
+            f"stage_agents keys must be stages, got unknown keys {sorted(unknown)}; "
+            f"allowed: {sorted(STAGE_AGENT_STAGES)}"
+        )
+    parsed: dict[str, dict[str, str]] = {}
+    for stage, spec in value.items():
+        if not isinstance(spec, Mapping):
+            raise WorkflowProtocolError(f"stage_agents[{stage}] must be an object")
+        extra = set(spec) - {"adapter", "model", "thinking"}
+        if extra:
+            raise WorkflowProtocolError(f"stage_agents[{stage}] has unknown fields {sorted(extra)}")
+        adapter = spec.get("adapter")
+        if adapter not in ALLOWED_ADAPTERS:
+            raise WorkflowProtocolError(
+                f"stage_agents[{stage}].adapter must be one of {sorted(ALLOWED_ADAPTERS)}"
+            )
+        model = spec.get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise WorkflowProtocolError(f"stage_agents[{stage}].model must be a non-empty string")
+        thinking = spec.get("thinking")
+        if thinking not in THINKING_LEVELS:
+            raise WorkflowProtocolError(
+                f"stage_agents[{stage}].thinking must be one of {sorted(THINKING_LEVELS)}"
+            )
+        parsed[str(stage)] = {"adapter": str(adapter), "model": model, "thinking": str(thinking)}
+    return parsed
 
 
 def _optional_nonempty(value: Any, what: str) -> str | None:

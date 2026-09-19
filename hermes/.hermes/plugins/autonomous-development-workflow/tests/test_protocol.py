@@ -93,6 +93,7 @@ def _result(**overrides):
         "taskId": "t_abc",
         "stage": "plan",
         "status": "completed",
+        "adapter": "pi",
         "sessionId": None,
         "structuredOutput": {"kind": kind, "payload": {"schema": payload_schema, "summary": "ok"}},
         "artifacts": [artifact],

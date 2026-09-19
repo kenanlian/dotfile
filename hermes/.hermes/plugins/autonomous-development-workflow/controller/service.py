@@ -21,6 +21,8 @@ from .harness import (
 from .jobs import (
     build_job,
     consume_result,
+    json_load_if_possible,
+    resolve_agent_selection,
     verification_from_intake_artifact,
     verification_from_plan_input,
     write_job_document,
@@ -51,6 +53,7 @@ from .protocol import (
 from .store import WorkflowStore, canonical_dumps, sha256_file
 from .templates import get_template, template_for_flow
 from .types import (
+    AGENT_SELECTION_FIELDS,
     TRANSPORT_FAILURE_STATUSES,
     VERIFICATION_SCHEMA,
     WORKFLOW_SCHEMA,
@@ -619,6 +622,7 @@ class WorkflowController:
         config: PluginConfig,
         dispatch_tool: RunArgv | Callable[..., str],
         agents: Mapping[str, Mapping[str, str]] | None = None,
+        stage_agents: Mapping[str, Mapping[str, str]] | None = None,
         popen: Callable[..., Any] | None = None,
         identity_fn: Callable[[int], str | None] | None = None,
         sleep_fn: Callable[[float], None] | None = None,
@@ -628,6 +632,10 @@ class WorkflowController:
         self.config = config
         self.dispatch_tool = dispatch_tool
         self.agents = dict(agents or _DEFAULT_AGENTS)
+        # Exact-Stage agent config (adapter/model/thinking). Only consulted
+        # when a Stage lineage has no frozen selection yet; in-flight lineages
+        # keep their frozen binding regardless of later config changes.
+        self.stage_agents = dict(stage_agents or {})
         self.popen = popen
         self.identity_fn = identity_fn
         self.sleep_fn = sleep_fn
@@ -900,11 +908,16 @@ class WorkflowController:
         failures = dict(manifest.get("runFailureCounts") or {})
         transport_retry = int(failures.get(stage, 0)) if action.reason == "transport_retry" else 0
         implement_rework_count = int(manifest.get("implementReworkCount") or 0)
-        business_attempt = (
-            int(manifest.get("planReworkCount") or 0) + 1
-            if stage in {"plan", "plan_review"}
-            else implement_rework_count + 1
-        )
+        # Attempt numbers must be monotonic per stage. Deriving them from the
+        # rework counters breaks when an operator resets a counter to stay
+        # under the rework budget (the recomputed attempt collides with an
+        # already-persisted job identity). Derive from the durable job rows
+        # instead; a transport retry deliberately reuses the failed attempt.
+        persisted_max = self.store.max_business_attempt(board, task_id, stage)
+        if action.reason == "transport_retry" and persisted_max is not None:
+            business_attempt = persisted_max
+        else:
+            business_attempt = (persisted_max or 0) + 1
         baseline = manifest.get("baseline") or {}
         # A transport retry deliberately continues on the tree the failed Job
         # left behind (a reused implementer session expects its work in place),
@@ -927,6 +940,8 @@ class WorkflowController:
             transport_retry=transport_retry,
             workspace=workspace,
             agents=self.agents,
+            stage_agents=self.stage_agents,
+            agent_selection=self._frozen_stage_agent(manifest, stage),
             inputs=inputs,
             session_id=session_id,
             verification=verification,
@@ -962,6 +977,12 @@ class WorkflowController:
         )
         updated = dict(manifest)
         updated["activeJobId"] = job["jobId"]
+        # Freeze this Stage lineage's {adapter, model, thinking} on first Job
+        # creation: rework, transport retry, and exact-session resume must
+        # reuse this binding, and it must survive restarts and config edits.
+        stage_bindings = dict(manifest.get("stageAgents") or {})
+        stage_bindings[stage] = {field: job["agent"][field] for field in AGENT_SELECTION_FIELDS}
+        updated["stageAgents"] = stage_bindings
         if stage == "execute_review":
             digest = fingerprint_digest(
                 capture_candidate_fingerprint(
@@ -979,6 +1000,40 @@ class WorkflowController:
             board, task_id, expected_revision=int(manifest["revision"]), manifest=updated
         )
         return updated
+
+    def _frozen_stage_agent(self, manifest: Mapping[str, Any], stage: str) -> dict[str, str] | None:
+        """Frozen {adapter, model, thinking} for one Stage lineage, if any.
+
+        The persisted Manifest binding is authoritative. When it is absent
+        (lineage started before the binding existed, or a crash between
+        ``put_job`` and the Manifest CAS), recover the selection from the
+        latest persisted Job document of the same Stage instead of
+        re-deriving it from the current config.
+        """
+        binding = manifest.get("stageAgents")
+        if isinstance(binding, Mapping):
+            entry = binding.get(stage)
+            if isinstance(entry, Mapping):
+                return resolve_agent_selection(stage=stage, agents=None, agent_selection=entry)
+        rows = [
+            row
+            for row in self.store.list_jobs(manifest["board"], manifest["taskId"])
+            if row["stage"] == stage
+        ]
+        if not rows:
+            return None
+        latest = rows[-1]
+        document = json_load_if_possible(Path(latest["job_path"]))
+        if document is None:
+            raise WorkflowProtocolError(
+                f"cannot recover the frozen agent selection: Job document {latest['job_path']} is unreadable"
+            )
+        agent = document.get("agent")
+        if not isinstance(agent, Mapping):
+            raise WorkflowProtocolError(
+                f"cannot recover the frozen agent selection: Job document {latest['job_path']} has no agent"
+            )
+        return resolve_agent_selection(stage=stage, agents=None, agent_selection=agent)
 
     def _inputs_for_stage(self, manifest: Mapping[str, Any], stage: str) -> tuple[dict[str, str], ...]:
         from .types import STAGE_INPUT_KINDS

@@ -50,15 +50,23 @@
  *                           send only the delta brief.
  *   --add-dir <dir>         Add an extra workspace root. Repeatable; requires
  *                           agent 2026.07.23 or newer.
+ *   --plugin-dir <dir>      Repeatable. Absolute existing directory passed
+ *                           through to agent as --plugin-dir after the base
+ *                           flags. Recorded on the result as pluginDirs.
  *   --timeout <dur>         Optional relay-side watchdog (default: off; h/m/s
  *                           strings like 90s, 45m, 4h). agent has no timeout flag.
  *   --out-dir <dir>         Where to write run artifacts (default: a fresh dir
  *                           under the system temp dir).
  *   -h, --help              Show this help.
  *
+ * Env (test/CI hook only; not a production workflow flag):
+ *   CURSOR_AGENT_BIN        Override the agent binary (default: "agent") at
+ *                           the version probe and both spawn sites.
+ *
  * Result: written to <out-dir>/result.json and summarized on stdout —
  *   status, exitCode, signal, cursorAgentVersion, sessionId, resolvedModel,
  *   permissionMode, force, sandbox (requested value or null), usage,
+ *   pluginDirs, spawn ({ argv, envKeys }; env values are never persisted),
  *   finalMessage (Cursor's own report),
  *   touchedFiles (git porcelain, null if git cannot report), and paths to
  *   brief.txt, final.txt, events.jsonl, and stderr.txt.
@@ -76,8 +84,8 @@
  */
 
 import {spawn, execSync, execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, renameSync, rmSync, readFileSync, existsSync, appendFileSync } from "node:fs";
-import {join, resolve, basename, dirname } from "node:path";
+import { mkdirSync, writeFileSync, renameSync, rmSync, readFileSync, existsSync, appendFileSync, realpathSync } from "node:fs";
+import {join, resolve, basename, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { constants, tmpdir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
@@ -194,7 +202,7 @@ function fail(message, code = 2) {
   process.exit(code);
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const flagged = new Set();
   const opts = {
     lane: null,
@@ -208,6 +216,7 @@ function parseArgs(argv) {
     session: null,
     resumeLast: false,
     addDirs: [],
+    pluginDirs: [],
     timeout: null,
     outDir: null,
   };
@@ -236,6 +245,18 @@ function parseArgs(argv) {
       case "--session": opts.session = next(); break;
       case "--resume-last": opts.resumeLast = true; break;
       case "--add-dir": opts.addDirs.push(next()); break;
+      case "--plugin-dir": {
+        const raw = next();
+        if (!raw || !isAbsolute(raw)) {
+          fail("--plugin-dir must be an absolute path");
+        }
+        const resolved = resolve(raw);
+        if (!existsSync(resolved)) {
+          fail(`--plugin-dir not found: ${resolved}`);
+        }
+        opts.pluginDirs.push(resolved);
+        break;
+      }
       case "--timeout": opts.timeout = next(); flagged.add("timeout"); break;
       case "--out-dir": opts.outDir = resolve(next()); break;
       default:
@@ -262,6 +283,9 @@ function parseArgs(argv) {
   opts.addDirs = opts.addDirs.map((dir) => resolve(opts.cd, dir));
   if (process.platform === "win32" && opts.addDirs.some((dir) => /[\0\r\n"%!]/.test(dir))) {
     fail("--add-dir cannot contain %, !, a quote, or a newline when agent launches through cmd.exe");
+  }
+  if (process.platform === "win32" && opts.pluginDirs.some((dir) => /[\0\r\n"%!]/.test(dir))) {
+    fail("--plugin-dir cannot contain %, !, a quote, or a newline when agent launches through cmd.exe");
   }
   // The watchdog is relay-only (agent has no timeout flag), so a malformed
   // explicitly supplied --timeout must fail loudly here.
@@ -320,6 +344,19 @@ function killChild(child, signal = "SIGTERM") {
   }
 }
 
+export function cursorAgentBin(env = process.env) {
+  const explicit = env.CURSOR_AGENT_BIN;
+  if (explicit) return explicit;
+  return "agent";
+}
+
+export function consultedEnvKeys(env = process.env) {
+  const keys = [];
+  if (env.CURSOR_AGENT_BIN) keys.push("CURSOR_AGENT_BIN");
+  if (env.CURSOR_API_KEY) keys.push("CURSOR_API_KEY");
+  return keys;
+}
+
 function cursorAgentVersion(timeoutMs) {
   try {
     // On Windows, agent installs as a .cmd shim; Node's CreateProcess only
@@ -332,9 +369,10 @@ function cursorAgentVersion(timeoutMs) {
       timeout: Math.min(timeoutMs, VERSION_PROBE_TIMEOUT_MS),
       killSignal: "SIGKILL",
     };
+    const bin = cursorAgentBin();
     const out = process.platform === "win32"
-      ? execSync("agent --version", options).trim()
-      : execFileSync("agent", ["--version"], options).trim();
+      ? execSync(`${winq(bin)} --version`, options).trim()
+      : execFileSync(bin, ["--version"], options).trim();
     return { version: out || "unknown", error: null };
   } catch (error) {
     if (error?.code === "ENOENT") return { version: null, error: null };
@@ -346,7 +384,7 @@ function cursorAgentVersion(timeoutMs) {
   }
 }
 
-function parseDuration(duration) {
+export function parseDuration(duration) {
   const match = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(duration);
   if (!match || (!match[1] && !match[2] && !match[3])) return null;
   try {
@@ -391,7 +429,7 @@ function winq(value) {
   return process.platform === "win32" ? `"${value}"` : value;
 }
 
-function buildArgv(opts) {
+export function buildArgv(opts) {
   const argv = ["--print", "--output-format", "stream-json", "--trust"];
   if (opts.readOnly) argv.push("--mode", "plan");
   else if (opts.force) argv.push("--force");
@@ -400,6 +438,7 @@ function buildArgv(opts) {
   if (opts.session) argv.push("--resume", winq(opts.session));
   else if (opts.resumeLast) argv.push("--continue");
   for (const dir of opts.addDirs) argv.push("--add-dir", winq(dir));
+  for (const dir of opts.pluginDirs || []) argv.push("--plugin-dir", winq(dir));
   return argv;
 }
 
@@ -443,6 +482,11 @@ function makeResultWriter(opts, version, run) {
       finalPath: existsSync(run.finalPath) ? run.finalPath : null,
       eventsPath: run.eventsPath,
       stderrPath: run.stderrPath,
+      pluginDirs: opts.pluginDirs ?? [],
+      spawn: {
+        argv: buildArgv(opts),
+        envKeys: consultedEnvKeys(),
+      },
       ...extra,
     };
     const temporary = `${run.resultPath}.${process.pid}.tmp`;
@@ -534,9 +578,10 @@ function dispatchToCursor(opts, brief, run, writeResult) {
   // plus the win32-quoted model and directory values. detached on POSIX: the
   // child leads a new process group so killChild can fell the whole tree.
   const argv = buildArgv(opts);
+  const bin = cursorAgentBin();
   const child = process.platform === "win32"
-    ? spawn(["agent", ...argv].join(" "), { cwd: opts.cd, stdio: ["pipe", "pipe", "pipe"], shell: true })
-    : spawn("agent", argv, { cwd: opts.cd, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    ? spawn([winq(bin), ...argv].join(" "), { cwd: opts.cd, stdio: ["pipe", "pipe", "pipe"], shell: true })
+    : spawn(bin, argv, { cwd: opts.cd, stdio: ["pipe", "pipe", "pipe"], detached: true });
 
   let sessionId = null;
   let resolvedModel = null;
@@ -783,4 +828,21 @@ function printSummary(result, resultPath) {
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 
-main();
+function isMainModule() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    // Node resolves the ESM module URL through symlinks (import.meta.url is
+    // the realpath), while argv[1] stays exactly as invoked. Callers may reach
+    // this relay through a symlinked skills tree (e.g. ~/.hermes/... -> the
+    // dotfiles repo), so compare realpaths on both sides or main() silently
+    // never runs and the process exits 0 without a result.json.
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(entry));
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  main();
+}

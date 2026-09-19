@@ -1,0 +1,40 @@
+{
+  "schema": "coding-agent.job.v1",
+  "jobId": "job_cursor_implement",
+  "idempotencyKey": "task_fixture:cursor:implement:1",
+  "taskId": "task_fixture",
+  "stage": "implement",
+  "attempt": 1,
+  "workspace": {
+    "repoRoot": "__REPO_ROOT__",
+    "branch": "main",
+    "expectedHead": "__HEAD__",
+    "requireCleanAtStart": true
+  },
+  "agent": {
+    "adapter": "cursor",
+    "profile": "implementer",
+    "model": "claude-opus-5-thinking-high",
+    "thinking": "high",
+    "sessionId": null
+  },
+  "permissions": { "mode": "write" },
+  "inputs": [
+    {
+      "kind": "plan",
+      "path": "__PLAN_PATH__",
+      "sha256": "__PLAN_SHA256__"
+    }
+  ],
+  "expectedOutput": { "kind": "implementation", "schema": "implementation.v1" },
+  "verification": [
+    {
+      "id": "check-unit",
+      "argv": ["node", "--test", "test/greet.test.mjs"],
+      "cwd": "__REPO_ROOT__",
+      "timeoutSeconds": 30,
+      "expectedExitCode": 0
+    }
+  ],
+  "limits": { "timeoutSeconds": null }
+}

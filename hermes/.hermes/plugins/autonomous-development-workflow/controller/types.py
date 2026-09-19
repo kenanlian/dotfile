@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping
 
@@ -31,6 +31,13 @@ RESULT_CHECK_FIELD_KEYS = (
 SHA256_PATTERN = r"^[a-f0-9]{64}$"
 GIT_HEAD_PATTERN = r"^[a-f0-9]{40}$|^[a-f0-9]{64}$"
 ISO_TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"
+
+# Harness coding-agent contract: job.agent.adapter and result.adapter both
+# allow exactly these adapters (see coding-agent-harness contracts.mjs ADAPTERS).
+ALLOWED_ADAPTERS = frozenset({"pi", "cursor"})
+# Harness THINKING_LEVELS; stage_agents entries are validated against it so a
+# misconfigured stage fails at intake instead of at Harness run time.
+THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 STAGE_OUTPUT = {
     "plan": ("plan", "plan.v1"),
@@ -66,6 +73,11 @@ STAGE_INPUT_KINDS = {
     "direct_implement": ("requirement",),
 }
 VERIFICATION_STAGES = frozenset({"implement", "direct_implement"})
+# stage_agents config is keyed by exact Harness Stage, not by profile, so
+# implement and direct_implement can select different adapters even though
+# they share the implementer profile.
+STAGE_AGENT_STAGES = frozenset(STAGE_PROFILES)
+AGENT_SELECTION_FIELDS = ("adapter", "model", "thinking")
 
 
 class WorkflowStatus(str, Enum):
@@ -155,6 +167,7 @@ class JobExpectation:
     session_id: str | None
     output_kind: str
     output_schema: str
+    adapter: str = "pi"
 
 
 @dataclass(frozen=True)
@@ -203,3 +216,4 @@ class PluginConfig:
     main_branch: str
     poll_interval_seconds: int
     advance_wait_seconds: int
+    stage_agents: Mapping[str, Mapping[str, str]] = field(default_factory=dict)

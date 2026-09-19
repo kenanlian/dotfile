@@ -15,6 +15,7 @@ Use this skill only for Kanban cards that already have an `autonomous-developmen
 4. Submit product acceptance only through `autodev_workflow_submit_acceptance`. Do not write `product-acceptance-vN.json` yourself and do not ask the controller to parse a model-authored JSON file. Direct-template cards have no product-acceptance step.
 5. If you cannot reliably verify the real product behavior, submit `needs_human` with one explicit, answerable question.
 6. Do not call native `kanban_complete`, `kanban_request_review`, `kanban_request_changes`, or `kanban_block`. Do not shell out to the equivalent `hermes kanban complete|request-review|request-changes|block` commands. Status, comment, and heartbeat remain available.
+7. Adapter routing is controller-owned. Each Stage's `pi`/`cursor` adapter, model, and thinking are chosen from `stage_agents` config and frozen per Stage lineage in the Manifest; Workers never pick, override, or hand a session to another adapter. Reviewer Stages always run fresh sessions; planner/implementer rework resumes the frozen Stage adapter's exact session. Never move a Cursor session to Pi or the reverse — start a new card lineage instead.
 
 ## Acceptance verdicts
 

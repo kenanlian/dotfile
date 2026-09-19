@@ -144,7 +144,28 @@ Typical findings:
 Transport failures create a new Job id and out-dir at the same business
 attempt (`transport_retry + 1`) and do not increment plan/implement rework
 counts. Result-before-checkpoint must not relaunch the same Job. A late
-Result from an old run must not move a new run.
+Result from an old run must not move a new run. Transport retries reuse the
+Stage's frozen agent selection exactly like business rework.
+
+## Per-Stage agent routing and lineage constraints
+
+`stage_agents` plugin config (see the plugin README) routes each Harness
+Stage to `pi` or `cursor` with its own model/thinking. Operator-facing rules:
+
+- The frozen per-Stage `{adapter, model, thinking}` lives in the Manifest
+  (`stageAgents`) and survives restarts; `status`/`doctor`/`reconcile` never
+  re-derive it from current config. A Manifest written before this field
+  existed recovers the selection from the Stage's latest persisted Job
+  document.
+- Editing `stage_agents` (or `agents`) mid-run only affects Stages that have
+  not created a Job yet.
+- There is no automatic fallback or in-lineage adapter switch: a mismatched
+  `result.adapter` is a protocol failure that blocks the card for operator
+  triage instead of silently rerunning on the other adapter.
+- To move a Stage to another adapter, abandon/complete the current card and
+  enqueue a fresh lineage with the new config. Never paste a Cursor session
+  id into a Pi job or the reverse; the controller binds sessions per Stage
+  adapter.
 
 ## Unsupported in this MVP
 

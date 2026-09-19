@@ -1,0 +1,32 @@
+{
+  "schema": "coding-agent.job.v1",
+  "jobId": "job_cursor_plan",
+  "idempotencyKey": "task_fixture:cursor:plan:1",
+  "taskId": "task_fixture",
+  "stage": "plan",
+  "attempt": 1,
+  "workspace": {
+    "repoRoot": "__REPO_ROOT__",
+    "branch": "main",
+    "expectedHead": "__HEAD__",
+    "requireCleanAtStart": true
+  },
+  "agent": {
+    "adapter": "cursor",
+    "profile": "planner",
+    "model": "claude-opus-5-thinking-high",
+    "thinking": "high",
+    "sessionId": null
+  },
+  "permissions": { "mode": "read-only" },
+  "inputs": [
+    {
+      "kind": "requirement",
+      "path": "__REQUIREMENT_PATH__",
+      "sha256": "__REQUIREMENT_SHA256__"
+    }
+  ],
+  "expectedOutput": { "kind": "plan", "schema": "plan.v1" },
+  "verification": [],
+  "limits": { "timeoutSeconds": null }
+}

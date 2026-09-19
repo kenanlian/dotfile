@@ -117,6 +117,7 @@ def _controller_scope(
             "main_branch": ctx.get_config("main_branch", "main"),
             "poll_interval_seconds": ctx.get_config("poll_interval_seconds", 5),
             "advance_wait_seconds": ctx.get_config("advance_wait_seconds", 60),
+            "stage_agents": ctx.get_config("stage_agents", {}),
         }
     )
     store = WorkflowStore(config.state_root)
@@ -135,6 +136,7 @@ def _controller_scope(
         config=config,
         dispatch_tool=dispatch,
         agents=agents,
+        stage_agents=config.stage_agents,
         popen=kwargs.get("popen"),
         identity_fn=kwargs.get("identity_fn"),
         sleep_fn=kwargs.get("sleep_fn"),

@@ -53,7 +53,9 @@ import {
 import { createEventWriter } from "../src/events.mjs";
 import { assertOutDirOutsideRepo, assertPostflight, captureSnapshot, preflightWorkspace } from "../src/git-workspace.mjs";
 import { constants } from "node:os";
-import { activeRelayChild, runPiAdapter } from "../src/pi-adapter.mjs";
+import { getActiveAdapterChild } from "../src/active-adapter-child.mjs";
+import { runCursorAdapter } from "../src/cursor-adapter.mjs";
+import { runPiAdapter } from "../src/pi-adapter.mjs";
 import { compileBrief } from "../src/prompts.mjs";
 import {
   atomicWriteFile,
@@ -402,7 +404,7 @@ async function main() {
     adapterRuns: [],
   });
   const killActiveRelay = (group = false) => {
-    const child = activeRelayChild;
+    const child = getActiveAdapterChild();
     if (!child?.pid) return;
     try { child.kill("SIGTERM"); } catch { /* already exited */ }
     if (group) {
@@ -492,20 +494,24 @@ async function main() {
   const brief = compileBrief(job, evidencePaths || {});
   writeFileSync(join(opts.outDir, "brief.txt"), brief);
 
+  const adapterContext = {
+    job,
+    brief,
+    outDir: opts.outDir,
+    events,
+  };
   let adapter;
   try {
-    adapter = await runPiAdapter({
-      job,
-      brief,
-      outDir: opts.outDir,
-      events,
-    });
+    adapter = job.agent.adapter === "cursor"
+      ? await runCursorAdapter(adapterContext)
+      : await runPiAdapter(adapterContext);
   } catch (error) {
     adapter = {
       status: abortRequested ? "aborted" : "failed",
       sessionId: job.agent.sessionId,
       structuredOutput: null,
       usage: {},
+      resolvedModel: null,
       adapterRuns: [],
       error: abortRequested
         ? typedError("aborted", "/adapter", `the harness was killed by ${abortRequested}`)
@@ -601,7 +607,8 @@ async function main() {
     taskId: job.taskId,
     stage: job.stage,
     status: error ? (status === "completed" ? "failed" : status) : "completed",
-    adapter: "pi",
+    adapter: job.agent.adapter,
+    resolvedModel: adapter.resolvedModel ?? null,
     sessionId: adapter.sessionId,
     startedAt,
     finishedAt,
@@ -663,7 +670,8 @@ function makeFailedResult({
     taskId: id(job?.taskId),
     stage,
     status,
-    adapter: "pi",
+    adapter: job?.agent?.adapter || "pi",
+    resolvedModel: null,
     sessionId: id(job?.agent?.sessionId),
     startedAt,
     finishedAt,

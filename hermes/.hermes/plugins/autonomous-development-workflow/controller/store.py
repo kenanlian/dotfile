@@ -392,6 +392,19 @@ class WorkflowStore:
             ).fetchall()
         return [_row_dict(row) for row in rows]
 
+    def max_business_attempt(self, board: str, task_id: str, stage: str) -> int | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT MAX(business_attempt) AS max_attempt FROM workflow_jobs
+                WHERE board = ? AND task_id = ? AND stage = ?
+                """,
+                (board, task_id, stage),
+            ).fetchone()
+        if row is None or row["max_attempt"] is None:
+            return None
+        return int(row["max_attempt"])
+
     def update_job(self, job_id: str, **fields: Any) -> dict[str, Any]:
         allowed = {
             "harness_pid",
