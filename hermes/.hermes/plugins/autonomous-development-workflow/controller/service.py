@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .acceptance import is_review_lane, submit_typed_acceptance
-from .git_guard import capture_candidate_fingerprint, fingerprint_digest
+from .git_guard import capture_candidate_fingerprint, capture_git_baseline, fingerprint_digest
 from .harness import (
     HarnessHandle,
     observe_harness_run,
@@ -919,6 +919,17 @@ class WorkflowController:
         else:
             business_attempt = (persisted_max or 0) + 1
         baseline = manifest.get("baseline") or {}
+        # Stale-baseline repair (dotfile t_bf68d977): cards queued behind an
+        # upstream card pin baseline.head at intake time. Once the upstream
+        # card commits, HEAD advances and the pinned expectedHead would fail
+        # every Harness preflight. Before the workflow has consumed any Job
+        # the baseline is still a private intake snapshot, so refresh it to
+        # the repo's current HEAD/branch. Once a Job has been consumed the
+        # baseline is the relay contract between stages (candidate changes
+        # travel uncommitted in the tree) and must never be refreshed.
+        refreshed_baseline = self._refresh_stale_baseline(manifest, baseline)
+        if refreshed_baseline is not None:
+            baseline = refreshed_baseline
         # A transport retry deliberately continues on the tree the failed Job
         # left behind (a reused implementer session expects its work in place),
         # so the clean-tree requirement must not re-arm for it. expectedHead
@@ -977,6 +988,8 @@ class WorkflowController:
         )
         updated = dict(manifest)
         updated["activeJobId"] = job["jobId"]
+        if refreshed_baseline is not None:
+            updated["baseline"] = refreshed_baseline
         # Freeze this Stage lineage's {adapter, model, thinking} on first Job
         # creation: rework, transport retry, and exact-session resume must
         # reuse this binding, and it must survive restarts and config edits.
@@ -1000,6 +1013,37 @@ class WorkflowController:
             board, task_id, expected_revision=int(manifest["revision"]), manifest=updated
         )
         return updated
+
+    def _refresh_stale_baseline(
+        self, manifest: Mapping[str, Any], baseline: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Refresh an unconsumed workflow's stale intake baseline, else None.
+
+        Allowed only while no Job of this workflow has ever been consumed.
+        Refuses on branch drift or repo inspection failure: those are
+        anomalies the pinned baseline must surface (as a precondition
+        failure), not silently absorb.
+        """
+        board, task_id = manifest["board"], manifest["taskId"]
+        for row in self.store.list_jobs(board, task_id):
+            if row.get("consumed_at") is not None:
+                return None
+        expected_branch = str(baseline.get("branch") or self.config.main_branch)
+        try:
+            current = capture_git_baseline(
+                str(manifest["repoRoot"]),
+                expected_branch=expected_branch,
+                expected_head=None,
+                declared_repo=str(manifest["repoRoot"]),
+                require_clean=False,
+            )
+        except (WorkflowProtocolError, OSError):
+            # Refresh is best-effort: inspection failures keep the pinned
+            # baseline so the mismatch surfaces as a precondition failure.
+            return None
+        if current.head == str(baseline.get("head") or ""):
+            return None
+        return {"branch": current.branch, "head": current.head}
 
     def _frozen_stage_agent(self, manifest: Mapping[str, Any], stage: str) -> dict[str, str] | None:
         """Frozen {adapter, model, thinking} for one Stage lineage, if any.
@@ -1238,7 +1282,7 @@ class WorkflowController:
                 and outcome.session_id.strip()
             ):
                 updated["implementerSessionId"] = outcome.session_id.strip()
-        elif outcome.kind == "protocol_failure":
+        elif outcome.kind in {"protocol_failure", "precondition_failure"}:
             updated["workflowStatus"] = WorkflowStatus.BLOCKED.value
             updated["pendingLifecycle"] = make_pending_lifecycle(
                 target_status=WorkflowStatus.BLOCKED.value,
@@ -1456,6 +1500,73 @@ class WorkflowController:
             result = self._consume_and_maybe_lifecycle(manifest, run_id=str(run_id))
             return {**result, "reconciled": True}
         return {**self._summary(manifest, action), "reconciled": False}
+
+    def reset_failure_counts(self, *, board: str, task_id: str) -> dict[str, Any]:
+        """Operator repair for a transport-failure-limited card.
+
+        Lesson from dotfile t_bf68d977's second blockage: clearing
+        ``runFailureCounts`` alone makes the controller re-derive a
+        attempt-1/retry-0 Job identity that collides with already-consumed
+        dead Jobs ("job document identity conflict" in both the run dir and
+        the Job ledger). The repair is exactly two steps in one Manifest
+        revision: clear ``runFailureCounts`` and set ``activeJobId`` to null,
+        so the next Job derives a fresh business attempt. Job rows and audit
+        trails are preserved.
+        """
+        self._assert_guard_clear(board, task_id)
+        shown = show_task(self.dispatch_tool, task_id=task_id, board=board)
+        manifest = self._require_manifest(board, task_id)
+        self._validate_bindings(manifest, shown, task_id=task_id, board=board, run_id=None)
+        job_id = manifest.get("activeJobId")
+        bypassed: str | None = None
+        if job_id:
+            row = self.store.get_job(str(job_id))
+            if row:
+                observed = observe_harness_run(
+                    run_dir=row["run_dir"],
+                    job_id=row["job_id"],
+                    job_sha256=row["job_sha256"],
+                    recorded_pid=row.get("harness_pid"),
+                    recorded_identity=row.get("process_identity"),
+                    identity_fn=self.identity_fn,
+                )
+                if observed.kind == "live_process":
+                    raise WorkflowProtocolError(
+                        "cannot reset failure counts while a Harness process is live"
+                    )
+                if row.get("consumed_at") is None:
+                    # The dead Job is being bypassed by operator decision;
+                    # record the consumption so the ledger reflects reality.
+                    result_path = Path(row["run_dir"]) / "result.json"
+                    status = str(row["status"])
+                    if result_path.is_file():
+                        try:
+                            result = json.loads(result_path.read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            result = None
+                        if isinstance(result, dict) and result.get("status"):
+                            status = str(result["status"])
+                    self.store.update_job(
+                        row["job_id"],
+                        status=status,
+                        result_path=str(result_path) if result_path.is_file() else row.get("result_path"),
+                        consumed_at=int(time.time()),
+                        finished_at=int(time.time()),
+                    )
+                    bypassed = str(job_id)
+        updated = dict(manifest)
+        updated["revision"] = int(manifest["revision"]) + 1
+        updated["runFailureCounts"] = {}
+        updated["activeJobId"] = None
+        self.store.cas_update_manifest(
+            board, task_id, expected_revision=int(manifest["revision"]), manifest=updated
+        )
+        return {
+            **self._summary(updated, WorkflowAction(kind="noop")),
+            "resetFailureCounts": True,
+            "activeJobIdCleared": True,
+            "bypassedJobId": bypassed,
+        }
 
     def abandon(self, *, board: str, task_id: str, reason: str) -> dict[str, Any]:
         if not isinstance(reason, str) or not reason.strip():

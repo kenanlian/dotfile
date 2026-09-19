@@ -131,6 +131,44 @@ hermes -p <control-profile> autodev doctor --board <board> <task-id>
 hermes -p <control-profile> autodev reconcile --board <board> <task-id>
 ```
 
+### Stale intake baselines and precondition failures
+
+Cards queued behind an upstream card pin `baseline.head` at intake time.
+When the upstream card commits, HEAD advances and the pinned baseline goes
+stale. The controller therefore re-checks the baseline before every Job
+creation: while the workflow has **no consumed Job yet**, a stale baseline
+is refreshed to the repo's current HEAD/branch, so the queued card starts
+against reality instead of failing preflight (`workspace_mismatch`). After
+the first consumed Job the baseline is the relay contract between stages
+(candidate changes travel uncommitted in the tree) and is never refreshed;
+branch drift is also never absorbed.
+
+A Harness **preflight** `workspace_mismatch` (status `failed`, error kind
+`workspace_mismatch`, no adapter run) is classified as a **precondition
+failure**, not a transport failure: it means an environment premise was not
+met, so it blocks the card immediately (with `resumeStatus` preserved) for
+operator triage and never counts toward `MAX_STAGE_TRANSPORT_FAILURES`.
+Post-adapter workspace mismatches keep the transport classification.
+
+### Resetting transport failure counts
+
+When a card hits `transport_failure_limit`, the operator repair is:
+
+```bash
+hermes -p <control-profile> autodev reconcile \
+  --board <board> <task-id> --reset-failures
+```
+
+It performs both required steps in one Manifest revision: clears
+`runFailureCounts` and sets `activeJobId` to `null`. Clearing the counts
+alone is not enough: the controller would re-derive an attempt-1/retry-0
+Job identity that collides with already-consumed dead Jobs ("job document
+identity conflict" in the run dir and the Job ledger) — the t_bf68d977
+second blockage. The reset refuses while a Harness process is live, marks a
+not-yet-consumed dead active Job as consumed, preserves all Job rows for
+audit, and leaves `resumeStatus` intact so the card resumes at its prior
+stage after `kanban unblock`.
+
 Typical findings:
 
 | Code | Meaning | What to do |
@@ -145,7 +183,9 @@ Transport failures create a new Job id and out-dir at the same business
 attempt (`transport_retry + 1`) and do not increment plan/implement rework
 counts. Result-before-checkpoint must not relaunch the same Job. A late
 Result from an old run must not move a new run. Transport retries reuse the
-Stage's frozen agent selection exactly like business rework.
+Stage's frozen agent selection exactly like business rework. Preflight
+`workspace_mismatch` Results are the exception: they are precondition
+failures (see above) and never enter the transport-retry loop.
 
 ## Per-Stage agent routing and lineage constraints
 

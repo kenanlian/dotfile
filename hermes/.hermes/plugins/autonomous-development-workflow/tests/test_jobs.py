@@ -680,6 +680,70 @@ class ConsumeResultTests(unittest.TestCase):
         self.assertEqual(outcome.kind, "transport_failure")
         self.assertIsNone(outcome.next_status)
 
+    def test_preflight_workspace_mismatch_is_precondition_failure(self) -> None:
+        outcome = consume_result(
+            self.job,
+            self._result(
+                status="failed",
+                sessionId=None,
+                structuredOutput=None,
+                artifacts=[],
+                error={
+                    "kind": "workspace_mismatch",
+                    "message": "HEAD does not match the expected baseline",
+                    "details": {"path": "/workspace/expectedHead"},
+                },
+            ),
+        )
+        self.assertEqual(outcome.kind, "precondition_failure")
+        self.assertIsNone(outcome.next_status)
+        self.assertIn("workspace_mismatch", outcome.reason or "")
+        self.assertIn("precondition", outcome.reason or "")
+
+    def test_postflight_workspace_mismatch_stays_transport_failure(self) -> None:
+        paths = dict(self._result()["paths"])
+        paths["adapterRuns"] = [
+            {
+                "phase": "primary",
+                "result": "/abs/adapter-result.json",
+                "events": "/abs/adapter-events.jsonl",
+                "stderr": "/abs/adapter-stderr.log",
+                "final": "/abs/adapter-final.txt",
+            }
+        ]
+        outcome = consume_result(
+            self.job,
+            self._result(
+                status="failed",
+                sessionId=None,
+                structuredOutput=None,
+                artifacts=[],
+                error={
+                    "kind": "workspace_mismatch",
+                    "message": "postflight workspace drift",
+                    "details": {"path": "/workspace/headAfter"},
+                },
+                paths=paths,
+            ),
+        )
+        self.assertEqual(outcome.kind, "transport_failure")
+        self.assertIsNone(outcome.next_status)
+
+    def test_other_preflight_failures_remain_transport_failures(self) -> None:
+        for kind in ("adapter_unavailable", "input_hash_mismatch"):
+            with self.subTest(kind=kind):
+                outcome = consume_result(
+                    self.job,
+                    self._result(
+                        status="failed",
+                        sessionId=None,
+                        structuredOutput=None,
+                        artifacts=[],
+                        error={"kind": kind, "message": kind, "details": {}},
+                    ),
+                )
+                self.assertEqual(outcome.kind, "transport_failure")
+
     def test_replaced_job_json_self_consistent_result_is_protocol_failure(self) -> None:
         ledger = self.job_sha
         forged = json.loads(json.dumps(self.job))

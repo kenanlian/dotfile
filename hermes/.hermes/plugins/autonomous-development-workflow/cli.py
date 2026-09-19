@@ -95,6 +95,15 @@ def setup_autodev_cli(parser) -> None:
     reconcile = sub.add_parser("reconcile", help="Apply proven-idempotent workflow recovery")
     reconcile.add_argument("--board", required=True, help="Kanban board slug")
     reconcile.add_argument("task_id", help="Kanban task id")
+    reconcile.add_argument(
+        "--reset-failures",
+        action="store_true",
+        help=(
+            "Operator repair for transport-failure-limited cards: clear "
+            "runFailureCounts and null activeJobId in one step (avoids the "
+            "job identity conflict of clearing counts alone)"
+        ),
+    )
 
     abandon = sub.add_parser("abandon", help="Operator-only abandon: record reason and release the repo lease")
     abandon.add_argument("--board", required=True, help="Kanban board slug")
@@ -176,7 +185,10 @@ def handle_autodev(
             board=args.board,
             agents=config_loader("agents", None),
         )
-        result = controller.reconcile(board=args.board, task_id=args.task_id)
+        if getattr(args, "reset_failures", False):
+            result = controller.reset_failure_counts(board=args.board, task_id=args.task_id)
+        else:
+            result = controller.reconcile(board=args.board, task_id=args.task_id)
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
         return 0
     if command == "abandon":

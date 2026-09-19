@@ -21,6 +21,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 
@@ -167,6 +168,96 @@ function isoNow() {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
 
+function gitText(repoRoot, args) {
+  const completed = spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" });
+  if (completed.status !== 0) return null;
+  return String(completed.stdout || "").trim();
+}
+
+/** Mirror the real harness preflight: validate the Job workspace contract
+ * before any agent work. A violation fails with error.kind
+ * "workspace_mismatch" and empty adapterRuns, exactly like
+ * coding-agent-harness preflightWorkspace. */
+function preflightWorkspace(job) {
+  const repoRoot = job.workspace?.repoRoot;
+  if (typeof repoRoot !== "string" || !repoRoot.startsWith("/")) {
+    return { ok: false, field: "/workspace/repoRoot", message: "repoRoot must be an absolute path" };
+  }
+  const toplevel = gitText(repoRoot, ["rev-parse", "--show-toplevel"]);
+  if (toplevel === null) {
+    return { ok: false, field: "/workspace/repoRoot", message: "not a git repository" };
+  }
+  const branch = gitText(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (branch !== job.workspace.branch) {
+    return {
+      ok: false,
+      field: "/workspace/branch",
+      message: `branch ${branch} is not ${job.workspace.branch}`,
+    };
+  }
+  const head = gitText(repoRoot, ["rev-parse", "HEAD"]);
+  if (head !== job.workspace.expectedHead) {
+    return {
+      ok: false,
+      field: "/workspace/expectedHead",
+      message: `HEAD ${head} does not match the expected baseline ${job.workspace.expectedHead}`,
+    };
+  }
+  if (job.workspace.requireCleanAtStart !== false) {
+    const porcelain = gitText(repoRoot, ["status", "--porcelain=v1"]);
+    if (porcelain !== "") {
+      return {
+        ok: false,
+        field: "/workspace/requireCleanAtStart",
+        message: "working tree is not clean",
+      };
+    }
+  }
+  return { ok: true };
+}
+
+function preflightFailedResult(job, jobSha256, preflight) {
+  const startedAt = isoNow();
+  return {
+    schema: RESULT_SCHEMA,
+    jobId: job.jobId,
+    idempotencyKey: job.idempotencyKey,
+    jobSha256,
+    taskId: job.taskId,
+    stage: job.stage,
+    status: "failed",
+    adapter: job.agent?.adapter || "pi",
+    sessionId: job.agent?.sessionId || null,
+    startedAt,
+    finishedAt: isoNow(),
+    structuredOutput: null,
+    artifacts: [],
+    touchedFiles: [],
+    checks: [],
+    usage: {},
+    workspace: {
+      repoRoot: job.workspace.repoRoot,
+      branchBefore: job.workspace.branch,
+      branchAfter: job.workspace.branch,
+      headBefore: job.workspace.expectedHead,
+      headAfter: job.workspace.expectedHead,
+      snapshotBeforeSha256: "0".repeat(64),
+      snapshotAfterSha256: "0".repeat(64),
+    },
+    error: {
+      kind: "workspace_mismatch",
+      message: preflight.message,
+      details: { path: preflight.field },
+    },
+    paths: {
+      events: join(args.outDir, "events.jsonl"),
+      stderr: join(args.outDir, "stderr.log"),
+      final: join(args.outDir, "final.txt"),
+      adapterRuns: [],
+    },
+  };
+}
+
 function crash(point, wanted) {
   if (wanted && wanted === point) {
     process.stderr.write(`mock harness crash:${point}\n`);
@@ -204,6 +295,20 @@ atomicWriteFile(
   canonicalJson({ pid: process.pid, jobId: job.jobId, jobSha256, outDir: args.outDir }),
 );
 crash("after_lock", crashPoint);
+
+const preflight = preflightWorkspace(job);
+if (!preflight.ok) {
+  const failed = preflightFailedResult(job, jobSha256, preflight);
+  atomicWriteFile(failed.paths.final, "failed\n");
+  atomicWriteFile(failed.paths.stderr, "");
+  atomicWriteFile(
+    failed.paths.events,
+    `${JSON.stringify({ schema: "coding-agent.event.v1", type: "run.started", jobId: job.jobId })}\n` +
+      `${JSON.stringify({ schema: "coding-agent.event.v1", type: "run.finished", jobId: job.jobId, status: "failed" })}\n`,
+  );
+  atomicWriteFile(join(args.outDir, "result.json"), canonicalJson(failed));
+  process.exit(1);
+}
 
 const output = STAGE_OUTPUT[job.stage];
 const status = spec.status || "completed";

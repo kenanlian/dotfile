@@ -42,7 +42,13 @@ from .types import (
     WorkflowStatus,
 )
 
-ConsumeKind = Literal["noop", "consumed", "protocol_failure", "transport_failure"]
+ConsumeKind = Literal[
+    "noop",
+    "consumed",
+    "protocol_failure",
+    "transport_failure",
+    "precondition_failure",
+]
 DEFAULT_CHECK_TIMEOUT_SECONDS = 1800  # real-CLI smoke checks legitimately take minutes
 
 
@@ -295,6 +301,18 @@ def consume_result(
             reason=str(exc),
         )
     status = result.get("status")
+    if _is_preflight_workspace_mismatch(result):
+        error = result.get("error")
+        message = (
+            str(error.get("message") or "workspace mismatch")
+            if isinstance(error, Mapping)
+            else "workspace mismatch"
+        )
+        return ConsumeOutcome(
+            kind="precondition_failure",
+            result_sha256=digest,
+            reason=f"precondition failure: workspace_mismatch: {message}",
+        )
     if status in TRANSPORT_FAILURE_STATUSES:
         return ConsumeOutcome(
             kind="transport_failure",
@@ -469,6 +487,27 @@ def _canonical_artifacts(result: Mapping[str, Any]) -> tuple[ArtifactRef, ...]:
     if not isinstance(raw, list):
         return ()
     return tuple(item for item in (parse_artifact_ref(entry) for entry in raw) if item.canonical)
+
+
+def _is_preflight_workspace_mismatch(result: Mapping[str, Any]) -> bool:
+    """True for a Harness *preflight* workspace failure (no adapter ran yet).
+
+    The coding-agent harness validates branch/HEAD/clean-tree before the
+    agent starts. Such a Result carries status ``failed``, error kind
+    ``workspace_mismatch``, and an empty ``paths.adapterRuns``. It means the
+    environment premise was not met — not transport-layer jitter — so it must
+    not burn the transport-retry budget (``MAX_STAGE_TRANSPORT_FAILURES``).
+    A workspace_mismatch recorded after an adapter ran (postflight guard)
+    keeps the transport-failure classification.
+    """
+    if result.get("status") != "failed":
+        return False
+    error = result.get("error")
+    if not isinstance(error, Mapping) or error.get("kind") != "workspace_mismatch":
+        return False
+    paths = result.get("paths")
+    runs = paths.get("adapterRuns") if isinstance(paths, Mapping) else None
+    return not (isinstance(runs, list) and runs)
 
 
 def _payload_outcome(result: Mapping[str, Any]) -> str | None:
