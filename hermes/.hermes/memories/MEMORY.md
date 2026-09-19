@@ -27,3 +27,5 @@ GLM 5.3（zai-coding-cn/glm-5.3，thinking=high）
 Harness 4 类 agent 用 zai-coding-cn/glm-5.3
 §
 autodev CLI enqueue 不带聊天上下文，不会自动订阅完成通知（自动订阅只挂在聊天会话里的 kanban_create 工具上）。从聊天会话代为入队后，须补一条 hermes kanban notify-subscribe <task_id> 到当前群。
+§
+autodev 工作流卡必须用 `autodev enqueue --board --repo --title --requirement <md>`（需 repo 净树，direct flow 另需 --verification JSON）；kanban_create 直建的卡缺 workflow intake/manifest，worker 启动必失败。
