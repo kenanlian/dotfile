@@ -317,7 +317,18 @@ class LifecycleSagaTests(unittest.TestCase):
             workflow_revision=8,
         )
         self.store.put_manifest(
-            _manifest(workflowStatus="completed", pendingLifecycle=pending, revision=8)
+            _manifest(
+                workflowStatus="completed",
+                pendingLifecycle=pending,
+                revision=8,
+                completionCommit={
+                    "head": "b" * 40,
+                    "message": "fixture completion commit",
+                    "skipped": False,
+                    "replayed": False,
+                    "committedAt": 1,
+                },
+            )
         )
         controller = self._controller()
         controller.advance(board="project-board", task_id="t_abc", run_id="7")
@@ -335,7 +346,18 @@ class LifecycleSagaTests(unittest.TestCase):
             workflow_revision=8,
         )
         self.store.put_manifest(
-            _manifest(workflowStatus="completed", pendingLifecycle=pending, revision=8)
+            _manifest(
+                workflowStatus="completed",
+                pendingLifecycle=pending,
+                revision=8,
+                completionCommit={
+                    "head": "b" * 40,
+                    "message": "fixture completion commit",
+                    "skipped": False,
+                    "replayed": False,
+                    "committedAt": 1,
+                },
+            )
         )
         controller = self._controller()
         first = controller.advance(board="project-board", task_id="t_abc", run_id="7")
@@ -360,7 +382,18 @@ class LifecycleSagaTests(unittest.TestCase):
             workflow_revision=8,
         )
         self.store.put_manifest(
-            _manifest(workflowStatus="completed", pendingLifecycle=pending, revision=8)
+            _manifest(
+                workflowStatus="completed",
+                pendingLifecycle=pending,
+                revision=8,
+                completionCommit={
+                    "head": "b" * 40,
+                    "message": "fixture completion commit",
+                    "skipped": False,
+                    "replayed": False,
+                    "committedAt": 1,
+                },
+            )
         )
         controller = self._controller()
         result = controller.advance(board="project-board", task_id="t_abc", run_id="7")

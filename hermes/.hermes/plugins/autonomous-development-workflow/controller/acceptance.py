@@ -6,6 +6,17 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .completion import (
+    block_on_commit_failure,
+    card_title,
+    completion_commit_message,
+    ensure_completion_commit,
+    finalize_applied_lifecycle,
+)
+from .git_commit import (
+    is_clean_at_head,
+    replay_completion_at_head,
+)
 from .git_guard import capture_candidate_fingerprint, fingerprint_digest
 from .lifecycle import apply_pending_lifecycle, make_pending_lifecycle
 from .policy import MAX_IMPLEMENT_REWORK
@@ -68,14 +79,60 @@ def submit_typed_acceptance(
     stored = manifest.get("candidateFingerprint")
     if not isinstance(stored, str) or not stored:
         raise WorkflowProtocolError("candidate fingerprint is missing; old acceptance cannot proceed")
-    current = fingerprint_digest(
-        capture_candidate_fingerprint(str(manifest["repoRoot"]), declared_repo=str(manifest["repoRoot"]))
+    candidate = capture_candidate_fingerprint(
+        str(manifest["repoRoot"]), declared_repo=str(manifest["repoRoot"])
     )
-    if current != stored:
+    current = fingerprint_digest(candidate)
+    # Commit-before-complete: once the controller's completion commit exists
+    # the live fingerprint legitimately differs from the accepted candidate
+    # (the candidate now lives at HEAD). Heal that replay instead of failing.
+    completion_committed = _completion_already_committed(manifest, shown)
+    if current != stored and not completion_committed:
         raise WorkflowProtocolError("candidate fingerprint drift; old acceptance verdict is invalid")
     payload = dict(submission)
-    payload["candidateFingerprint"] = current
+    # The verdict applies to the stored candidate fingerprint.
+    payload["candidateFingerprint"] = stored
     parsed = parse_acceptance(payload, expected_fingerprint=stored)
+    if completion_committed and parsed.verdict != "passed":
+        raise WorkflowProtocolError(
+            "completion commit already exists; only a passed acceptance can complete this card"
+        )
+    if parsed.verdict == "passed":
+        # Acceptance passed -> controller commits the candidate -> complete.
+        # On commit failure the card blocks (never completed uncommitted);
+        # the passed artifact is recorded only once the commit succeeded.
+        updated, failure = ensure_completion_commit(
+            store, manifest, title=card_title(shown)
+        )
+        if failure is not None:
+            blocked = block_on_commit_failure(
+                store, manifest, run_id=run_id, failure=failure
+            )
+            applied_block = apply_pending_lifecycle(
+                blocked["pendingLifecycle"],
+                current_run_id=run_id,
+                task_id=task_id,
+                board=board,
+                dispatch=dispatch_tool,
+            )
+            if applied_block.get("applied"):
+                blocked = finalize_applied_lifecycle(
+                    store, blocked, pending=blocked["pendingLifecycle"], result=applied_block
+                )
+            return {
+                "ok": True,
+                "workflowStatus": blocked.get("workflowStatus"),
+                "revision": blocked.get("revision"),
+                "stageAttempt": blocked.get("stageAttempt"),
+                "activeJobId": blocked.get("activeJobId"),
+                "nextAction": "noop",
+                "inProgress": False,
+                "pendingLifecycle": blocked.get("pendingLifecycle"),
+                "lastLifecycle": blocked.get("lastLifecycle"),
+                "outcome": "blocked",
+                "commitFailure": failure["reason"],
+            }
+        manifest = updated
     evidence = _evidence_records(parsed.scenarios)
     target, pending_args, resume_status, implement_rework = _verdict_transition(
         parsed.verdict,
@@ -91,7 +148,7 @@ def submit_typed_acceptance(
         version=version,
         parsed=parsed,
         evidence=evidence,
-        fingerprint=current,
+        fingerprint=stored,
         run_id=run_id,
     )
     pending = make_pending_lifecycle(
@@ -130,12 +187,7 @@ def submit_typed_acceptance(
         dispatch=dispatch_tool,
     )
     if applied.get("applied"):
-        cleared = dict(updated)
-        cleared["revision"] = int(updated["revision"]) + 1
-        cleared["pendingLifecycle"] = None
-        store.cas_update_manifest(
-            board, task_id, expected_revision=int(updated["revision"]), manifest=cleared
-        )
+        cleared = finalize_applied_lifecycle(store, updated, pending=pending, result=applied)
         updated = cleared
         if target is WorkflowStatus.COMPLETED:
             lease = store.get_repo_lease(str(manifest["repoRoot"]))
@@ -158,6 +210,39 @@ def submit_typed_acceptance(
         "outcome": "blocked" if target is WorkflowStatus.BLOCKED else "ok",
         "acceptanceArtifact": str(artifact_path),
     }
+
+
+def _completion_already_committed(
+    manifest: Mapping[str, Any], shown: Mapping[str, Any]
+) -> bool:
+    """True when the controller's completion commit already exists.
+
+    Accepts either the durable ``completionCommit`` receipt with a clean tree
+    at its HEAD, or (crash between commit and receipt) a repository holding
+    exactly one commit beyond the baseline whose subject is the card title.
+    """
+    repo = str(manifest["repoRoot"])
+    marker = manifest.get("completionCommit")
+    if isinstance(marker, Mapping) and marker.get("head"):
+        return is_clean_at_head(repo, expected_head=str(marker["head"]), declared_repo=repo)
+    baseline = manifest.get("baseline") if isinstance(manifest.get("baseline"), Mapping) else {}
+    expected_branch = str(baseline.get("branch") or "")
+    expected_head = str(baseline.get("head") or "")
+    if not expected_branch or not expected_head:
+        return False
+    message = completion_commit_message(card_title(shown))
+    if not message:
+        return False
+    return (
+        replay_completion_at_head(
+            repo,
+            expected_branch=expected_branch,
+            expected_head=expected_head,
+            message=message,
+            declared_repo=repo,
+        )
+        is not None
+    )
 
 
 def _event_payload(raw: Any) -> Mapping[str, Any]:

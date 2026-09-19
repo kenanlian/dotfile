@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .acceptance import is_review_lane, submit_typed_acceptance
+from .completion import (
+    block_on_commit_failure,
+    card_title,
+    ensure_completion_commit,
+    finalize_applied_lifecycle,
+)
 from .git_guard import capture_candidate_fingerprint, capture_git_baseline, fingerprint_digest
 from .harness import (
     HarnessHandle,
@@ -825,6 +831,23 @@ class WorkflowController:
                     business_attempt=int(row["business_attempt"]),
                     transport_retry=int(row["transport_retry"]),
                 )
+        else:
+            # Without an active Job, surface the last consumed implement
+            # Result's checks so VERIFYING can still complete (commit-failure
+            # retry after unblock, or a crash between consume and the
+            # completion lifecycle). Without this, a passing verification
+            # would be lost and the card would spiral into rework.
+            last_id = manifest.get("lastConsumedJobId")
+            if last_id:
+                row = self.store.get_job(str(last_id))
+                if row and row.get("stage") in {"implement", "direct_implement"}:
+                    result_path = Path(row["run_dir"]) / "result.json"
+                    if result_path.is_file():
+                        try:
+                            loaded = json.loads(result_path.read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            loaded = None
+                        result = loaded if isinstance(loaded, dict) else None
         checks = None
         verdict = None
         if result and isinstance(result.get("checks"), list):
@@ -1348,6 +1371,20 @@ class WorkflowController:
         run_id: str,
         reason: str | None = None,
     ) -> dict[str, Any]:
+        if target is WorkflowStatus.COMPLETED:
+            # Commit-before-complete: the candidate changes are committed by
+            # the controller before the completed lifecycle is written. On
+            # failure the card blocks (from its pre-completion status, which
+            # the store requires) instead of completing uncommitted.
+            shown = show_task(self.dispatch_tool, task_id=manifest["taskId"], board=manifest["board"])
+            manifest, failure = ensure_completion_commit(
+                self.store, manifest, title=card_title(shown)
+            )
+            if failure is not None:
+                blocked = block_on_commit_failure(
+                    self.store, manifest, run_id=run_id, failure=failure
+                )
+                return self._apply_pending(blocked, run_id=run_id)
         args = {"reason": reason} if reason and target is WorkflowStatus.BLOCKED else None
         if target is WorkflowStatus.COMPLETED:
             template = get_template(str(manifest.get("templateId") or ""))
@@ -1386,6 +1423,16 @@ class WorkflowController:
         pending = manifest.get("pendingLifecycle")
         if not pending:
             return self._summary(manifest, WorkflowAction(kind="noop"))
+        if str(pending.get("targetStatus") or "") == WorkflowStatus.COMPLETED.value:
+            marker = manifest.get("completionCommit")
+            if not (isinstance(marker, Mapping) and marker.get("head")):
+                # Fail closed: the completed lifecycle is only ever written
+                # after the completion commit was ensured, so a pending
+                # completion without its receipt is a contract violation.
+                raise WorkflowProtocolError(
+                    "pending completed lifecycle has no completion commit; "
+                    "refusing to complete an uncommitted candidate"
+                )
         result = apply_pending_lifecycle(
             pending,
             current_run_id=run_id,
@@ -1394,26 +1441,8 @@ class WorkflowController:
             dispatch=self.dispatch_tool,
         )
         if result["applied"]:
-            updated = dict(manifest)
-            updated["revision"] = int(manifest["revision"]) + 1
-            # Receipt for the saga close-out: once pendingLifecycle clears,
-            # later observers can still tell "applied" from "stuck".
-            updated["lastLifecycle"] = {
-                "tool": pending["tool"],
-                "targetStatus": pending["targetStatus"],
-                "kanbanStatus": pending["kanbanStatus"],
-                "dispatched": result["dispatched"],
-                "appliedAt": int(time.time()),
-                "workflowRevision": pending["workflowRevision"],
-            }
-            if result.get("skipped"):
-                updated["lastLifecycle"]["skipped"] = str(result["skipped"])
-            updated["pendingLifecycle"] = None
-            self.store.cas_update_manifest(
-                manifest["board"],
-                manifest["taskId"],
-                expected_revision=int(manifest["revision"]),
-                manifest=updated,
+            updated = finalize_applied_lifecycle(
+                self.store, manifest, pending=pending, result=result
             )
             if updated["workflowStatus"] == WorkflowStatus.COMPLETED.value:
                 lease = self.store.get_repo_lease(str(manifest["repoRoot"]))

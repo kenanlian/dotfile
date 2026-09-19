@@ -143,6 +143,7 @@ class FakeKanban:
                 {
                     "task": {
                         "id": args.get("task_id", "t_abc"),
+                        "title": "Acceptance fixture card",
                         "status": self.status,
                         "assignee": "autodev",
                         "workspace_kind": "dir",

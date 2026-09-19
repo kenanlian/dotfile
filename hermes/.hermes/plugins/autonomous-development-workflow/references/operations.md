@@ -65,6 +65,45 @@ advance the workflow or dispatch lifecycle tools.
 
 Worker-side equivalent: `autodev_workflow_status` inside a claimed run.
 
+## Completion commits (commit-before-complete)
+
+The controller — never the coding agent and never the dispatched Worker —
+commits the candidate changes itself, immediately before a card's
+`completed` lifecycle is written and dispatched:
+- **direct flow**: after all verification checks passed.
+- **full flow**: only after product acceptance passed. A rejected acceptance
+  keeps reworking on the uncommitted tree; nothing is committed while the
+  card sits in review or acceptance.
+
+Behavior:
+
+- Scope: the entire working tree (`git add -A` + `git commit`), so the next
+  serial card starts from a HEAD that already contains this card's output
+  and a mid-flight manual `git add` can no longer mix two cards' changes.
+- Commit message: the card title (whitespace collapsed to one line);
+  author/committer come from the repository's own git config.
+- Empty diff (the card produced no changes): the commit is skipped and the
+  card completes normally — not a failure.
+- Commit failure (failing hook, git error, unexpected HEAD advance): the
+  card blocks with `kind=commit_failed` for operator triage. It is never
+  completed uncommitted and the failure is never silently skipped. The
+  failed attempt unstages the index again, so the candidate tree survives
+  byte-for-byte.
+- Recovery: fix the cause (for example a failing `pre-commit` hook), then
+  `hermes kanban --board <board> unblock <task-id>`. The resumed workflow
+  retries the completion — including the commit — at its previous stage
+  (`resumeStatus`), without running a new Job.
+- Idempotency: a crash between the commit and its Manifest receipt heals on
+  the next pass (exactly one commit beyond the baseline whose subject is
+  the card title, clean tree); anything else that moved HEAD blocks the
+  card.
+
+The Job contract is unchanged: agents still never move HEAD, and Workers
+still only call status/advance/acceptance tools. This closes the serial
+race with queued cards together with the stale-baseline refresh (below):
+commit-before-complete keeps HEAD current for successors that start after
+completion; the refresh repairs baselines pinned while a card was queued.
+
 ## Human unblock and abandon
 
 ### Unblock a card waiting on a person
@@ -209,7 +248,10 @@ Stage to `pi` or `cursor` with its own model/thinking. Operator-facing rules:
 
 ## Unsupported in this MVP
 
-- No git `commit`, `push`, or release/publish.
+- No git `push` or release/publish. `commit` moved into scope: the
+  controller itself commits candidate changes immediately before completing
+  a card (see "Completion commits" above); pushing stays an operator action
+  or a future opt-in.
 - No Dashboard or extra UI. Kanban + plugin CLI are the operator surfaces.
 - No parallel cards on the same repo. Same-board successors stay `todo`
   until the predecessor leaves the active serial chain; the repo lease is
