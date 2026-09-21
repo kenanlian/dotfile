@@ -790,14 +790,18 @@ function resolveStructuredOutput(expectedTool, ends) {
   }
   const errors = ends.filter((item) => item.isError);
   const successes = ends.filter((item) => !item.isError);
-  if (errors.length) {
-    return {
-      structuredOutput: null,
-      structuredOutputError:
-        `expected tool ${expectedTool} returned an error result`,
-    };
-  }
+  // A successful submission is authoritative even when earlier attempts
+  // errored: the error result IS the feedback loop (schema validation tells
+  // the model what to fix), and penalizing a corrected submission would
+  // discard finished work. Errors only fail the run when nothing succeeded.
   if (successes.length === 0) {
+    if (errors.length) {
+      return {
+        structuredOutput: null,
+        structuredOutputError:
+          `expected tool ${expectedTool} returned an error result`,
+      };
+    }
     return {
       structuredOutput: null,
       structuredOutputError:

@@ -282,8 +282,11 @@ test("generic missing, duplicate, and tool-error captures stay null plus diagnos
     );
     assert.equal(spawned.status, 0, spawned.stderr);
     const result = readResult(recovered.outDir);
-    assert.equal(result.structuredOutput, null);
-    assert.match(result.structuredOutputError, /returned an error result/);
+    // An errored attempt corrected by a later successful submission is a
+    // success: the error result was the model's feedback loop.
+    assert.equal(result.structuredOutputError, null);
+    assert.equal(result.structuredOutput.tool, "submit_plan");
+    assert.equal(result.structuredOutput.payload.title, "retry-ok");
   } finally {
     recovered.cleanup();
   }
