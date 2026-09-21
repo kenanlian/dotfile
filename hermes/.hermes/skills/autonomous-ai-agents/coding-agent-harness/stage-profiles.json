@@ -2,21 +2,37 @@
   "schema": "coding-agent.stage-profiles.v1",
   "profiles": {
     "plan": {
-      "extensions": [],
+      "extensions": [
+        {
+          "id": "pi-web-access",
+          "rootEnv": "PI_WEB_ACCESS_ROOT",
+          "rootDefault": "~/.pi/agent/npm/node_modules/pi-web-access",
+          "enabled": true
+        }
+      ],
       "skills": {
         "mode": "explicit",
         "inline": "write-plan",
         "paths": ["skills/write-plan", "skills/delegate-work"]
       },
+      "toolsExtra": ["web_search", "fetch_content"],
       "env": {}
     },
     "plan-review": {
-      "extensions": [],
+      "extensions": [
+        {
+          "id": "pi-web-access",
+          "rootEnv": "PI_WEB_ACCESS_ROOT",
+          "rootDefault": "~/.pi/agent/npm/node_modules/pi-web-access",
+          "enabled": true
+        }
+      ],
       "skills": {
         "mode": "explicit",
         "inline": "review-plan",
         "paths": ["skills/review-plan", "skills/delegate-work"]
       },
+      "toolsExtra": ["web_search", "fetch_content"],
       "env": {}
     },
     "implement-plan": {
@@ -27,6 +43,12 @@
           "rootDefault": "~/Secret-Projects/pi-auto-handoff",
           "enabled": true,
           "channel": "auto-handoff-plan"
+        },
+        {
+          "id": "pi-web-access",
+          "rootEnv": "PI_WEB_ACCESS_ROOT",
+          "rootDefault": "~/.pi/agent/npm/node_modules/pi-web-access",
+          "enabled": true
         }
       ],
       "skills": {
@@ -34,15 +56,24 @@
         "inline": "execute-plan",
         "paths": ["skills/execute-plan", "skills/delegate-work", "skills/audit-persistence"]
       },
+      "toolsExtra": ["web_search", "fetch_content"],
       "env": {}
     },
     "execute-review": {
-      "extensions": [],
+      "extensions": [
+        {
+          "id": "pi-web-access",
+          "rootEnv": "PI_WEB_ACCESS_ROOT",
+          "rootDefault": "~/.pi/agent/npm/node_modules/pi-web-access",
+          "enabled": true
+        }
+      ],
       "skills": {
         "mode": "explicit",
         "inline": "review-execute-candidate",
         "paths": ["skills/review-execute-candidate", "skills/delegate-work"]
       },
+      "toolsExtra": ["web_search", "fetch_content"],
       "env": {}
     },
     "implement-direct": {
@@ -53,13 +84,19 @@
           "root": "~/.pi/agent/npm/node_modules/@gamaraan/todos-tool/src",
           "enabled": true,
           "note": "OMP 风格阶段化 todo；@gamaraan/todos-tool 0.3.0，入口 src/index.ts"
+        },
+        {
+          "id": "pi-web-access",
+          "rootEnv": "PI_WEB_ACCESS_ROOT",
+          "rootDefault": "~/.pi/agent/npm/node_modules/pi-web-access",
+          "enabled": true
         }
       ],
       "skills": {
         "mode": "explicit",
         "paths": ["skills/delegate-work"]
       },
-      "toolsExtra": ["todo"],
+      "toolsExtra": ["todo", "web_search", "fetch_content"],
       "env": {}
     }
   },

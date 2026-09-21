@@ -162,8 +162,10 @@ test("resolveStageProfile is data-driven: unknown stage/profile fail-fast, disab
   const plan = resolveStageProfile("plan");
   assert.equal(plan.ok, true);
   assert.equal(plan.value.profileId, "plan");
-  assert.deepEqual(plan.value.extensionRoots, []);
-  assert.deepEqual(plan.value.expectedExtensionIds, [STAGE_SUBMIT_EXTENSION_ID]);
+  assert.equal(plan.value.extensionRoots.length, 1);
+  assert.equal(plan.value.extensionRoots[0].id, "pi-web-access");
+  assert.deepEqual(plan.value.expectedExtensionIds, [STAGE_SUBMIT_EXTENSION_ID, "pi-web-access"]);
+  assert.deepEqual(plan.value.toolsExtra, ["web_search", "fetch_content"]);
   assert.equal(plan.value.skills.mode, "explicit");
   assert.deepEqual(plan.value.skills.names, ["write-plan", "delegate-work"]);
   assert.equal(plan.value.skills.inline, "write-plan");
@@ -171,9 +173,10 @@ test("resolveStageProfile is data-driven: unknown stage/profile fail-fast, disab
   const direct = resolveStageProfile("direct_implement");
   assert.equal(direct.ok, true);
   assert.equal(direct.value.profileId, "implement-direct");
-  assert.equal(direct.value.extensionRoots.length, 1);
+  assert.equal(direct.value.extensionRoots.length, 2);
   assert.equal(direct.value.extensionRoots[0].id, "todos-tool");
-  assert.deepEqual(direct.value.toolsExtra, ["todo"]);
+  assert.equal(direct.value.extensionRoots[1].id, "pi-web-access");
+  assert.deepEqual(direct.value.toolsExtra, ["todo", "web_search", "fetch_content"]);
   assert.equal(direct.value.skills.inline, null);
   assert.deepEqual(direct.value.disabledEntries, []);
   const roots = assertExtensionRootsExist(direct.value);
@@ -183,8 +186,13 @@ test("resolveStageProfile is data-driven: unknown stage/profile fail-fast, disab
 test("implement profile resolves auto-handoff via env and fail-closes when the root is missing", () => {
   const tmp = mkdtempSync(join(tmpdir(), "stage-profiles-"));
   try {
+    const webRoot = join(tmp, "pi-web-access");
+    mkdirSync(webRoot);
     const missing = resolveStageProfile("implement", {
-      env: { PI_AUTO_HANDOFF_ROOT: join(tmp, "missing-auto-handoff") },
+      env: {
+        PI_AUTO_HANDOFF_ROOT: join(tmp, "missing-auto-handoff"),
+        PI_WEB_ACCESS_ROOT: webRoot,
+      },
       home: tmp,
     });
     assert.equal(missing.ok, true);
@@ -195,14 +203,18 @@ test("implement profile resolves auto-handoff via env and fail-closes when the r
     const root = join(tmp, "pi-auto-handoff");
     mkdirSync(root);
     const present = resolveStageProfile("implement", {
-      env: { PI_AUTO_HANDOFF_ROOT: root },
+      env: { PI_AUTO_HANDOFF_ROOT: root, PI_WEB_ACCESS_ROOT: webRoot },
       home: tmp,
     });
     assert.equal(present.ok, true);
     assert.equal(present.value.extensionRoots[0].id, "auto-handoff");
     assert.equal(present.value.extensionRoots[0].channel, "auto-handoff-plan");
     assert.equal(present.value.extensionRoots[0].root, root);
-    assert.deepEqual(present.value.expectedExtensionIds, [STAGE_SUBMIT_EXTENSION_ID, "auto-handoff"]);
+    assert.deepEqual(present.value.expectedExtensionIds, [
+      STAGE_SUBMIT_EXTENSION_ID,
+      "auto-handoff",
+      "pi-web-access",
+    ]);
     assert.equal(assertExtensionRootsExist(present.value).ok, true);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
@@ -240,6 +252,9 @@ test("golden: buildRelayArgs + relay assembleChildInvocation match the stage-pro
   const todosRoot = join(tmp, "todos-tool", "src");
   mkdirSync(todosRoot, { recursive: true });
   writeFileSync(join(todosRoot, "index.ts"), "export {};\n");
+  const webRoot = join(tmp, "pi-web-access");
+  mkdirSync(webRoot);
+  writeFileSync(join(webRoot, "index.ts"), "export {};\n");
   mkdirSync(workDir);
   mkdirSync(outDir);
   const skillsRoot = seedSkillsRoot(join(tmp, "agent_skills"));
@@ -254,6 +269,7 @@ test("golden: buildRelayArgs + relay assembleChildInvocation match the stage-pro
       PI_DELEGATE_AGENT_ROOT: delegateRoot,
       PI_AUTO_HANDOFF_ROOT: autoHandoffRoot,
       PI_TODOS_TOOL_ROOT: todosRoot,
+      PI_WEB_ACCESS_ROOT: webRoot,
       PI_AGENT_SKILLS_ROOT: skillsRoot,
       HOME: tmp,
     }, () => {
@@ -341,26 +357,28 @@ test("golden: buildRelayArgs + relay assembleChildInvocation match the stage-pro
 
         if (stage === "plan") {
           assert.equal(profileId, "plan");
-          assert.deepEqual(dashE(argv), [delegateRoot, EXT], stage);
+          assert.deepEqual(dashE(argv), [delegateRoot, EXT, webRoot], stage);
         }
         if (stage === "plan_review") {
           assert.equal(profileId, "plan-review");
-          assert.deepEqual(dashE(argv), [delegateRoot, EXT], stage);
+          assert.deepEqual(dashE(argv), [delegateRoot, EXT, webRoot], stage);
         }
         if (stage === "execute_review") {
           assert.equal(profileId, "execute-review");
-          assert.deepEqual(dashE(argv), [delegateRoot, EXT], stage);
+          assert.deepEqual(dashE(argv), [delegateRoot, EXT, webRoot], stage);
         }
         if (stage === "direct_implement") {
           assert.equal(profileId, "implement-direct");
           const todosRoot = profile.extensionRoots.find((item) => item.id === "todos-tool")?.root;
           assert.ok(todosRoot, "direct_implement mounts todos-tool");
-          assert.deepEqual(dashE(argv), [delegateRoot, EXT, todosRoot], stage);
-          assert.ok(relayArgs.includes("--extra-tools"), stage);
-          assert.equal(relayArgs[relayArgs.indexOf("--extra-tools") + 1], "todo");
-        } else {
-          assert.ok(!relayArgs.includes("--extra-tools"), stage);
+          assert.deepEqual(dashE(argv), [delegateRoot, EXT, todosRoot, webRoot], stage);
         }
+        assert.ok(relayArgs.includes("--extra-tools"), stage);
+        assert.equal(
+          relayArgs[relayArgs.indexOf("--extra-tools") + 1],
+          stage === "direct_implement" ? "todo,web_search,fetch_content" : "web_search,fetch_content",
+          stage,
+        );
         const toolsList = (argv[argv.indexOf("--tools") + 1] || "").split(",");
         for (const toolName of profile.toolsExtra) {
           assert.ok(toolsList.includes(toolName), `${stage} --tools missing ${toolName}`);
@@ -368,6 +386,8 @@ test("golden: buildRelayArgs + relay assembleChildInvocation match the stage-pro
         if (!profile.toolsExtra.includes("todo")) {
           assert.ok(!toolsList.includes("todo"), `${stage} must not expose todo`);
         }
+        assert.ok(toolsList.includes("web_search"), `${stage} must expose web_search`);
+        assert.ok(toolsList.includes("fetch_content"), `${stage} must expose fetch_content`);
       }
     });
   } finally {
@@ -384,6 +404,9 @@ test("skills.mode=auto keeps discovery: no -ns and no --skill", () => {
   writeFileSync(join(delegateRoot, "index.ts"), "export {};\n");
   mkdirSync(workDir);
   mkdirSync(outDir);
+  const webRoot = join(tmp, "pi-web-access");
+  mkdirSync(webRoot);
+  writeFileSync(join(webRoot, "index.ts"), "export {};\n");
   const briefPath = join(tmp, "brief.txt");
   writeFileSync(briefPath, "plan it\n");
   const loaded = loadProfiles();
@@ -400,6 +423,7 @@ test("skills.mode=auto keeps discovery: no -ns and no --skill", () => {
   try {
     withEnv({
       PI_DELEGATE_AGENT_ROOT: delegateRoot,
+      PI_WEB_ACCESS_ROOT: webRoot,
       HOME: tmp,
     }, () => {
       const resolved = resolveStageProfile("plan", { manifest, env: process.env, home: tmp });

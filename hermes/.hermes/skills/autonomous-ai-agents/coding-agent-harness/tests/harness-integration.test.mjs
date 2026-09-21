@@ -152,6 +152,9 @@ function setupWorld() {
   const todos = join(tmp, "todos-tool", "src");
   mkdirSync(todos, { recursive: true });
   writeFileSync(join(todos, "index.ts"), "export {};\n");
+  const web = join(tmp, "pi-web-access");
+  mkdirSync(web);
+  writeFileSync(join(web, "index.ts"), "export {};\n");
   cpSync(FIXTURE_REPO, repo, { recursive: true });
   git(repo, ["init", "-b", "main"]);
   git(repo, ["config", "user.email", "test@example.com"]);
@@ -162,7 +165,7 @@ function setupWorld() {
   const head = git(repoRoot, ["rev-parse", "HEAD"]).stdout.trim();
   const requirementPath = join(repoRoot, "requirement.md");
   return {
-    tmp, repoRoot, outRoot, delegate, autoHandoff, todos, head, requirementPath,
+    tmp, repoRoot, outRoot, delegate, autoHandoff, todos, web, head, requirementPath,
     requirementSha: sha256File(requirementPath),
     cleanup() { rmSync(tmp, { recursive: true, force: true }); },
   };
@@ -198,6 +201,7 @@ function runHarness(world, jobPath, outDir, envExtra = {}, { createOutDir = true
     PI_DELEGATE_AGENT_ROOT: world.delegate,
     PI_AUTO_HANDOFF_ROOT: world.autoHandoff,
     PI_TODOS_TOOL_ROOT: world.todos,
+    PI_WEB_ACCESS_ROOT: world.web,
   };
   for (const key of Object.keys(env)) {
     if (key.startsWith("PI_STUB_")) delete env[key];
@@ -1047,8 +1051,9 @@ test("spawn-record.json follows the stage profile (implement vs direct_implement
       "utf8",
     ));
     assert.equal(implementSpawn.profileId, "implement-plan");
-    assert.deepEqual(implementSpawn.expectedExtensionIds, ["stage-submit", "auto-handoff"]);
+    assert.deepEqual(implementSpawn.expectedExtensionIds, ["stage-submit", "auto-handoff", "pi-web-access"]);
     assert.ok(implementSpawn.argv.includes(world.autoHandoff));
+    assert.ok(implementSpawn.argv.includes(world.web));
     assert.ok(implementSpawn.envKeys.includes("PI_AUTO_HANDOFF_PLAN_FILE"));
 
     const direct = materialize("direct-implement.job.template.json", world);
@@ -1061,13 +1066,16 @@ test("spawn-record.json follows the stage profile (implement vs direct_implement
       "utf8",
     ));
     assert.equal(directSpawn.profileId, "implement-direct");
-    assert.deepEqual(directSpawn.expectedExtensionIds, ["stage-submit", "todos-tool"]);
+    assert.deepEqual(directSpawn.expectedExtensionIds, ["stage-submit", "todos-tool", "pi-web-access"]);
     assert.deepEqual(directSpawn.disabledEntries, []);
     assert.ok(!JSON.stringify(directSpawn.argv).includes("auto-handoff"));
     assert.ok(!directSpawn.envKeys.includes("PI_AUTO_HANDOFF_PLAN_FILE"));
     assert.ok(JSON.stringify(directSpawn.argv).includes("todos-tool"));
+    assert.ok(directSpawn.argv.includes(world.web));
     const directTools = (directSpawn.argv[directSpawn.argv.indexOf("--tools") + 1] || "").split(",");
     assert.ok(directTools.includes("todo"), "direct_implement pi --tools must include todo");
+    assert.ok(directTools.includes("web_search"), "direct_implement pi --tools must include web_search");
+    assert.ok(directTools.includes("fetch_content"), "direct_implement pi --tools must include fetch_content");
 
     const planRun = runHarness(world, materialize("plan.job.template.json", world).jobPath, join(world.outRoot, "spawn-plan"), {
       PI_STUB_EVENTS: JSON.stringify([toolEnd("submit_plan", planPayload())]),
@@ -1078,10 +1086,14 @@ test("spawn-record.json follows the stage profile (implement vs direct_implement
       "utf8",
     ));
     assert.equal(planSpawn.profileId, "plan");
-    assert.deepEqual(planSpawn.expectedExtensionIds, ["stage-submit"]);
+    assert.deepEqual(planSpawn.expectedExtensionIds, ["stage-submit", "pi-web-access"]);
     assert.deepEqual(planSpawn.disabledEntries, []);
     assert.ok(!JSON.stringify(planSpawn.argv).includes("auto-handoff"));
+    assert.ok(planSpawn.argv.includes(world.web));
     assert.ok(planSpawn.argv.includes("-ns"));
+    const planTools = (planSpawn.argv[planSpawn.argv.indexOf("--tools") + 1] || "").split(",");
+    assert.ok(planTools.includes("web_search"), "plan pi --tools must include web_search");
+    assert.ok(planTools.includes("fetch_content"), "plan pi --tools must include fetch_content");
     const planSkills = [];
     for (let i = 0; i < planSpawn.argv.length; i += 1) {
       if (planSpawn.argv[i] === "--skill") planSkills.push(planSpawn.argv[i + 1]);
