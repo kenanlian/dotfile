@@ -477,36 +477,36 @@ def bind_result_checks(job_verification: Any, result_checks: Any) -> None:
         _assert_check_status_coherence(actual)
 
 
-def _parse_result_check(raw: Any, *, index: int) -> dict[str, Any]:
-    item = _require_mapping(raw, f"result.checks[{index}]")
+def _parse_result_check(raw: Any, *, index: int, field: str = "result.checks") -> dict[str, Any]:
+    item = _require_mapping(raw, f"{field}[{index}]")
     missing = [key for key in RESULT_CHECK_FIELD_KEYS if key not in item]
     extra = [key for key in item if key not in RESULT_CHECK_FIELD_KEYS]
     if missing:
-        raise WorkflowProtocolError(f"result.checks[{index}] missing fields {missing}")
+        raise WorkflowProtocolError(f"{field}[{index}] missing fields {missing}")
     if extra:
-        raise WorkflowProtocolError(f"result.checks[{index}] unknown fields {extra}")
+        raise WorkflowProtocolError(f"{field}[{index}] unknown fields {extra}")
     argv_raw = item.get("argv")
     if not isinstance(argv_raw, list) or not argv_raw or any(
         not isinstance(entry, str) or not entry for entry in argv_raw
     ):
-        raise WorkflowProtocolError(f"result.checks[{index}].argv must be a non-empty string array")
-    status = _require_str(item.get("status"), f"result.checks[{index}].status")
+        raise WorkflowProtocolError(f"{field}[{index}].argv must be a non-empty string array")
+    status = _require_str(item.get("status"), f"{field}[{index}].status")
     if status not in _CHECK_EVIDENCE_STATUSES:
         raise WorkflowProtocolError(f"unknown check status {status!r}")
     return {
-        "id": _require_str(item.get("id"), f"result.checks[{index}].id"),
+        "id": _require_str(item.get("id"), f"{field}[{index}].id"),
         "status": status,
         "argv": list(argv_raw),
-        "cwd": require_absolute_path(item.get("cwd"), f"result.checks[{index}].cwd"),
-        "expectedExitCode": _require_exit_code(item.get("expectedExitCode"), f"result.checks[{index}].expectedExitCode"),
+        "cwd": require_absolute_path(item.get("cwd"), f"{field}[{index}].cwd"),
+        "expectedExitCode": _require_exit_code(item.get("expectedExitCode"), f"{field}[{index}].expectedExitCode"),
         "exitCode": _require_exit_code(
-            item.get("exitCode"), f"result.checks[{index}].exitCode", allow_null=True
+            item.get("exitCode"), f"{field}[{index}].exitCode", allow_null=True
         ),
-        "signal": _require_nullable_signal(item.get("signal"), f"result.checks[{index}].signal"),
-        "startedAt": _require_iso_timestamp(item.get("startedAt"), f"result.checks[{index}].startedAt"),
-        "finishedAt": _require_iso_timestamp(item.get("finishedAt"), f"result.checks[{index}].finishedAt"),
-        "stdoutPath": require_absolute_path(item.get("stdoutPath"), f"result.checks[{index}].stdoutPath"),
-        "stderrPath": require_absolute_path(item.get("stderrPath"), f"result.checks[{index}].stderrPath"),
+        "signal": _require_nullable_signal(item.get("signal"), f"{field}[{index}].signal"),
+        "startedAt": _require_iso_timestamp(item.get("startedAt"), f"{field}[{index}].startedAt"),
+        "finishedAt": _require_iso_timestamp(item.get("finishedAt"), f"{field}[{index}].finishedAt"),
+        "stdoutPath": require_absolute_path(item.get("stdoutPath"), f"{field}[{index}].stdoutPath"),
+        "stderrPath": require_absolute_path(item.get("stderrPath"), f"{field}[{index}].stderrPath"),
     }
 
 
@@ -878,6 +878,27 @@ def validate_job_document(job: Mapping[str, Any]) -> Mapping[str, Any]:
         raise WorkflowProtocolError("job.verification must be a list")
     if verification and stage not in VERIFICATION_STAGES:
         raise WorkflowProtocolError("verification is only allowed on implement and direct_implement jobs")
+    previous_failures = data.get("previousCheckFailures")
+    if previous_failures is not None:
+        if stage not in VERIFICATION_STAGES:
+            raise WorkflowProtocolError(
+                "previousCheckFailures is only allowed on implement and direct_implement jobs"
+            )
+        if not isinstance(previous_failures, list) or not previous_failures:
+            raise WorkflowProtocolError("job.previousCheckFailures must be a non-empty list")
+        verification_ids = {
+            str(item.get("id")) for item in verification if isinstance(item, Mapping)
+        }
+        for index, raw in enumerate(previous_failures):
+            parsed = _parse_result_check(raw, index=index, field="job.previousCheckFailures")
+            if parsed["status"] == "passed":
+                raise WorkflowProtocolError(
+                    f"job.previousCheckFailures[{index}].status must not be 'passed'"
+                )
+            if parsed["id"] not in verification_ids:
+                raise WorkflowProtocolError(
+                    f"job.previousCheckFailures[{index}].id must reference a job.verification id"
+                )
     limits = _require_mapping(data.get("limits"), "limits")
     if "timeoutSeconds" not in limits:
         raise WorkflowProtocolError("limits.timeoutSeconds is required")

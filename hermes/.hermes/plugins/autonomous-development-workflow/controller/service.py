@@ -966,6 +966,13 @@ class WorkflowController:
             "expectedHead": baseline.get("head") or "0" * 40,
             "requireCleanAtStart": require_clean_at_start,
         }
+        previous_check_failures = None
+        if action.reason == "implement_rework" and stage == template.implement_stage:
+            evidence = manifest.get("implementFailureEvidence")
+            if isinstance(evidence, list):
+                previous_check_failures = [
+                    dict(item) for item in evidence if isinstance(item, Mapping)
+                ] or None
         job = build_job(
             board=board,
             task_id=task_id,
@@ -979,6 +986,7 @@ class WorkflowController:
             inputs=inputs,
             session_id=session_id,
             verification=verification,
+            previous_check_failures=previous_check_failures,
             template_id=template.id,
         )
         run_dir = self.store.state_root / "boards" / board / task_id / "jobs" / job["jobId"]
@@ -1336,10 +1344,14 @@ class WorkflowController:
         if row["stage"] in {"implement", "direct_implement"} and isinstance(result.get("checks"), list):
             from dataclasses import replace
 
+            touched = result.get("touchedFiles")
             snapshot = replace(
                 snapshot,
                 implement_checks=tuple(
                     item for item in result["checks"] if isinstance(item, Mapping)
+                ),
+                implement_touched_files=(
+                    tuple(str(item) for item in touched) if isinstance(touched, list) else None
                 ),
             )
         if row["stage"] == "execute_review" and updated.get("candidateFingerprint"):
@@ -1352,6 +1364,22 @@ class WorkflowController:
                 raise WorkflowProtocolError("candidate fingerprint drift")
         action = next_action(snapshot)
         if apply_lifecycle and action.kind == "apply_lifecycle" and action.target_status is not None:
+            # Persist the failed-check evidence the rework Job will carry, or
+            # clear stale evidence when this transition is not check-driven.
+            if action.target_status is WorkflowStatus.IMPLEMENT_REWORK:
+                if (
+                    str(updated.get("workflowStatus") or "") == WorkflowStatus.VERIFYING.value
+                    and isinstance(result.get("checks"), list)
+                ):
+                    updated["implementFailureEvidence"] = [
+                        dict(item)
+                        for item in result["checks"]
+                        if isinstance(item, Mapping) and item.get("status") != "passed"
+                    ]
+                else:
+                    updated.pop("implementFailureEvidence", None)
+            elif str(updated.get("workflowStatus") or "") == WorkflowStatus.VERIFYING.value:
+                updated.pop("implementFailureEvidence", None)
             return self._write_and_apply_lifecycle(updated, action.target_status, run_id=run_id)
         if apply_lifecycle and action.kind == "block":
             return self._write_and_apply_lifecycle(
@@ -1400,6 +1428,8 @@ class WorkflowController:
         updated["revision"] = int(manifest["revision"]) + 1
         updated["workflowStatus"] = target.value
         updated["pendingLifecycle"] = pending
+        if target is WorkflowStatus.COMPLETED:
+            updated.pop("implementFailureEvidence", None)
         if (
             previous == WorkflowStatus.VERIFYING.value
             and target is WorkflowStatus.IMPLEMENT_REWORK

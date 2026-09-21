@@ -158,6 +158,7 @@ def build_job(
     inputs: Sequence[Mapping[str, Any]],
     session_id: str | None,
     verification: Sequence[Mapping[str, Any]] = (),
+    previous_check_failures: Sequence[Mapping[str, Any]] | None = None,
     timeout_seconds: int | None = None,
     template_id: str | None = None,
     stage_agents: Mapping[str, Mapping[str, str]] | None = None,
@@ -239,6 +240,12 @@ def build_job(
         "verification": [dict(item) for item in verification],
         "limits": {"timeoutSeconds": timeout_seconds},
     }
+    if previous_check_failures:
+        if stage not in VERIFICATION_STAGES:
+            raise WorkflowProtocolError(
+                "previous_check_failures is only allowed on implement and direct_implement jobs"
+            )
+        job["previousCheckFailures"] = [dict(item) for item in previous_check_failures]
     validate_job_document(job)
     return job
 

@@ -342,3 +342,35 @@ test("compileBrief interpolates job fields and does not invent workflow decision
   assert.doesNotMatch(direct, /accepted plan/);
   assert.doesNotMatch(direct, /kanban|ready\/running|Workflow Manifest/i);
 });
+
+test("compileBrief passes exact verification commands and prior failures to implementers", () => {
+  const job = sampleJob("direct_implement");
+  job.verification = [{
+    id: "benchmark-report-contract",
+    argv: ["node", "-e", "if (!r.stages) process.exit(1)"],
+    cwd: "/abs/repo",
+    timeoutSeconds: 30,
+    expectedExitCode: 0,
+  }];
+  job.previousCheckFailures = [{
+    id: "benchmark-report-contract",
+    status: "failed",
+    argv: ["node", "-e", "if (!r.stages) process.exit(1)"],
+    cwd: "/abs/repo",
+    expectedExitCode: 0,
+    exitCode: 1,
+    signal: null,
+    startedAt: "2026-09-21T00:00:00.000Z",
+    finishedAt: "2026-09-21T00:00:01.000Z",
+    stdoutPath: "/out/checks/report.stdout.log",
+    stderrPath: "/out/checks/report.stderr.log",
+  }];
+
+  const brief = compileBrief(job);
+  assert.match(brief, /Host deterministic verification commands/);
+  assert.match(brief, /benchmark-report-contract/);
+  assert.match(brief, /if \(!r\.stages\) process\.exit\(1\)/);
+  assert.match(brief, /Previous host verification failures/);
+  assert.match(brief, /exitCode: 1/);
+  assert.match(brief, /\/out\/checks\/report\.stderr\.log/);
+});

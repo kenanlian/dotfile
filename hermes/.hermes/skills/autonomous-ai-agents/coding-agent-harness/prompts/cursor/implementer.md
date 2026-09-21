@@ -17,7 +17,7 @@ Inputs (read these files; hashes are already verified by the host):
 
 {{inputs}}
 
-Implement the accepted plan.
+{{verificationCommands}}{{previousCheckFailures}}Implement the accepted plan.
 Do not put the implementation report in the final message.
 Call `{{submitTool}}` exactly once with a complete, schema-valid payload (schema {{outputSchema}}) as the final action. An error result from the submit tool fails the run; a later corrected call is not accepted.
 

@@ -175,6 +175,22 @@ function validDirectImplementJob() {
   return job;
 }
 
+function failedCheckResult() {
+  return {
+    id: "check-unit",
+    status: "failed",
+    argv: ["node", "--test", "tests/unit.test.mjs"],
+    cwd: "/abs/repo",
+    expectedExitCode: 0,
+    exitCode: 1,
+    signal: null,
+    startedAt: "2026-09-21T00:00:00.000Z",
+    finishedAt: "2026-09-21T00:00:01.000Z",
+    stdoutPath: "/abs/out/checks/check-unit.stdout.log",
+    stderrPath: "/abs/out/checks/check-unit.stderr.log",
+  };
+}
+
 function validPlanPayload() {
   return {
     schema: "plan.v1",
@@ -442,6 +458,27 @@ test("verification is allowed only on implement and must be unique and well-form
   const escapedCwd = validImplementJob();
   escapedCwd.verification[0].cwd = "/abs/elsewhere";
   assertInvalidJob(escapedCwd, "/verification/0/cwd");
+});
+
+test("previous check failures are optional structured rework evidence for implementer jobs", () => {
+  const direct = validDirectImplementJob();
+  direct.previousCheckFailures = [failedCheckResult()];
+  assert.equal(validateJob(direct).ok, true, validateJob(direct).error && validateJob(direct).error.message);
+
+  const plan = validPlanJob();
+  plan.previousCheckFailures = [failedCheckResult()];
+  assertInvalidJob(plan, "/previousCheckFailures");
+
+  const passed = validDirectImplementJob();
+  passed.previousCheckFailures = [{ ...failedCheckResult(), status: "passed", exitCode: 0 }];
+  assertInvalidJob(passed, "/previousCheckFailures/0/status");
+
+  const malformed = validDirectImplementJob();
+  malformed.previousCheckFailures = [{ ...failedCheckResult(), extra: true }];
+  assertInvalidJob(malformed, "/previousCheckFailures/0/extra");
+
+  const schema = loadSchema("coding-agent-job.v1.schema.json");
+  assert.equal(schemaAccepts(schema, direct), true);
 });
 
 test("input cardinality, uniqueness, hashes, and absolute paths fail closed", () => {
@@ -863,7 +900,9 @@ test("JSON schemas match runtime top-level required and property sets", () => {
     assert.deepEqual(Object.keys(schema.properties), [...keys], file);
     const required = file === "coding-agent-result.v1.schema.json"
       ? keys.filter((key) => key !== "resolvedModel")
-      : [...keys];
+      : file === "coding-agent-job.v1.schema.json"
+        ? keys.filter((key) => key !== "previousCheckFailures")
+        : [...keys];
     assert.deepEqual(schema.required, required, file);
     assert.equal(schema.additionalProperties, false, file);
   }

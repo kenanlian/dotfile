@@ -16,7 +16,7 @@ Inputs (read these files; hashes are already verified by the host):
 
 {{inputs}}
 
-Implement the accepted plan. Before this run ends you MUST call the terminating tool `{{submitTool}}` with schema {{outputSchema}}.
+{{verificationCommands}}{{previousCheckFailures}}Implement the accepted plan. Before this run ends you MUST call the terminating tool `{{submitTool}}` with schema {{outputSchema}}.
 Do not put the implementation report in the final message.
 Call `{{submitTool}}` exactly once with a complete, schema-valid payload, then stop. An error result from the submit tool fails the run; a later corrected call is not accepted.
 

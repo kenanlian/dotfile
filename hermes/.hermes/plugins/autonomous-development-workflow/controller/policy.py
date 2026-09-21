@@ -66,6 +66,8 @@ class PolicySnapshot:
     implementer_session_id: str | None = None
     resume_status: str | None = None
     implement_checks: tuple[Mapping[str, Any], ...] | None = None
+    implement_touched_files: tuple[str, ...] | None = None
+    previous_failure_check_ids: frozenset[str] = frozenset()
     review_verdict: str | None = None
     kanban_status: str | None = None
     template_id: str = WORKFLOW_TEMPLATE_ID
@@ -85,6 +87,14 @@ def snapshot_from_manifest(
     failures = manifest.get("runFailureCounts") or {}
     if not isinstance(failures, Mapping):
         failures = {}
+    evidence = manifest.get("implementFailureEvidence")
+    evidence_ids: frozenset[str] = frozenset()
+    if isinstance(evidence, list):
+        evidence_ids = frozenset(
+            str(item.get("id"))
+            for item in evidence
+            if isinstance(item, Mapping) and item.get("id")
+        )
     return PolicySnapshot(
         status=parsed,
         plan_rework_count=int(manifest.get("planReworkCount") or 0),
@@ -98,6 +108,7 @@ def snapshot_from_manifest(
         implementer_session_id=manifest.get("implementerSessionId"),
         resume_status=manifest.get("resumeStatus"),
         implement_checks=implement_checks,
+        previous_failure_check_ids=evidence_ids,
         review_verdict=review_verdict,
         kanban_status=kanban_status,
         template_id=str(manifest.get("templateId") or WORKFLOW_TEMPLATE_ID),
@@ -223,11 +234,31 @@ def _action_for_status(snapshot: PolicySnapshot) -> WorkflowAction:
             reason="implement_rework",
         )
     if status is WorkflowStatus.VERIFYING:
-        passed = checks_passed(snapshot.implement_checks or ())
+        checks = snapshot.implement_checks or ()
+        passed = checks_passed(checks)
         if passed:
             return WorkflowAction(
                 kind="apply_lifecycle",
                 target_status=template.verifying_passed_status(),
+            )
+        # Blind-rework guard: if this attempt changed no files and failed the
+        # exact same checks as the previous attempt, the feedback loop is
+        # broken — burn no further rework budget and surface a workflow fault.
+        failed_ids = frozenset(
+            str(item.get("id"))
+            for item in checks
+            if isinstance(item, Mapping) and item.get("status") != "passed" and item.get("id")
+        )
+        if (
+            snapshot.previous_failure_check_ids
+            and failed_ids == snapshot.previous_failure_check_ids
+            and snapshot.implement_touched_files is not None
+            and not snapshot.implement_touched_files
+        ):
+            return WorkflowAction(
+                kind="block",
+                target_status=WorkflowStatus.BLOCKED,
+                reason="implement_rework_no_progress",
             )
         return _implement_rework_or_block(snapshot, kind="apply_lifecycle")
     if status is WorkflowStatus.REVIEW_REQUESTED:

@@ -17,7 +17,7 @@ Inputs (read these files; hashes are already verified by the host):
 
 {{inputs}}
 
-Implement the Requirement directly. There is no Plan artifact. Run appropriate self-checks in the repository, then stop. The host still runs the Job's deterministic checks after a valid submission.
+{{verificationCommands}}{{previousCheckFailures}}Implement the Requirement directly. There is no Plan artifact. Run appropriate self-checks in the repository, then stop. The host still runs the Job's deterministic checks after a valid submission.
 
 Do not put the implementation report in the final message.
 Call `{{submitTool}}` exactly once with a complete, schema-valid payload (schema {{outputSchema}}) as the final action. An error result from the submit tool fails the run; a later corrected call is not accepted.

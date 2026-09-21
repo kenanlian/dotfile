@@ -85,7 +85,7 @@ export const STAGE_CONTRACTS = Object.freeze({
 export const JOB_FIELD_KEYS = Object.freeze([
   "schema", "jobId", "idempotencyKey", "taskId", "stage", "attempt",
   "workspace", "agent", "permissions", "inputs", "expectedOutput",
-  "verification", "limits",
+  "verification", "previousCheckFailures", "limits",
 ]);
 export const WORKSPACE_FIELD_KEYS = Object.freeze([
   "repoRoot", "branch", "expectedHead", "requireCleanAtStart",
@@ -401,7 +401,7 @@ function nullableIdentity(value, path, { allowNull }) {
 }
 
 export function validateJob(value) {
-  const objectError = exactObject(value, JOB_FIELD_KEYS, "");
+  const objectError = exactObject(value, JOB_FIELD_KEYS, "", ["previousCheckFailures"]);
   if (objectError) return objectError;
   if (value.schema !== JOB_SCHEMA_ID) return fail("/schema", `expected ${JOB_SCHEMA_ID}`);
   for (const key of ["jobId", "idempotencyKey", "taskId"]) {
@@ -534,7 +534,63 @@ export function validateJob(value) {
     if (exitErr) return exitErr;
   }
 
+  if (value.previousCheckFailures !== undefined) {
+    if (!contract.verificationAllowed) {
+      return fail(
+        "/previousCheckFailures",
+        "previousCheckFailures is only allowed on implement and direct_implement jobs",
+      );
+    }
+    if (!Array.isArray(value.previousCheckFailures) || value.previousCheckFailures.length === 0) {
+      return fail("/previousCheckFailures", "expected non-empty array");
+    }
+    const verificationIds = new Set(value.verification.map((item) => item.id));
+    for (let i = 0; i < value.previousCheckFailures.length; i += 1) {
+      const itemPath = `/previousCheckFailures/${i}`;
+      const itemErr = validateCheckResultEvidence(value.previousCheckFailures[i], itemPath);
+      if (itemErr) return itemErr;
+      if (value.previousCheckFailures[i].status === "passed") {
+        return fail(`${itemPath}/status`, "previousCheckFailures entries must not be passed checks");
+      }
+      if (!verificationIds.has(value.previousCheckFailures[i].id)) {
+        return fail(`${itemPath}/id`, "previousCheckFailures ids must reference job verification ids");
+      }
+    }
+  }
+
   return ok(value);
+}
+
+function validateCheckResultEvidence(item, path) {
+  const shapeErr = exactObject(item, CHECK_RESULT_FIELD_KEYS, path);
+  if (shapeErr) return shapeErr;
+  const idErr = nonEmptyString(item.id, `${path}/id`);
+  if (idErr) return idErr;
+  const statusCheck = enumValue(item.status, `${path}/status`, CHECK_STATUSES);
+  if (statusCheck) return statusCheck;
+  const argvErr = stringArray(item.argv, `${path}/argv`, { allowEmpty: false });
+  if (argvErr) return argvErr;
+  const cwdErr = absolutePath(item.cwd, `${path}/cwd`);
+  if (cwdErr) return cwdErr;
+  const expectedErr = integerInRange(item.expectedExitCode, `${path}/expectedExitCode`, 0, 255);
+  if (expectedErr) return expectedErr;
+  if (item.exitCode !== null) {
+    const exitErr = integerInRange(item.exitCode, `${path}/exitCode`, 0, 255);
+    if (exitErr) return exitErr;
+  }
+  if (item.signal !== null) {
+    const signalErr = nonEmptyString(item.signal, `${path}/signal`);
+    if (signalErr) return signalErr;
+  }
+  const started = isoTimestamp(item.startedAt, `${path}/startedAt`);
+  if (started) return started;
+  const finished = isoTimestamp(item.finishedAt, `${path}/finishedAt`);
+  if (finished) return finished;
+  const stdoutErr = absolutePath(item.stdoutPath, `${path}/stdoutPath`);
+  if (stdoutErr) return stdoutErr;
+  const stderrErr = absolutePath(item.stderrPath, `${path}/stderrPath`);
+  if (stderrErr) return stderrErr;
+  return null;
 }
 
 function validateInputCardinality(stage, counts) {
@@ -1091,35 +1147,8 @@ export function validateResult(value) {
   if (touchedErr) return touchedErr;
   if (!Array.isArray(value.checks)) return fail("/checks", "expected array");
   for (let i = 0; i < value.checks.length; i += 1) {
-    const path = `/checks/${i}`;
-    const err = exactObject(value.checks[i], CHECK_RESULT_FIELD_KEYS, path);
-    if (err) return err;
-    const idErr = nonEmptyString(value.checks[i].id, `${path}/id`);
-    if (idErr) return idErr;
-    const statusCheck = enumValue(value.checks[i].status, `${path}/status`, CHECK_STATUSES);
-    if (statusCheck) return statusCheck;
-    const argvErr = stringArray(value.checks[i].argv, `${path}/argv`, { allowEmpty: false });
-    if (argvErr) return argvErr;
-    const cwdErr = absolutePath(value.checks[i].cwd, `${path}/cwd`);
-    if (cwdErr) return cwdErr;
-    const expectedErr = integerInRange(value.checks[i].expectedExitCode, `${path}/expectedExitCode`, 0, 255);
-    if (expectedErr) return expectedErr;
-    if (value.checks[i].exitCode !== null) {
-      const exitErr = integerInRange(value.checks[i].exitCode, `${path}/exitCode`, 0, 255);
-      if (exitErr) return exitErr;
-    }
-    if (value.checks[i].signal !== null) {
-      const signalErr = nonEmptyString(value.checks[i].signal, `${path}/signal`);
-      if (signalErr) return signalErr;
-    }
-    const started = isoTimestamp(value.checks[i].startedAt, `${path}/startedAt`);
-    if (started) return started;
-    const finished = isoTimestamp(value.checks[i].finishedAt, `${path}/finishedAt`);
-    if (finished) return finished;
-    const stdoutErr = absolutePath(value.checks[i].stdoutPath, `${path}/stdoutPath`);
-    if (stdoutErr) return stdoutErr;
-    const stderrErr = absolutePath(value.checks[i].stderrPath, `${path}/stderrPath`);
-    if (stderrErr) return stderrErr;
+    const checkErr = validateCheckResultEvidence(value.checks[i], `/checks/${i}`);
+    if (checkErr) return checkErr;
   }
   if (!isPlainObject(value.usage)) return fail("/usage", "expected object");
 

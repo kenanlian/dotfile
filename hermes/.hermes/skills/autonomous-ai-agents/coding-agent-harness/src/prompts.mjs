@@ -93,6 +93,47 @@ function applyPlaceholders(template, replacements) {
   return brief;
 }
 
+function shellQuote(arg) {
+  if (/^[A-Za-z0-9_\-./:=@%+,]+$/.test(arg)) return arg;
+  return `'${String(arg).split("'").join(`'\\''`)}'`;
+}
+
+function formatVerificationCommands(checks) {
+  if (!Array.isArray(checks) || checks.length === 0) return "";
+  const lines = checks.map((check) =>
+    `- ${check.id} (cwd ${check.cwd}, expect exit ${check.expectedExitCode}):\n  ${check.argv.map(shellQuote).join(" ")}`
+  );
+  return [
+    "Host deterministic verification commands (the host runs these exact commands after your submission; run them yourself and make them pass before submitting):",
+    "",
+    ...lines,
+    "",
+    "",
+  ].join("\n");
+}
+
+function formatPreviousCheckFailures(failures) {
+  if (!Array.isArray(failures) || failures.length === 0) return "";
+  const lines = failures.map((failure) => {
+    const exit = failure.exitCode === null || failure.exitCode === undefined
+      ? `signal ${failure.signal}`
+      : `exitCode: ${failure.exitCode}`;
+    return [
+      `- ${failure.id}: ${failure.status} (${exit}, expected exit ${failure.expectedExitCode})`,
+      `  command: ${failure.argv.map(shellQuote).join(" ")} (cwd ${failure.cwd})`,
+      `  stdout log: ${failure.stdoutPath}`,
+      `  stderr log: ${failure.stderrPath}`,
+    ].join("\n");
+  });
+  return [
+    "Previous host verification failures (your previous attempt failed these exact host checks; read the referenced logs, fix the root cause, and re-run the exact command before submitting again):",
+    "",
+    ...lines,
+    "",
+    "",
+  ].join("\n");
+}
+
 function compileCursorBrief(job, extras = {}) {
   const templateName = CURSOR_STAGE_TEMPLATES[job.stage];
   if (!templateName) {
@@ -118,6 +159,8 @@ function compileCursorBrief(job, extras = {}) {
     "{{inputs}}": formatInputs(job.inputs),
     "{{workspaceEvidencePath}}": extras.workspaceEvidencePath ?? "",
     "{{candidatePatchPath}}": extras.candidatePatchPath ?? "",
+    "{{verificationCommands}}": formatVerificationCommands(job.verification),
+    "{{previousCheckFailures}}": formatPreviousCheckFailures(job.previousCheckFailures),
   };
   const brief = applyPlaceholders(template, replacements);
   const token = ENTRY_SKILL_TOKENS[job.stage];
@@ -180,6 +223,8 @@ export function compileBrief(job, extras = {}) {
     "{{inputs}}": formatInputs(job.inputs),
     "{{workspaceEvidencePath}}": extras.workspaceEvidencePath ?? "",
     "{{candidatePatchPath}}": extras.candidatePatchPath ?? "",
+    "{{verificationCommands}}": formatVerificationCommands(job.verification),
+    "{{previousCheckFailures}}": formatPreviousCheckFailures(job.previousCheckFailures),
     "{{mountedSkills}}": formatMountedSkillsLine(names, mode, skillPaths),
   };
   let brief = template;

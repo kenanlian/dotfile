@@ -342,6 +342,54 @@ class NextActionTests(unittest.TestCase):
         self.assertEqual(action.kind, "apply_lifecycle")
         self.assertEqual(action.target_status, WorkflowStatus.IMPLEMENT_REWORK)
 
+    def test_verify_blocks_blind_rework_when_same_checks_fail_without_changes(self) -> None:
+        # Same failed check ids as the persisted evidence + zero touched files
+        # means the rework feedback loop is broken: block, don't burn budget.
+        blocked = next_action(
+            _snapshot(
+                status=WorkflowStatus.VERIFYING,
+                implement_rework_count=1,
+                implementer_session_id="sess_impl",
+                implement_checks=(
+                    {"id": "unit", "status": "passed"},
+                    {"id": "contract", "status": "failed"},
+                ),
+                implement_touched_files=(),
+                previous_failure_check_ids=frozenset({"contract"}),
+            )
+        )
+        self.assertEqual(blocked.kind, "block")
+        self.assertEqual(blocked.target_status, WorkflowStatus.BLOCKED)
+        self.assertEqual(blocked.reason, "implement_rework_no_progress")
+
+        # A rework that changed files but still fails gets another chance.
+        changed = next_action(
+            _snapshot(
+                status=WorkflowStatus.VERIFYING,
+                implement_rework_count=1,
+                implementer_session_id="sess_impl",
+                implement_checks=({"id": "contract", "status": "failed"},),
+                implement_touched_files=("src/report.ts",),
+                previous_failure_check_ids=frozenset({"contract"}),
+            )
+        )
+        self.assertEqual(changed.kind, "apply_lifecycle")
+        self.assertEqual(changed.target_status, WorkflowStatus.IMPLEMENT_REWORK)
+
+        # Different failing checks (new failure surface) also reworks normally.
+        different = next_action(
+            _snapshot(
+                status=WorkflowStatus.VERIFYING,
+                implement_rework_count=1,
+                implementer_session_id="sess_impl",
+                implement_checks=({"id": "lint", "status": "failed"},),
+                implement_touched_files=(),
+                previous_failure_check_ids=frozenset({"contract"}),
+            )
+        )
+        self.assertEqual(different.kind, "apply_lifecycle")
+        self.assertEqual(different.target_status, WorkflowStatus.IMPLEMENT_REWORK)
+
     def test_transport_failure_retries_same_business_attempt(self) -> None:
         action = next_action(
             _snapshot(

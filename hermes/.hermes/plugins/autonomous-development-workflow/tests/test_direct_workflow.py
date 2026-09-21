@@ -141,6 +141,15 @@ class DirectWorkflowSmokeTests(unittest.TestCase):
         second = json.loads(Path(rows[1]["job_path"]).read_text(encoding="utf-8"))
         self.assertIsNone(first["agent"]["sessionId"])
         self.assertEqual(second["agent"]["sessionId"], "sess_direct_1")
+        self.assertNotIn("previousCheckFailures", first)
+        self.assertEqual(len(second["previousCheckFailures"]), 1)
+        failure = second["previousCheckFailures"][0]
+        self.assertEqual(failure["id"], "unit")
+        self.assertEqual(failure["status"], "failed")
+        self.assertEqual(failure["argv"], ["true"])
+        self.assertEqual(failure["exitCode"], 1)
+        self.assertTrue(failure["stdoutPath"].endswith("unit.stdout.log"))
+        self.assertTrue(failure["stderrPath"].endswith("unit.stderr.log"))
         self.assertFalse(any(name == "kanban_request_review" for name, _ in self.env.kanban.tool_calls))
 
         limited = SmokeEnv()
