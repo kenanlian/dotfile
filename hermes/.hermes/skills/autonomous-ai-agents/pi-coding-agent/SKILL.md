@@ -1,7 +1,7 @@
 ---
 name: pi-coding-agent
 description: "Use when driving Pi CLI for coding delegation or extensions."
-version: 1.0.9
+version: 1.0.10
 tags: [Coding-Agent, Pi, Delegation, Subagent, Headless]
 metadata:
   hermes:
@@ -92,7 +92,7 @@ Verify injection when diagnosing: grep the Pi session store record (`~/.pi/agent
   - `--skill` of a `disable-model-invocation: true` Skill (`write-plan`) together with `-ns` **does load it**. `/skill:write-plan ` expansion inlines SKILL.md as a `<skill>` message (`Plan-writing mode is active` present in the session). The Skill does **not** appear in `<available_skills>` — `disable-model-invocation` still filters the system-prompt list for CLI-mounted Skills. A project `.agents/skills/decoy-skill` in the same cwd was not loaded.
   - `-ns` without `--skill` turns off **all** discovery in that run: neither `~/.pi/agent/skills` (write-plan / delegate-work / execute-plan) nor project `.agents/skills` (decoy-skill / `DECOY_SKILL_TOKEN`) appeared in the session store. Official docs match: `--skill` remains additive under `--no-skills`.
   Harness `skills.mode=explicit` profiles always pass `-ns` plus the listed `--skill` dirs. `mode=auto` passes neither flag. When `skills.inline` is set, the Harness brief starts with `/skill:<inline> ` (verified 2026-09-17: a compileBrief plan brief delivered on relay stdin expanded to `<skill name="write-plan"` in the session). `-t`/`--tools` allowlists apply to extension-registered tools as well as builtins.
-- **`PI_CODING_AGENT_DIR` exists but was rejected for stage differences.** Pi can redirect its whole config directory via that env var. The autodev/harness decision is to keep one config directory and express process-level differences (which extensions/tools/env a stage gets) as relay argv/`--env`, not as per-stage config trees.
+- **`PI_CODING_AGENT_DIR` redirects Pi's configuration directory.** For per-run tool, Skill, extension, and environment selection, use explicit relay arguments; configuration-directory selection and run capabilities are separate controls.
 - **Same-name override of built-in tools works** (verified 0.84.4): `registerTool({name: "write", ...})` in an extension replaces the built-in entirely — the custom `execute` runs, the real file write never happens (official example: repo `examples/extensions/tool-override.ts`). Complements: `-nbt` disables all built-ins, `pi.on('tool_call')` can block/modify, `setActiveTools()` toggles at runtime.
 - Extensions run with **full system permissions**.
 - Verify extension-API semantics against the pinned package source in the consuming repo (`node_modules/@earendil-works/pi-coding-agent/dist/core/*.js`) — grep the event name and read the emit site rather than inferring from docs.

@@ -25,5 +25,3 @@ Cursor 委派返工偏好：默认续用原 session；但用户担心原 session
 GLM 5.3（zai-coding-cn/glm-5.3，thinking=high）
 §
 Harness 4 类 agent 用 zai-coding-cn/glm-5.3
-§
-autodev 工作流卡必须用 `autodev enqueue --board --repo --title --requirement <md>`（需 repo 净树，direct flow 另需 --verification JSON）；kanban_create 直建的卡缺 workflow intake/manifest，worker 启动必失败。enqueue 强制要求 --notify-platform + --notify-chat-id（CLI 无聊天上下文，缺参即 exit 2 拒绝并提示带参重调）；代柯楠入队时用当前会话的 platform/chat_id。
