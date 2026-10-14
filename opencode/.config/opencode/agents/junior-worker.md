@@ -1,7 +1,7 @@
 ---
 description: Executes straightforward, well-scoped delegated tasks that require limited reasoning and have clear boundaries.
 mode: subagent
-model: opencode-go/deepseek-v4-flash
+model: zhipuai-coding-plan/glm-5.3
 variant: high
 permission:
   task: deny
