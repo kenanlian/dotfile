@@ -1,8 +1,8 @@
 ---
 name: opencode-delegate
-description: Transport OpenCode CLI runs: preflight, dispatch, exact-session resume, result contract.
-version: 0.1.1
-author: 柯楠, Hermes Agent
+description: "Transport OpenCode CLI runs via relay.mjs: preflight, dispatch, exact-session resume, result contract. Full-permission policy."
+version: 0.2.0
+author: "柯楠, Hermes Agent"
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -13,32 +13,33 @@ metadata:
 
 # OpenCode Transport Adapter
 
-Provide OpenCode CLI transport: preflight, workspace and permission pinning, outer model selection, artifact capture, watchdogs, and exact-session resume. It does not decide requirements, workflow, review, acceptance, or landing.
+Provide reliable OpenCode CLI transport: binary preflight, workspace pinning, structured artifacts, watchdogs, and exact-session resume. Verified against OpenCode v2.0.29. This adapter is not a development workflow, planner, reviewer, acceptance authority, or landing policy.
 
 ## When to Use
 
-Load when commissioning an OpenCode CLI run. Use the general `opencode` Skill for direct TUI use, PR review, statistics, or ordinary one-shot tasks outside delegation.
+Load when commissioning an OpenCode CLI run that needs the result contract (thread persistence across context compression, rework resume, cross-session artifacts). For a quick one-shot question, direct `opencode run` in the `opencode` Skill is cheaper.
 
-## Preflight and Model Policy
+## Permission Policy (deliberate design choice)
 
-Verify with `terminal`:
+The relay always passes `--auto` with **no deny rules** — every run has full permissions, including read-only tasks. Read-only-ness is expressed in the brief ("do not modify files") and relies on model instruction-following. The post-hoc check is `touchedFiles` + git diff review, not a sandbox. Do not reintroduce permission denies here without an explicit user decision; if a task cannot tolerate a stray write, do not dispatch it through this adapter.
+
+## Preflight
+
+Verify once:
 
 ```text
 command -v opencode
 opencode --version
 opencode auth list
 opencode models
-opencode agent list
 ```
 
-Use exact IDs from `opencode models`; never invent or normalize one. Unless the user overrides the current task:
+v2 facts that bite:
 
-- **Substantial/structured:** `zhipuai-coding-plan/glm-5.3 --variant high` for planning, review, design, implementation, architecture, persistence, migration, or other consequential judgment.
-- **Lightweight:** `opencode-go/deepseek-v4-pro --variant high` only for narrow simple tasks, commit-only work, or factual read-only retrieval with no recommendation/design/review/file change.
-
-GLM supports `low|high|max`; DeepSeek supports `high|max`. Pass model and variant explicitly, confirm availability immediately before dispatch, and require `result.json` to report the same resolved outer model. If lightweight work exposes broad coupling or consequential judgment, stop and reclassify before using GLM.
-
-Confirm the repository before `--cd` and verify its `.agents/skills` discovery path. The Relay model selects only the outer OpenCode parent; internal subagent models belong to target-discovered Skills.
+- A bare `opencode run` without `--model` resolves to the opencode-go default, which **403s without an active Go subscription**. Always pass `--model` explicitly with a provider you have auth for (`opencode auth list`).
+- `--variant` as a standalone flag is gone. Variant is inline: `--model provider/model#variant`.
+- `opencode export <id>` is gone; it is `opencode session export <id>` now.
+- Model selection policy (unless the user overrides): default `zhipuai-coding-plan/glm-5.3`; high-stakes or reasoning-heavy runs add `#high`. Use exact IDs from live `opencode models` output only.
 
 ## Relay
 
@@ -46,46 +47,34 @@ Confirm the repository before `--cd` and verify its `.agents/skills` discovery p
 node <this-skill>/scripts/relay.mjs --brief <file> --cd <repo> [options]
 ```
 
-| Option | Meaning |
-|---|---|
-| `--read-only` | Default `plan` Agent with process-level deny rules for edits, shell, and external-directory writes. |
-| `--write` | Writable `build` Agent plus auto-approval for requests not already denied. |
-| `--model <provider/model>` | Exact outer parent model. |
-| `--variant <level>` | Explicit provider-supported reasoning level. |
-| `--agent <name>` | Override `plan`/`build`. |
-| `--session <id>` | Resume one exact session. |
-| `--resume-last` | Fallback only; “last” is global to project context. |
+| Option | Purpose |
+| --- | --- |
+| `--brief <file>` | Brief path; omit to read stdin. Brief travels via stdin, never argv. |
+| `--cd <dir>` | Working root and child cwd. |
+| `--model <id>` | Outer model, `provider/model` or `provider/model#variant`. |
+| `--variant <level>` | Convenience: composed onto `--model` as `#variant` (requires `--model`). |
+| `--agent <name>` | Primary agent (default `build`). |
+| `--session <id>` | Resume one exact OpenCode session (the `sessionId` from a prior result). |
+| `--resume-last` | Fallback only when no exact session ID exists. |
 | `--timeout <dur>` | Optional watchdog, off by default; prefer none or a long guard such as `4h`. |
-| `--out-dir <dir>` | Stable artifact directory. |
+| `--out-dir <dir>` | Stable artifact directory (default: system temp, outside the repo). |
 
-The brief travels through stdin, never argv. The Relay runs `opencode run --format json` without `--pure`, so curated plugins load; new plugins require Relay-impact review. The Relay never commits.
-
-`--write` uses OpenCode `--auto`, which may approve any request not denied by configuration. Use only for a trusted repository and an authorized writable phase; it is not an OS sandbox.
-
-## Common run patterns
-
-- **Read-only grounding run:** start `--read-only`; follow-ups may resume its exact `sessionId`.
-- **Write-mode implement run:** start fresh with `--write` and no prior `--session`; begin the brief with the entry Skill invocation, include the complete task contract, and require the exact deliverable plus top-level outcome. Preserve the returned `sessionId`.
-- **Rework:** resume the exact session with `--session <id> --write` and the observed failure/missing-contract packet.
+The relay never commits.
 
 ## Result Contract
 
-`result.json` records terminal status/exit, OpenCode version, exact `sessionId`, requested/resolved model/variant/Agent, permission mode, available usage, `finalMessage`, `touchedFiles`, and paths to brief/events/final/stderr/session artifacts.
+`result.json` (schema `delegate-relay.result.v1`) records terminal status (`completed` / `failed` / `timeout` / `aborted` / `unavailable`), exitCode, `opencodeVersion`, exact `sessionId` (the resume key), requested/resolved model/variant/agent, `finalMessage`, `usage`, `touchedFiles` (git porcelain under `--cd`), and paths to brief/events/final/stderr/session-export artifacts. `session.json` is the parsed `opencode session export` output; `resolvedModel`/`resolvedAgent`/`usage` are extracted from it (v2 shape: assistant messages carry `type: 'assistant'`, `content: [{type:'text',text}]`, `model: {id, providerID, variant}` directly).
 
-Completion requires child-process exit and a valid `result.json`; a streamed text fragment or idle-looking event is not terminal. On timeout, abort, or failure, preserve the working tree and artifacts for the commissioning session—do not clean, retry, or replace the session blindly.
+Completion means the child process exited and `result.json` exists. A streamed text fragment is not completion. On timeout, abort, or failure, preserve the working tree and artifacts for the commissioning session; do not clean, retry, or start a replacement blindly.
+
+`completed` does not mean "no question": if the child asks a clarifying question, it lands in `finalMessage` as plain text with status `completed` and exit 0 — machine-indistinguishable from a finished deliverable. Decide from the brief whether the answer is already known (answer it via resume); otherwise escalate to the user before resuming.
 
 ## Boundaries
 
-The OpenCode parent owns engineering; target-discovered Skills own internal subagents and domain procedures; Hermes owns product decisions and real UI acceptance; this adapter owns transport only.
-
-Never use this adapter as a reason to inspect code or rerun gates. Never push, open a PR, release, deploy, publish, change versions, or ask OpenCode to commit. Workflow and brief remain authoritative because the Relay cannot technically prohibit every shell spelling of an external action.
+- The OpenCode parent owns repository investigation, planning, implementation, tests, and preparing the product artifact.
+- Hermes owns product decisions and real behavior acceptance.
+- This adapter owns transport mechanics only. Do not inspect code or rerun gates because this adapter says so; never push, create a PR, release, deploy, or publish — commit only when the controlling workflow explicitly authorizes it.
 
 ## Verification
 
-A run is valid only when repository, permission mode, requested/resolved model, exact session, terminal result, and artifact paths are recorded.
-
-```text
-node <this-skill>/scripts/relay.mjs --brief smoke.txt --cd <trusted-repo> --read-only --model <provider/model> --out-dir <artifact-dir>
-```
-
-Smoke success requires exit `0`, `status: completed`, non-empty `sessionId`, expected final text, and unchanged Git state. Resume the exact session once to verify continuity. See `references/dispatch-and-poll.md` for failure semantics.
+A transport run is valid only when repository, requested model, exact session ID, terminal result status, and artifact paths are recorded. Smoke pattern: fresh run expecting an exact reply token → require `status: completed`, exact `finalMessage`, non-empty `sessionId`, matching `resolvedModel`; then resume the exact session and require it to recall the prior token. See `references/dispatch-and-poll.md` for failure semantics.

@@ -5,10 +5,17 @@
  * Dispatch a brief to `opencode run`, capture JSON events, export the finished
  * session, and publish delegate-relay.result.v1 artifacts.
  *
- * Fresh runs default to read-only: OpenCode's plan agent plus process-level
- * deny rules for edit, bash, and external-directory access. `--write` is an
- * explicit writable transition and passes `--auto`; it is not an OS sandbox.
- * The relay never commits.
+ * Permission policy (2026-10): FULL permissions by design. The relay always
+ * passes `--auto` and injects no deny rules. Read-only-ness is expressed in the
+ * brief ("do not modify files") and relies on model instruction-following;
+ * touchedFiles + git diff review is the post-hoc check, not a sandbox.
+ *
+ * Verified against OpenCode v2.0.29:
+ *   - `opencode session export <id>` (the old `opencode export` subcommand is gone);
+ *   - export messages use {type: 'assistant', content: [{type:'text',text}], model:{id,providerID,variant}};
+ *   - variant is inline: `--model provider/model#variant` (standalone --variant flag removed in v2);
+ *   - a bare `opencode run` without --model resolves to the opencode-go default,
+ *     which 403s without an active Go subscription — pass --model explicitly.
  *
  * Usage:
  *   node relay.mjs --brief <file> [options]
@@ -17,16 +24,21 @@
  * Options:
  *   --brief <file>       Brief path; omit to read stdin.
  *   --cd <dir>           OpenCode working root (default: current directory).
- *   --read-only          Plan agent + edit/bash/external-directory denies (default).
- *   --write              Build agent + --auto; explicit writable mode.
- *   --model <id>         Outer model in provider/model form.
- *   --variant <level>    Provider-specific reasoning variant.
- *   --agent <name>       Primary agent override (default: plan or build).
+ *   --model <id>         Outer model, provider/model or provider/model#variant.
+ *   --variant <level>    Reasoning variant; composed onto --model as #variant.
+ *   --agent <name>       Primary agent (default: build).
  *   --session <id>       Resume one exact OpenCode session.
  *   --resume-last        Resume the latest session when no exact id exists.
  *   --timeout <dur>      Optional relay watchdog (h/m/s; default: off).
  *   --out-dir <dir>      Artifact directory (default: system temp).
  *   -h, --help           Show this help.
+ *
+ * Result: written to <out-dir>/result.json and summarized on stdout —
+ *   status, exitCode, signal, opencodeVersion, sessionId (for a later resume),
+ *   finalMessage, touchedFiles (git porcelain), and artifact paths.
+ *
+ * Exit codes: usage error exits 2 before any run; missing binary exits 127;
+ * otherwise the exit code mirrors OpenCode's own.
  */
 
 import { constants, tmpdir } from 'node:os';
@@ -46,7 +58,8 @@ import { StringDecoder } from 'node:string_decoder';
 const VERSION_PROBE_TIMEOUT_MS = 10_000;
 const EXPORT_TIMEOUT_MS = 30_000;
 const MAX_TIMER_MS = 2_147_483_647;
-const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+// '#' allowed for the v2 inline variant syntax provider/model#variant.
+const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/#-]*$/;
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
 function fail(message, code = 2) {
@@ -77,7 +90,6 @@ function parseArgs(argv) {
   const opts = {
     brief: null,
     cd: process.cwd(),
-    readOnly: true,
     model: null,
     variant: null,
     agent: null,
@@ -102,8 +114,6 @@ function parseArgs(argv) {
         break;
       case '--brief': opts.brief = next(); break;
       case '--cd': opts.cd = resolve(next()); break;
-      case '--read-only': opts.readOnly = true; break;
-      case '--write': opts.readOnly = false; break;
       case '--model': opts.model = next(); break;
       case '--variant': opts.variant = next(); break;
       case '--agent': opts.agent = next(); break;
@@ -115,7 +125,11 @@ function parseArgs(argv) {
     }
   }
   if (opts.session && opts.resumeLast) fail('--session and --resume-last are mutually exclusive; pass only one');
-  if (opts.model && !SAFE_MODEL.test(opts.model)) fail('--model must be a shell-safe provider/model identifier');
+  if (opts.model && !SAFE_MODEL.test(opts.model)) fail('--model must be a shell-safe provider/model[#variant] identifier');
+  if (opts.model && opts.model.includes('#') && opts.variant) {
+    fail('variant specified twice: --model already carries #variant and --variant was given; pass one');
+  }
+  if (opts.variant && !opts.model) fail('--variant requires --model (v2 has no standalone variant flag)');
   for (const [flag, value] of [['--variant', opts.variant], ['--agent', opts.agent], ['--session', opts.session]]) {
     if (value && !SAFE_TOKEN.test(value)) fail(`${flag} contains unsupported characters`);
   }
@@ -195,36 +209,12 @@ function opencodeVersion() {
   }
 }
 
-function openCodeEnv(opts) {
-  const env = { ...process.env };
-  if (!opts.readOnly) return env;
-  let inherited = {};
-  try {
-    const parsed = JSON.parse(env.OPENCODE_PERMISSION || '{}');
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) inherited = parsed;
-  } catch {
-    inherited = {};
-  }
-  const reviewRelay =
-    '/Users/kenan/.hermes/skills/autonomous-ai-agents/cursor-delegate/scripts/review-relay.mjs';
-  env.OPENCODE_PERMISSION = JSON.stringify({
-    ...inherited,
-    edit: 'deny',
-    bash: {
-      '*': 'deny',
-      [`node ${reviewRelay}`]: 'allow',
-      [`node ${reviewRelay} *`]: 'allow',
-    },
-    external_directory: 'deny',
-  });
-  return env;
-}
-
 function buildArgv(opts) {
-  const argv = ['run', '--format', 'json', '--agent', opts.agent || (opts.readOnly ? 'plan' : 'build')];
-  if (!opts.readOnly) argv.push('--auto');
-  if (opts.model) argv.push('--model', opts.model);
-  if (opts.variant) argv.push('--variant', opts.variant);
+  const argv = ['run', '--format', 'json', '--auto', '--agent', opts.agent || 'build'];
+  if (opts.model) {
+    const model = opts.variant ? `${opts.model}#${opts.variant}` : opts.model;
+    argv.push('--model', model);
+  }
   if (opts.session) argv.push('--session', opts.session);
   else if (opts.resumeLast) argv.push('--continue');
   return argv;
@@ -254,12 +244,12 @@ function parseExport(raw) {
   try { return JSON.parse(raw.slice(start)); } catch { return null; }
 }
 
-function exportSession(sessionId, cwd, env, run) {
+function exportSession(sessionId, cwd, run) {
   if (!sessionId) return { data: null, error: null };
   try {
-    const raw = execFileSync('opencode', ['export', sessionId], {
+    // v2 renamed the subcommand: `opencode export` → `opencode session export`.
+    const raw = execFileSync('opencode', ['session', 'export', sessionId], {
       cwd,
-      env,
       encoding: 'utf8',
       timeout: EXPORT_TIMEOUT_MS,
       killSignal: 'SIGKILL',
@@ -267,28 +257,41 @@ function exportSession(sessionId, cwd, env, run) {
       maxBuffer: 64 * 1024 * 1024,
     });
     const data = parseExport(raw);
-    if (!data) return { data: null, error: 'opencode export returned unparseable output' };
+    if (!data) return { data: null, error: 'opencode session export returned unparseable output' };
     writeFileSync(run.exportPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
     return { data, error: null };
   } catch (error) {
-    return { data: null, error: `opencode export failed: ${String(error?.message || error)}` };
+    return { data: null, error: `opencode session export failed: ${String(error?.message || error)}` };
   }
+}
+
+function isAssistantMessage(message) {
+  // v2: {type: 'assistant'}; v1: {info: {role: 'assistant'}}.
+  return message?.type === 'assistant' || message?.info?.role === 'assistant';
+}
+
+function messageText(message) {
+  const parts = Array.isArray(message?.content) ? message.content
+    : Array.isArray(message?.parts) ? message.parts : [];
+  return parts.filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text).join('\n\n').trim();
 }
 
 function fieldsFromExport(data) {
   if (!data) return {};
   const messages = Array.isArray(data.messages) ? data.messages : [];
-  const assistant = [...messages].reverse().find((item) => item?.info?.role === 'assistant');
-  const parts = Array.isArray(assistant?.parts) ? assistant.parts : [];
-  const finalMessage = parts.filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text).join('\n\n').trim();
-  const provider = assistant?.info?.providerID ?? data?.info?.model?.providerID ?? null;
-  const model = assistant?.info?.modelID ?? data?.info?.model?.id ?? null;
+  const assistant = [...messages].reverse().find(isAssistantMessage);
+  const finalMessage = assistant ? messageText(assistant) : '';
+  // v2 carries model/agent/usage directly on the assistant message.
+  const model = assistant?.model ?? data?.info?.model ?? null;
+  const provider = model?.providerID ?? assistant?.info?.providerID ?? null;
+  const modelId = model?.id ?? assistant?.info?.modelID ?? null;
+  const usageSource = (assistant?.tokens || assistant?.cost) ? assistant : (data?.info?.tokens || data?.info?.cost ? data.info : null);
   return {
     finalMessage,
-    resolvedModel: provider && model ? `${provider}/${model}` : model,
-    resolvedVariant: data?.info?.model?.variant ?? null,
-    resolvedAgent: assistant?.info?.agent ?? data?.info?.agent ?? null,
-    usage: assistant?.info?.tokens ? { tokens: assistant.info.tokens, cost: assistant.info.cost ?? null } : null,
+    resolvedModel: provider && modelId ? `${provider}/${modelId}` : modelId,
+    resolvedVariant: model?.variant ?? null,
+    resolvedAgent: assistant?.agent ?? assistant?.info?.agent ?? null,
+    usage: usageSource ? { tokens: usageSource.tokens ?? null, cost: usageSource.cost ?? null } : null,
   };
 }
 
@@ -298,16 +301,14 @@ function makeResultWriter(opts, version, run) {
       schema: 'delegate-relay.result.v1',
       tool: 'opencode',
       workdir: opts.cd,
-      readOnly: opts.readOnly,
-      permissionMode: opts.readOnly ? 'read-only' : 'writable-auto',
+      permissionMode: 'full-auto',
       requestedModel: opts.model,
       requestedVariant: opts.variant,
       requestedAgent: opts.agent,
-      effectiveAgent: opts.agent || (opts.readOnly ? 'plan' : 'build'),
+      effectiveAgent: opts.agent || 'build',
       session: opts.session,
       resumeLast: opts.resumeLast,
       resumed: Boolean(opts.session || opts.resumeLast),
-      pure: false,
       opencodeVersion: version,
       startedAt: run.startedAt,
       finishedAt: new Date().toISOString(),
@@ -329,9 +330,9 @@ function printSummary(result, resultPath) {
   const lines = [
     '',
     `relay: ${result.status} (exit ${result.exitCode}${result.signal ? `, killed by ${result.signal}` : ''})  ·  opencode ${result.opencodeVersion ?? '?'}`,
-    `mode: ${result.permissionMode}  ·  agent: ${result.resolvedAgent || result.effectiveAgent}`,
+    `mode: full (--auto, no deny rules)  ·  agent: ${result.resolvedAgent || result.effectiveAgent}`,
   ];
-  if (result.resolvedModel || result.requestedModel) lines.push(`model: ${result.resolvedModel || result.requestedModel}`);
+  if (result.resolvedModel || result.requestedModel) lines.push(`model: ${result.resolvedModel || result.requestedModel}${result.resolvedVariant && result.resolvedVariant !== 'default' ? `#${result.resolvedVariant}` : ''}`);
   if (result.sessionId) lines.push(`session id (resume with: --session ${result.sessionId}): ${result.sessionId}`);
   const touched = result.touchedFiles;
   if (touched === null) lines.push('touched files: git unavailable — inspect the working tree directly');
@@ -349,11 +350,11 @@ function printSummary(result, resultPath) {
   process.stdout.write(`${lines.join('\n')}\n`);
 }
 
-function dispatch(opts, brief, run, writeResult, env) {
+function dispatch(opts, brief, run, writeResult) {
   const argv = buildArgv(opts);
   const child = spawn('opencode', argv, {
     cwd: opts.cd,
-    env,
+    env: process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: process.platform === 'win32',
     detached: process.platform !== 'win32',
@@ -420,7 +421,7 @@ function dispatch(opts, brief, run, writeResult, env) {
 
   const finalizeFields = (base) => {
     if (stdoutBuffer.trim()) consumeLine(stdoutBuffer);
-    const exported = exportSession(sessionId, opts.cd, env, run);
+    const exported = exportSession(sessionId, opts.cd, run);
     const resolved = fieldsFromExport(exported.data);
     const finalMessage = resolved.finalMessage || eventFinal || '';
     if (finalMessage) writeFileSync(run.finalPath, finalMessage, 'utf8');
@@ -537,7 +538,7 @@ function main() {
     printSummary(result, run.resultPath);
     process.exit(result.exitCode);
   }
-  dispatch(opts, brief, run, writeResult, openCodeEnv(opts));
+  dispatch(opts, brief, run, writeResult);
 }
 
 main();

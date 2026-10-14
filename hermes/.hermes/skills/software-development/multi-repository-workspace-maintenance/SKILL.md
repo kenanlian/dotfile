@@ -1,6 +1,6 @@
 ---
 name: multi-repository-workspace-maintenance
-description: "Use for syncing sibling Git repos and artifact symlinks."
+description: "Use when synchronizing Git repositories and workspace links."
 version: 1.1.0
 platforms: [linux, macos, windows]
 metadata:
@@ -8,12 +8,13 @@ metadata:
     tags: [git, workspace, symlink, synchronization]
 ---
 
-# Multi-Repository Workspace Maintenance
+# Repository and Workspace Synchronization
 
-Maintain a workspace made of several sibling Git repositories, especially when one private companion repository stores development artifacts that public or separately versioned projects expose through ignored relative symlinks.
+Synchronize one local Git checkout or a workspace made of several sibling repositories, especially when a private companion repository stores development artifacts that public or separately versioned projects expose through ignored relative symlinks.
 
 ## Use This Skill When
 
+- Updating a single local checkout from its upstream branch.
 - Updating every repository in a sibling-repository workspace.
 - A batch pull encounters dirty worktrees, divergence, or force-updated upstream history.
 - Wiring project-local directories such as `.dev` to a private companion repository.
@@ -24,6 +25,7 @@ Do not use this as a substitute for normal single-repository feature development
 
 ## Safety Contract
 
+- Treat “update the repository” as source synchronization only: do not build, install, copy artifacts into a consuming application, reload that application, or deploy unless the user explicitly includes that scope.
 - Inspect before mutating.
 - Preserve pre-existing uncommitted edits.
 - Prefer fast-forward-only pulls; never create surprise merge commits in a batch operation.
@@ -36,7 +38,7 @@ Do not use this as a substitute for normal single-repository feature development
 
 ### 1. Establish scope and layout
 
-Identify the workspace root, the companion/artifact repository, and the exact sibling projects in scope. Confirm that every expected checkout exists and has a `.git` directory. Inspect the companion repository's README or setup script before inventing link conventions; it may already define the authoritative project list and target layout.
+Identify whether the request targets one checkout or a multi-repository workspace. For a repository update, stop the scope at Git synchronization unless installation, deployment, or consumer reload is named explicitly. For a workspace, identify the root, companion/artifact repository, and exact sibling projects in scope. Confirm that every expected checkout exists and has a `.git` directory. Inspect the companion repository's README or setup script before inventing link conventions; it may already define the authoritative project list and target layout.
 
 For every project, record:
 
@@ -55,6 +57,8 @@ Run this separately in each checkout:
 ```sh
 git pull --ff-only
 ```
+
+Do not declare a checkout current from `git status` or `git rev-list HEAD...@{u}` before a fetch: `@{u}` is a local remote-tracking ref and may be stale. The pull above refreshes the remote state and then fast-forwards safely.
 
 A dirty worktree is not automatically a blocker: Git can fast-forward when upstream changes do not overwrite local edits. Preserve and report those edits. Do not stash or discard them merely to make the batch clean.
 
@@ -149,7 +153,8 @@ Never summarize a batch as fully clean if one repository still has local edits, 
 
 ## Pitfalls
 
-- Plain `git pull` may create merge commits; use `--ff-only` for batch maintenance.
+- A pre-fetch `0 0` comparison only proves equality with the cached upstream ref; fetch or run `git pull --ff-only` before claiming the repository is current.
+- Plain `git pull` may create merge commits; use `--ff-only` for repository maintenance.
 - A force-updated remote can make a formerly tracking local branch diverge even when remote work supersedes it.
 - `git cherry` compares patch equivalence, not semantic intent; a `+` result does not prove local work is missing upstream.
 - Shell loops can mask per-repository failures unless exit codes are captured and checked individually.

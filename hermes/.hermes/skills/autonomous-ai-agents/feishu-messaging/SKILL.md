@@ -90,6 +90,34 @@ See `references/known-ids.md` — bot 华生, bot 小龙, and common group chat_
 
 Credentials are read from `~/.hermes/.env` (`FEISHU_APP_ID`/`FEISHU_APP_SECRET`).
 
+## Gateway channel troubleshooting (inbound dead, outbound fine)
+
+Symptom: 柯楠 receives gateway start/stop notifications on Feishu but messages he
+sends get no reply. Diagnose in this order:
+
+1. `grep -i feishu ~/.hermes/logs/gateway.log | tail -40` and the same for
+   `gateway.error.log`. Look for repeated Lark `connect failed` / `Connection
+   reset by peer` and the timestamp of the last `inbound message: platform=feishu`.
+2. Split the two paths: outbound send is REST (requests, honors `HTTP(S)_PROXY`
+   env); inbound receive is a WebSocket to `wss://msg-frontier.feishu.cn` via the
+   lark-oapi SDK. The SDK deliberately forces `proxy=None` when websockets≥15 is
+   detected (see `_ws_connect_kwargs()` in `lark_oapi/ws/client.py`), so the WS
+   ALWAYS connects direct even when a system proxy is configured. If the direct
+   route to feishu.cn is broken (TLS RST), outbound works while inbound is dead.
+3. Prove it with a route probe: `curl --noproxy '*' https://msg-frontier.feishu.cn/`
+   vs `curl -x http://127.0.0.1:8118 https://msg-frontier.feishu.cn/`. Direct
+   RST + proxy success = network-side direct block, not a Hermes bug. Also probe
+   other domains (baidu/aliyun) to see whether the block targets feishu.cn only.
+4. End-to-end confirmation: acquire a real WS ticket (`POST /callback/ws/endpoint`
+   with tenant_access_token from `FEISHU_APP_ID`/`FEISHU_APP_SECRET` in
+   `~/.hermes/.env`) and try `websockets.connect(url, proxy=True)` vs
+   `proxy=None` with the Hermes venv python.
+
+Fix paths: restore the direct route in the proxy app (MonoProxy may hijack all
+traffic in TUN/enhanced mode — restarting it or checking its rules is the
+network-side fix), or patch the Hermes feishu adapter so the WS honors the proxy
+env (local patches under `~/.hermes/hermes-agent` are overwritten by auto-update).
+
 ## lark-oapi SDK quirks (version pinned 1.6.8 in the Hermes venv)
 
 - The SDK is only importable from `~/.hermes/hermes-agent/venv/bin/python`

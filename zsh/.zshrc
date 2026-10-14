@@ -93,3 +93,6 @@ if [[ "$OSTYPE" == darwin* ]]; then
   export NO_PROXY="localhost,127.0.0.1,.bigmodel.cn,bigmodel.cn,.z.ai,z.ai"
   export no_proxy="$NO_PROXY"
 fi
+
+# opencode
+export PATH=/Users/kenan/.opencode/bin:$PATH

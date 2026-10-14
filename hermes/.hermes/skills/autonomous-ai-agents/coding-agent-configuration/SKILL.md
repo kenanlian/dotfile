@@ -136,6 +136,20 @@ For configuration-only tasks, confirm the source repository still has its prior 
 - A worker prompt that says “do not spawn children” is not equivalent to an enforced nested-agent denial.
 - Do not turn a configuration request into an unapproved source-repository change merely because the source template is outdated.
 
+## Upgrading and Migrating Hosts
+
+Run `--version` on every binary up front and compare with the latest published version (npm `dist-tags` for npm-distributed CLIs, `brew info <tap/formula>` for tap formulas) — never assume the installed copy is current. Prefer each host's self-update command (`codex update`, `agent update`, `opencode upgrade`): it also repoints launcher symlinks. Verify by re-running `--version` afterwards, not by trusting the updater's exit message.
+
+Self-updaters wrap the package manager and hide its output (`opencode upgrade` → "Upgrade failed for brew (exit code 1)"); rerun the underlying `brew upgrade <formula>` directly to surface the real error. A common root cause on macOS is brew refusing to build against outdated Xcode Command Line Tools — fix without sudo prompts via `softwareupdate --list` then `softwareupdate --install "<exact label>"` (a ~500MB download that keeps running in the background; wait for completion before retrying brew).
+
+A self-updater's trailing symlink error (Cursor `agent update` ending in `ENOENT ... ~/.local/bin/cursor`) is usually a stale shim to an uninstalled desktop app, not the agent binary — the agent and its `agent`/`cursor-agent` symlinks are already updated; confirm with `--version` before retrying.
+
+After a major-version switch (OpenCode v1→v2), the host and its upgrade path change formulas — `brew uninstall` the old formula before `brew install` the new one when they conflict on the binary name. Then re-validate configuration:
+
+1. `opencode auth list` — credentials survive the migration.
+2. `opencode models` — check every configured model ID still exists; hosts drop deprecated IDs from the catalog and the failure only surfaces at run time.
+3. Fix stale IDs in the config SOURCE, not the symlinked live path, and commit the config repo separately for the config-only change — leave push to the user when the repo carries other uncommitted work.
+
 ## Host References
 
 - `references/opencode-global-agents.md` — OpenCode JSONC/Markdown agent structure, permission migration, Stow installation, and acceptance checks.
