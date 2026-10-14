@@ -18,12 +18,12 @@
  * The brief is fed on the child's stdin, never argv, so it is not visible in
  * the host process list and has no OS argument-size cap.
  *
- * It deliberately does NOT commit. Committing is always the orchestrator's job
- * — after it reviews the diff and re-runs the project gates.
+ * The relay itself does not commit. The child may perform Git operations only
+ * when authorized by the brief; this adapter imposes no development workflow.
  *
- * Autonomy (local Hermes hardening): a fresh run defaults to Cursor plan mode
- * (read-only/planning, no edits). Pass `--force` explicitly to enable writes
- * and automatic command approval. `--no-force` is intentionally rejected.
+ * Permissions: fresh and resumed runs default to --force --sandbox disabled.
+ * Constrain read-only tasks in the brief and inspect the resulting diff.
+ * --read-only and --sandbox enabled are explicit opt-in CLI restrictions.
  * The relay always passes `--trust` so a headless run never stalls on the
  * workspace-trust prompt — point --cd only at repositories you trust.
  *
@@ -34,15 +34,14 @@
  * Options:
  *   --brief <file>          Path to the brief. If omitted, read it from stdin.
  *   --cd <dir>              Working root for Cursor (default: current directory).
- *   --lane <name>           Fleet lane from delegate-setup config (dials apply; explicit flags win).
  *   --model <name>          Cursor model (default: your Cursor default, usually
  *                           auto). List names with `agent models`.
- *   --read-only             Run in Cursor's plan mode (the local default).
- *   --force                 Explicitly enable writes and automatic command
- *                           approval for this run.
+ *   --read-only             Explicit opt-in to Cursor's read-only plan mode.
+ *   --force                 Enable writes and automatic command approval
+ *                           (default for fresh and resumed runs).
  *   --sandbox <mode>        Explicitly enable or disable Cursor's sandbox for
- *                           this dispatch (enabled | disabled).
- *   --no-force              Unsupported by this hardened local variant; use
+ *                           this dispatch (enabled | disabled; default: disabled).
+ *   --no-force              Unsupported; use
  *                           --read-only or --force.
  *   --session <id>          Resume a specific Cursor chat (`--resume <id>`);
  *                           send only the delta brief.
@@ -83,7 +82,7 @@
  * to agent), or unavailable.
  */
 
-import {spawn, execSync, execFileSync, spawnSync } from "node:child_process";
+import {spawn, execSync, execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync, renameSync, rmSync, readFileSync, existsSync, appendFileSync, realpathSync } from "node:fs";
 import {join, resolve, basename, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -96,8 +95,6 @@ const VERSION_PROBE_TIMEOUT_MS = 10_000;
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:@/[\],=-]*$/;
 const SAFE_SESSION = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const SANDBOX_MODES = new Set(["enabled", "disabled"]);
-
-const IMPLEMENTER_KEY = "cursor";
 
 function makeEventScanner(onObject) {
   let buf = "";
@@ -161,58 +158,19 @@ function makeEventScanner(onObject) {
   };
 }
 
-function applyFleetLane(opts, flagged) {
-  if (!opts.lane) return;
-  const script = join(dirname(fileURLToPath(import.meta.url)), "../../delegate-setup/scripts/lane.mjs");
-  if (!existsSync(script)) {
-    fail("--lane requires the delegate-setup skill installed beside this relay");
-  }
-  const r = spawnSync(
-    process.execPath,
-    [script, "resolve", "--cwd", opts.cd, "--lane", opts.lane, "--implementer", IMPLEMENTER_KEY],
-    { encoding: "utf8", env: process.env },
-  );
-  if (r.error) fail(`lane resolve failed: ${r.error.message}`);
-  if (r.status !== 0) {
-    fail((r.stderr || "lane resolve failed").trim().replace(/^lane\.mjs:\s*/, ""));
-  }
-  let resolved;
-  try {
-    const lines = (r.stdout || "").trim().split("\n").filter(Boolean);
-    resolved = JSON.parse(lines[lines.length - 1]);
-  } catch {
-    fail("lane resolve returned invalid JSON");
-  }
-  opts.laneSource = resolved.source;
-  for (const [field, value] of Object.entries(resolved.dials || {})) {
-    if (flagged.has(field)) continue;
-    if (field === "autonomy" && (flagged.has("autonomy") || flagged.has("sandbox") || flagged.has("readOnly"))) continue;
-    if (field === "agent" && (flagged.has("agent") || flagged.has("readOnly"))) continue;
-    if (field === "sandbox" && (flagged.has("sandbox") || flagged.has("readOnly"))) continue;
-    if (field === "permissionMode" && (flagged.has("permissionMode") || flagged.has("readOnly"))) continue;
-    if (field === "planOnly" && (flagged.has("planOnly") || flagged.has("readOnly"))) continue;
-    if (field === "readOnly" && flagged.has("readOnly")) continue;
-    if (field === "force" && flagged.has("force")) continue;
-    opts[field] = value;
-  }
-}
-
 function fail(message, code = 2) {
   process.stderr.write(`relay: ${message}\n`);
   process.exit(code);
 }
 
 export function parseArgs(argv) {
-  const flagged = new Set();
   const opts = {
-    lane: null,
-    laneSource: null,
     brief: null,
     cd: process.cwd(),
     model: null,
-    readOnly: true,
-    force: false,
-    sandbox: null,
+    readOnly: false,
+    force: true,
+    sandbox: "disabled",
     session: null,
     resumeLast: false,
     addDirs: [],
@@ -236,12 +194,11 @@ export function parseArgs(argv) {
         break;
       case "--brief": opts.brief = next(); break;
       case "--cd": opts.cd = resolve(next()); break;
-      case "--lane": opts.lane = next(); break;
-      case "--model": opts.model = next(); flagged.add("model"); break;
-      case "--read-only": opts.readOnly = true; opts.force = false; flagged.add("readOnly"); flagged.add("force"); break;
-      case "--force": opts.readOnly = false; opts.force = true; flagged.add("readOnly"); flagged.add("force"); break;
-      case "--sandbox": opts.sandbox = next(); flagged.add("sandbox"); break;
-      case "--no-force": fail("--no-force is disabled by local hardening; use --read-only or explicit --force"); break;
+      case "--model": opts.model = next(); break;
+      case "--read-only": opts.readOnly = true; opts.force = false; break;
+      case "--force": opts.readOnly = false; opts.force = true; break;
+      case "--sandbox": opts.sandbox = next(); break;
+      case "--no-force": fail("--no-force is unsupported; use --read-only or --force"); break;
       case "--session": opts.session = next(); break;
       case "--resume-last": opts.resumeLast = true; break;
       case "--add-dir": opts.addDirs.push(next()); break;
@@ -257,13 +214,12 @@ export function parseArgs(argv) {
         opts.pluginDirs.push(resolved);
         break;
       }
-      case "--timeout": opts.timeout = next(); flagged.add("timeout"); break;
+      case "--timeout": opts.timeout = next(); break;
       case "--out-dir": opts.outDir = resolve(next()); break;
       default:
         fail(`unknown option: ${arg}`);
     }
   }
-  applyFleetLane(opts, flagged);
   if (opts.sandbox !== null && !SANDBOX_MODES.has(opts.sandbox)) {
     fail(`--sandbox "${opts.sandbox}" is invalid; expected enabled or disabled`);
   }
@@ -466,8 +422,6 @@ function makeResultWriter(opts, version, run) {
   return (extra) => {
     const result = {
       schema: "delegate-relay.result.v1",
-      lane: opts.lane,
-      laneSource: opts.laneSource,
       tool: "agent",
       workdir: opts.cd,
       model: opts.model,
@@ -824,7 +778,7 @@ function printSummary(result, resultPath) {
   lines.push("--- end report ---");
   lines.push("");
   lines.push(`result: ${resultPath}`);
-  lines.push("relay does not commit. Review the diff, re-run the project gates yourself, then commit from the orchestrator.");
+  lines.push("Relay completion confirms transport only. Validate the requested deliverable; Git actions require authorization in the brief.");
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 

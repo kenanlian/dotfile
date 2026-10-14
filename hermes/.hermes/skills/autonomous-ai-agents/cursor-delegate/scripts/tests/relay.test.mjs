@@ -257,28 +257,57 @@ test("result.json includes spawn and pluginDirs on completed and unavailable pat
   }
 });
 
-test("default mode is --mode plan; --force replaces it; --session maps to --resume", () => {
+test("explicit read-only and sandbox overrides remain available", () => {
   const ctx = setupRun();
   try {
-    const plan = runRelay(ctx.args, ctx.env);
-    assert.equal(plan.status, 0, plan.stderr);
-    const planDump = readDump(ctx.dumpPath);
-    assert.equal(planDump.argv.includes("--mode"), true);
-    assert.equal(planDump.argv[planDump.argv.indexOf("--mode") + 1], "plan");
-    assert.equal(planDump.argv.includes("--force"), false);
+    const readOnly = runRelay([...ctx.args, "--read-only", "--session", "sess-abc"], ctx.env);
+    assert.equal(readOnly.status, 0, readOnly.stderr);
+    const {argv} = readDump(ctx.dumpPath);
+    assert.equal(argv[argv.indexOf("--mode") + 1], "plan");
+    assert.equal(argv.includes("--force"), false);
+    assert.equal(argv[argv.indexOf("--resume") + 1], "sess-abc");
+    const sandbox = runRelay([...ctx.args, "--sandbox", "enabled"], ctx.env);
+    assert.equal(sandbox.status, 0, sandbox.stderr);
+    const result = readResult(ctx.outDir);
+    assert.equal(result.sandbox, "enabled");
+    assert.equal(result.force, true);
+  } finally { ctx.cleanup(); }
+});
 
-    const force = runRelay([...ctx.args, "--force"], ctx.env);
-    assert.equal(force.status, 0, force.stderr);
-    const forceDump = readDump(ctx.dumpPath);
-    assert.equal(forceDump.argv.includes("--force"), true);
-    assert.equal(forceDump.argv.includes("--mode"), false);
+test("documentation and help contain no retired development workflow", () => {
+  const skill = join(here, "..", "..");
+  for (const file of ["SKILL.md", "references/dispatch-and-poll.md", "scripts/relay.mjs"]) {
+    const content = readFileSync(join(skill, file), "utf8");
+    assert.doesNotMatch(content, /Development-Orchestrator|Origin grounding|write-plan|execute-plan|Card contract|Dispatcher worker|delegate-setup|review-and-land|re-run the project gates yourself|committing is always the/i);
+  }
+  assert.equal(existsSync(join(skill, "scripts/review-relay.mjs")), false);
+});
 
-    const resume = runRelay([...ctx.args, "--session", "sess-abc"], ctx.env);
-    assert.equal(resume.status, 0, resume.stderr);
-    const resumeDump = readDump(ctx.dumpPath);
-    assert.equal(resumeDump.argv.includes("--resume"), true);
-    assert.equal(resumeDump.argv[resumeDump.argv.indexOf("--resume") + 1], "sess-abc");
-    assert.equal(resumeDump.argv.includes("--session"), false);
+test("retired fleet lane option is rejected without loading another skill", () => {
+  const child = runRelay(["--lane", "old-lane"], process.env);
+  assert.equal(child.status, 2);
+  assert.match(child.stderr, /unknown option: --lane/);
+});
+
+test("fresh and resumed runs default to full permissions", () => {
+  const ctx = setupRun();
+  try {
+    for (const extra of [[], ["--session", "sess-abc"], ["--resume-last"]]) {
+      const spawned = runRelay([...ctx.args, ...extra], ctx.env);
+      assert.equal(spawned.status, 0, spawned.stderr);
+      const { argv } = readDump(ctx.dumpPath);
+      assert.equal(argv.includes("--force"), true);
+      assert.equal(argv.includes("--mode"), false);
+      assert.equal(argv[argv.indexOf("--sandbox") + 1], "disabled");
+      const result = readResult(ctx.outDir);
+      assert.equal(result.readOnly, false);
+      assert.equal(result.force, true);
+      assert.equal(result.sandbox, "disabled");
+      if (extra[0] === "--session") {
+        assert.equal(argv[argv.indexOf("--resume") + 1], "sess-abc");
+      }
+      if (extra[0] === "--resume-last") assert.equal(argv.includes("--continue"), true);
+    }
   } finally {
     ctx.cleanup();
   }

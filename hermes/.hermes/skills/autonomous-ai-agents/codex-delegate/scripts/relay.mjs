@@ -15,9 +15,8 @@
  * launches does authenticate — exactly as you do at the terminal. Read this
  * file before you run it.
  *
- * It deliberately does NOT commit. Whether Codex's sandbox can write `.git`
- * varies by Codex version, OS, and execution path, so committing is always the
- * orchestrator's job — after it reviews the diff and re-runs the project gates.
+ * The relay itself does not commit. The child may perform Git operations only
+ * when authorized by the brief; this adapter imposes no development workflow.
  *
  * Usage:
  *   node relay.mjs --brief <file> [options]
@@ -26,20 +25,19 @@
  * Options:
  *   --brief <file>          Path to the brief. If omitted, the brief is read from stdin.
  *   --cd <dir>              Working root for Codex (default: current directory).
- *   --lane <name>           Fleet lane from delegate-setup config (dials apply; explicit flags win).
  *   --model <name>          Codex model (default: Codex's own configured default).
  *   --effort <level>        Reasoning effort, passed to Codex as
  *                           `-c model_reasoning_effort=<level>` (default: Codex's
  *                           own configured default).
  *   --sandbox <mode>        read-only | workspace-write | danger-full-access
- *                           (local default: read-only; writing requires an
- *                           explicit --sandbox workspace-write).
+ *                           (default: danger-full-access, bypassing approvals
+ *                           and sandbox for both fresh and resumed runs).
  *   --read-only             Shortcut for --sandbox read-only (review/diagnosis, no edits).
  *   --resume-last           Continue the most recent Codex session; send only the delta brief.
- *                           An explicit --sandbox/--read-only override applies to the resumed turn.
+ *                           The selected permissions also apply to the resumed turn.
  *   --session <id>          Continue a specific Codex session by thread id (from a prior
  *                           result.json). Safer than --resume-last when other Codex runs
- *                           may have happened since - "last" is global, not per-repo.
+ *                           may have happened since; the latest eligible run may be unrelated.
  *                           Mutually exclusive with --resume-last.
  *   --clean-env             Launch Codex and its version preflight with only runtime basics.
  *                           Changes inherited variables only; does not protect files or other
@@ -73,10 +71,9 @@
  * with no file as a usage error.
  */
 
-import {spawn, execFileSync, spawnSync } from "node:child_process";
+import {spawn, execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, appendFileSync } from "node:fs";
-import {join, resolve, basename, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import {join, resolve, basename } from "node:path";
 import { constants, tmpdir } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 
@@ -85,48 +82,8 @@ const MAX_TIMER_MS = 2_147_483_647;
 const SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const SAFE_SESSION = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-// Model reaches cmd.exe on win32 (shell:true for the codex.cmd shim) — same shell-safe
-// family as grok/pi. Keep in lockstep with delegate-setup MODEL_TOKEN.shellSafe.
+// Validate model tokens before passing them through the Windows CLI shim.
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
-
-const IMPLEMENTER_KEY = "codex";
-
-function applyFleetLane(opts, flagged) {
-  if (!opts.lane) return;
-  const script = join(dirname(fileURLToPath(import.meta.url)), "../../delegate-setup/scripts/lane.mjs");
-  if (!existsSync(script)) {
-    fail("--lane requires the delegate-setup skill installed beside this relay");
-  }
-  const r = spawnSync(
-    process.execPath,
-    [script, "resolve", "--cwd", opts.cd, "--lane", opts.lane, "--implementer", IMPLEMENTER_KEY],
-    { encoding: "utf8", env: process.env },
-  );
-  if (r.error) fail(`lane resolve failed: ${r.error.message}`);
-  if (r.status !== 0) {
-    fail((r.stderr || "lane resolve failed").trim().replace(/^lane\.mjs:\s*/, ""));
-  }
-  let resolved;
-  try {
-    const lines = (r.stdout || "").trim().split("\n").filter(Boolean);
-    resolved = JSON.parse(lines[lines.length - 1]);
-  } catch {
-    fail("lane resolve returned invalid JSON");
-  }
-  opts.laneSource = resolved.source;
-  for (const [field, value] of Object.entries(resolved.dials || {})) {
-    if (flagged.has(field)) continue;
-    if (field === "autonomy" && (flagged.has("autonomy") || flagged.has("sandbox") || flagged.has("readOnly"))) continue;
-    if (field === "agent" && (flagged.has("agent") || flagged.has("readOnly"))) continue;
-    if (field === "sandbox" && (flagged.has("sandbox") || flagged.has("readOnly"))) continue;
-    if (field === "permissionMode" && (flagged.has("permissionMode") || flagged.has("readOnly"))) continue;
-    if (field === "planOnly" && (flagged.has("planOnly") || flagged.has("readOnly"))) continue;
-    if (field === "readOnly" && flagged.has("readOnly")) continue;
-    if (field === "force" && flagged.has("force")) continue;
-    opts[field] = value;
-    if (field === "sandbox") opts.sandboxConfigured = true;
-  }
-}
 
 function fail(message, code = 2) {
   process.stderr.write(`relay: ${message}\n`);
@@ -134,16 +91,12 @@ function fail(message, code = 2) {
 }
 
 function parseArgs(argv) {
-  const flagged = new Set();
   const opts = {
-    lane: null,
-    laneSource: null,
     brief: null,
     cd: process.cwd(),
     model: null,
     effort: null,
-    sandbox: "read-only",
-    sandboxConfigured: false,
+    sandbox: "danger-full-access",
     resumeLast: false,
     session: null,
     cleanEnv: false,
@@ -168,23 +121,21 @@ function parseArgs(argv) {
         break;
       case "--brief": opts.brief = next(); break;
       case "--cd": opts.cd = resolve(next()); break;
-      case "--lane": opts.lane = next(); break;
-      case "--model": opts.model = next(); flagged.add("model"); break;
-      case "--effort": opts.effort = next(); flagged.add("effort"); break;
-      case "--sandbox": opts.sandbox = next(); opts.sandboxConfigured = true; flagged.add("sandbox"); break;
-      case "--read-only": opts.sandbox = "read-only"; opts.sandboxConfigured = true; flagged.add("sandbox"); flagged.add("readOnly"); break;
+      case "--model": opts.model = next(); break;
+      case "--effort": opts.effort = next(); break;
+      case "--sandbox": opts.sandbox = next(); break;
+      case "--read-only": opts.sandbox = "read-only"; break;
       case "--resume-last": opts.resumeLast = true; break;
       case "--session": opts.session = next(); break;
       case "--clean-env": opts.cleanEnv = true; break;
       case "--keep-env": opts.keepEnv.push(next()); break;
       case "--skip-git-repo-check": opts.skipGitRepoCheck = true; break;
-      case "--timeout": opts.timeout = next(); flagged.add("timeout"); break;
+      case "--timeout": opts.timeout = next(); break;
       case "--out-dir": opts.outDir = resolve(next()); break;
       default:
         fail(`unknown option: ${arg}`);
     }
   }
-  applyFleetLane(opts, flagged);
   if (!SANDBOX_MODES.has(opts.sandbox)) {
     fail(`invalid --sandbox "${opts.sandbox}" (expected: ${[...SANDBOX_MODES].join(", ")})`);
   }
@@ -355,10 +306,10 @@ function timestamp() {
 
 function buildArgv(opts, finalPath) {
   const argv = ["exec"];
-  const resuming = Boolean(opts.session || opts.resumeLast);
-  // Codex accepts shared exec options before the resume subcommand. Reapply only
-  // an explicitly selected sandbox; otherwise leave the active Codex config alone.
-  if (resuming && opts.sandboxConfigured) argv.push("-s", opts.sandbox);
+  // Apply the selected permissions to fresh and resumed runs alike. Full access
+  // also bypasses approval prompts; constrained modes remain explicit opt-ins.
+  if (opts.sandbox === "danger-full-access") argv.push("--dangerously-bypass-approvals-and-sandbox");
+  else argv.push("-s", opts.sandbox);
   if (opts.session) argv.push("resume", opts.session);
   else if (opts.resumeLast) argv.push("resume", "--last");
   // ponytail: shell:true on win32 (needed for the codex.cmd shim) doesn't quote
@@ -367,9 +318,6 @@ function buildArgv(opts, finalPath) {
   // Ceiling: if quoting proves too blunt, drop shell:true and resolve the shim.
   const outPath = process.platform === "win32" ? `"${finalPath}"` : finalPath;
   argv.push("--json", "-o", outPath);
-  if (!resuming) {
-    argv.push("-s", opts.sandbox);
-  }
   if (opts.model) argv.push("-m", opts.model);
   // `-c` is accepted by the resume subcommand, so the effort override applies to
   // fresh and resumed runs alike.
@@ -423,13 +371,10 @@ function makeResultWriter(opts, version, run) {
   // standing metadata, persists result.json, and returns the object it just
   // wrote so the caller can hand it straight to printSummary.
   return (extra) => {
-    const resuming = Boolean(opts.resumeLast || opts.session);
     const result = {
       schema: "delegate-relay.result.v1",
-      lane: opts.lane,
-      laneSource: opts.laneSource,
       workdir: opts.cd,
-      sandbox: !resuming || opts.sandboxConfigured ? opts.sandbox : "(Codex config on resume)",
+      sandbox: opts.sandbox,
       model: opts.model,
       effort: opts.effort,
       resumeLast: opts.resumeLast,
@@ -674,7 +619,7 @@ function printSummary(result, resultPath) {
   lines.push("--- end report ---");
   lines.push("");
   lines.push(`result: ${resultPath}`);
-  lines.push("relay does not commit. Review the diff, re-run the project gates yourself, then commit from the orchestrator.");
+  lines.push("Relay completion confirms transport only. Validate the requested deliverable; Git actions require authorization in the brief.");
   process.stdout.write(`${lines.join("\n")}\n`);
 }
 

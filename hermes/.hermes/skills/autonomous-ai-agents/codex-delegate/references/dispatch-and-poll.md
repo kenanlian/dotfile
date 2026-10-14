@@ -1,6 +1,6 @@
 # Dispatch and poll
 
-`scripts/relay.mjs` is the dispatch layer. It wraps `codex exec`, runs the brief in a sandbox, captures
+`scripts/relay.mjs` is the dispatch layer. It wraps `codex exec`, applies the selected CLI permissions, captures
 everything, and writes a structured `result.json`. Your job collapses to: run one command, then read
 one file. Everything Codex-specific lives in the helper, which is what keeps the loop portable across
 orchestrators.
@@ -34,12 +34,11 @@ Options:
 | --- | --- |
 | `--brief <file>` | The brief. Omit it to read the brief from stdin (`node relay.mjs … < brief.txt`). |
 | `--cd <dir>` | Working root for Codex (default: current directory). |
-| `--lane <name>` | Fleet lane from `delegate-setup` config. Applies that lane's dials; fails if the lane's `implementer` is not this relay. Explicit dial flags win. |
 | `--model <name>` | Codex model (default: Codex's own configured default). |
 | `--effort <level>` | Reasoning effort, passed to Codex as `-c model_reasoning_effort=<level>` (default: Codex's own configured default). The relay accepts a bare token; Codex and the model own the supported levels. Applies to fresh and resumed runs. |
-| `--sandbox <mode>` | `read-only` \| `workspace-write` \| `danger-full-access` (local default: `read-only`; writing requires explicit `workspace-write`). |
+| `--sandbox <mode>` | `read-only` \| `workspace-write` \| `danger-full-access` (default: `danger-full-access`, with approvals and sandbox bypassed on fresh and resumed runs). |
 | `--read-only` | Shortcut for `--sandbox read-only` — review/diagnosis with no edits. |
-| `--resume-last` | Continue the most recent Codex session; send only the delta brief (see review-and-land). "Most recent" is global, so an unrelated Codex run can steal it — prefer `--session`. |
+| `--resume-last` | Continue the most recent Codex session; send only the delta brief. The newest eligible session may belong to another task — prefer `--session`. |
 | `--session <id>` | Continue one specific thread by id (the `threadId` from a prior `result.json`); send only the delta brief. Mutually exclusive with `--resume-last`; an empty id is rejected. |
 | `--clean-env` | Pass only runtime basics (`PATH`, home, locale, temp, `CODEX_HOME`, and Windows equivalents) to Codex and its version preflight. This changes inherited variables only; it does not protect files or other same-user secrets. |
 | `--keep-env <name>` | Keep one additional variable under `--clean-env`; repeat for each required environment-backed auth, custom-provider credential, proxy, certificate, or MCP variable. The name must be set and use portable environment-variable syntax. |
@@ -67,12 +66,12 @@ filtered environment is used for preflight and dispatch.
 - `exitCode` — mirrors Codex's exit code; `128` plus the signal number if the child was killed; `127` if `codex` isn't on PATH; on a `timeout` the relay forces a non-zero code even when the child exited `0` after the watchdog's SIGTERM
 - `signal` — the signal that killed the child, otherwise `null`
 - `codexVersion` — the binary that actually ran
-- `threadId` — feed this to a later `--session <id>` (exact thread; preferred) or `--resume-last` (global "most recent", which another Codex run can steal)
+- `threadId` — feed this to a later `--session <id>` (exact thread; preferred) or `--resume-last` (newest eligible session, which may belong to another task)
 - `finalMessage` — Codex's own final report (the `<structured_output_contract>` you asked for)
-- `touchedFiles` — `git status --porcelain` lines in the working root: your review starting point. `null` (not `[]`) when git can't report — `git` missing, or a non-repo run under `--skip-git-repo-check`; `[]` means git ran and the tree is clean
+- `touchedFiles` — final `git status --porcelain` lines in the working root, not attribution of child edits. Includes pre-existing dirty files and excludes already-committed changes; compare with a baseline and inspect Git diff/history as needed. `null` (not `[]`) when git can't report — `git` missing, or a non-repo run under `--skip-git-repo-check`; `[]` means git ran and the tree is clean
 - `briefPath` / `eventsPath` / `finalPath` — the exact brief relay sent, the raw JSONL event stream, and the final-message file
-- `workdir`, `sandbox`, `model`, `effort`, `resumeLast`, `session`, `cleanEnv`, `keepEnv`, `startedAt`, `finishedAt` — `sandbox` is the applied mode, or a note that Codex used its active config on an unqualified resume; `session` is the explicit session id, or `null` for fresh and `--resume-last` runs; `keepEnv` records names only, never values
-- `stderrTail` — last ~20 stderr lines; present on every run that did not complete (`failed`, `timeout`, `aborted`), absent on `completed`, `unavailable`, and launch failures
+- `workdir`, `sandbox`, `model`, `effort`, `resumeLast`, `session`, `cleanEnv`, `keepEnv`, `startedAt`, `finishedAt` — `sandbox` is the selected mode, explicitly applied on fresh and resumed runs; `session` is the explicit session id, or `null` for fresh and `--resume-last` runs; `keepEnv` records names only, never values
+- `stderrTail` — last ~20 stderr lines; present on unsuccessful task runs and version-probe failures; absent on `completed`, `unavailable`, and launch failures
 - `error` — present on a launch failure, and on `timeout` and `aborted` runs
 
 The helper also prints a summary to stdout and exits with Codex's exit code, so a wrapping script can
@@ -136,12 +135,12 @@ what was lost.
 Under the hood the helper runs roughly:
 
 ```bash
-codex exec --json -o <final.txt> -s workspace-write [-m model] [-c model_reasoning_effort=<level>] - < brief.txt   # fresh run
-codex exec [-s mode] resume --last --json -o <final.txt> [-m model] [-c model_reasoning_effort=<level>] - < delta-brief.txt  # resume
+codex exec --dangerously-bypass-approvals-and-sandbox --json -o <final.txt> [-m model] [-c model_reasoning_effort=<level>] - < brief.txt   # fresh run
+codex exec --dangerously-bypass-approvals-and-sandbox resume <thread-id> --json -o <final.txt> [-m model] [-c model_reasoning_effort=<level>] - < delta-brief.txt  # resume
 ```
 
-On resume, the helper places an explicit `--sandbox`/`--read-only` or fleet-lane sandbox before the
-`resume` subcommand so Codex applies it to the resumed turn. Without one, Codex uses its active config.
+Full-access mode uses `--dangerously-bypass-approvals-and-sandbox`. Explicit restricted modes
+replace it with `-s <mode>` before `resume`; fresh and resumed runs always apply the selected mode.
 The helper sets the child process's working directory instead of forwarding `-C`.
 
 Two alternatives exist if you ever want them, but the helper is the recommended path:
@@ -154,9 +153,15 @@ Two alternatives exist if you ever want them, but the helper is the recommended 
   in-process and blocks until completion, so the only state to track is whether `result.json` exists —
   which is why it's the default here.
 
-## The commit boundary
+## Authorization boundary
 
-The helper never commits — by design, not omission. Whether Codex's sandbox can write `.git` varies by
-version, OS, and execution path, so relying on it is a coin flip. The robust contract is: Codex edits
-the working tree; landing intended files (Git baseline, trailer conventions) belongs to the
-commissioning workflow, not this adapter.
+The relay itself performs no Git writes. The child may perform Git/external actions only when
+authorized in the task brief. This adapter does not prescribe planning, review, acceptance, or landing
+roles. `completed` proves transport completion, not correctness of the requested deliverable.
+
+Default permissions remain full access even for ordinary read-only tasks: constrain those tasks in
+the brief and check the baseline/diff afterward. Use restricted CLI modes only when explicitly
+required. Choose a unique artifact directory per dispatch under the Hermes scratch workspace or a
+durable task location, outside the target working tree. For long Hermes runs use
+`terminal(background=true, notify=true)` and consume the completion notification, then use
+`read_file` for `result.json`.

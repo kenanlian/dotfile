@@ -1,111 +1,79 @@
 ---
 name: codex-delegate
-description: Transport Codex CLI runs: preflight, dispatch, exact-thread resume, result contract.
+description: "Use when delegating tasks to Codex CLI."
 license: MIT
 compatibility: Requires the authenticated OpenAI Codex CLI, Node 18+, and git.
 metadata:
-  version: 0.5.2
+  version: 0.6.0
   hermes:
     related_skills: []
 ---
 
 # Codex Transport Adapter
 
-Provide reliable Codex CLI transport: binary/authentication preflight, workspace pinning, sandbox mode, outer model and effort, structured artifacts, watchdogs, and exact-thread resume. This adapter is not a development workflow, planner, reviewer, acceptance authority, or landing policy.
+Dispatch a brief to Codex CLI, capture artifacts, and resume an exact thread. This adapter owns transport only; it does not prescribe development stages, role assignments, review gates, or landing policy.
 
 ## When to Use
 
-Load when commissioning a Codex CLI run.
+- Commission a Codex CLI task or continue a known Codex thread.
+- Inspect transport status, logs, and the child's final report.
+- Do not use this adapter to decide requirements or substitute for task-specific instructions and repository rules.
 
-Do not use this Skill to decide requirements, decide whether Origin grounding is needed, perform code review, define behavioral acceptance, or replace target-discovered Agent Skills.
+## Preflight and Model Selection
 
-## Preflight
+Use `terminal` to run `command -v codex`, `codex --version`, and `codex login status`. Record the active binary and version; multiple installations can shadow each other. Do not dispatch until authentication is available.
 
-Verify once:
+Classify the whole deliverable. Unless the user requests another model or effort:
+
+- **Default:** pass `--model gpt-5.6-sol --effort high`.
+- **Narrow lightweight exception:** pass `--model gpt-5.6-terra --effort high` only for an authorized local Git commit of already-prepared changes, or read-only factual retrieval. Neither exception includes implementation, planning, review, design, recommendations, or behavioral judgment.
+
+Use Sol for mixed or ambiguous work and exploration that feeds implementation. These options configure the outer Codex parent, not its built-in subagents. Model routing is independent of permission mode.
+
+## Permissions and Brief
+
+Fresh and resumed runs default to **full access**: the relay uses Codex's `--dangerously-bypass-approvals-and-sandbox` and records `sandbox: "danger-full-access"`.
+
+- For read-only tasks, state “do not modify files or perform Git writes” in the brief and inspect the working-tree diff afterward. Do not automatically add a read-only sandbox based on the task type.
+- Use `--read-only` or `--sandbox workspace-write` only when the user or task explicitly requires a CLI restriction.
+- Full tool access is not authorization to expand scope. Put the deliverable, repository, allowed changes, validation expectations, and authorized Git/external actions in the brief. Do not add permission-deny rules as part of dispatch.
+- The relay itself never commits. The child may commit, push, create a PR, or publish only when the task authorizes it; no special commit-only stage is required by this adapter.
+
+## Dispatch and Resume
+
+Use the installed skill directory reported by `skill_view`; invoke its helper through `terminal`:
 
 ```text
-command -v codex
-codex --version
-codex login status
+node <skill-dir>/scripts/relay.mjs --brief <brief-file> --cd <repo> --model gpt-5.6-sol --effort high --out-dir <artifact-dir>
 ```
 
-Multiple Codex installations are common; record the active binary and version. Classify the whole outer run by its requested deliverable before selecting the parent model. Unless the user explicitly requests another model or effort level:
-
-- **Default:** use `gpt-5.6-sol` with `high` reasoning and pass both explicitly as `--model gpt-5.6-sol --effort high`.
-- **Narrow lightweight exception:** use `gpt-5.6-terra` with `high` reasoning and pass `--model gpt-5.6-terra --effort high` only when the complete requested deliverable is either (a) an explicitly authorized local Git commit of already-prepared changes, with no implementation, planning, review, or behavior decision, or (b) read-only factual exploration or retrieval, with no recommendation, design, review, implementation, or file change.
-
-If the task is mixed or ambiguous, if exploration feeds implementation, or if any load-bearing judgment is required, use the Sol default. These options set the outer Codex parent only, not its built-in subagents.
-
-## Relay
-
-Use the bundled helper:
-
-```text
-node <this-skill>/scripts/relay.mjs --brief <file> --cd <repo> [options]
-```
-
-Important options:
+Choose an artifact directory outside the target working tree, under the Hermes scratch workspace or a task's durable artifact location. The brief goes through stdin, not argv. For long runs, use `terminal(background=true, notify=true)` and consume its completion notification rather than an estimated-duration timeout.
 
 | Option | Purpose |
 | --- | --- |
-| `--read-only` | Shortcut for enforced read-only sandbox |
-| `--sandbox read-only\|workspace-write\|danger-full-access` | Parent sandbox; local default is read-only |
-| `--model <id>` | Outer Codex parent model |
-| `--effort <level>` | Outer parent reasoning effort |
-| `--session <threadId>` | Resume one exact Codex thread |
-| `--resume-last` | Fallback only when no exact thread ID exists |
-| `--clean-env` / `--keep-env <name>` | Optional inherited-environment filtering |
-| `--skip-git-repo-check` | Explicit non-repository exception |
-| `--timeout <dur>` | Optional Relay watchdog; off by default. Normal orchestration omits it; if an external hard bound is required, prefer a deliberately long guard such as `4h` over a task-duration estimate. |
-| `--out-dir <dir>` | Stable artifact directory |
+| `--sandbox read-only\|workspace-write\|danger-full-access` | Explicit permission mode; default is full access |
+| `--read-only` | Explicit shortcut for the read-only sandbox |
+| `--model <id>` / `--effort <level>` | Outer model and reasoning effort |
+| `--session <threadId>` | Resume one exact thread; send a delta brief with necessary new evidence |
+| `--resume-last` | Fallback when the exact ID is unavailable; confirm the selected thread belongs to this task |
+| `--clean-env` / `--keep-env <name>` | Optional inherited-environment filtering; not a file-access security boundary |
+| `--skip-git-repo-check` | Explicit exception for non-repository tasks |
+| `--timeout <dur>` | Optional watchdog, off by default; use only for a required hard bound, preferably a long guard such as `4h` |
+| `--out-dir <dir>` | Run artifacts; use a unique directory per dispatch |
 
-The brief is passed through stdin, not argv. The relay never commits.
+Preserve the returned `threadId` for follow-ups. Resume when continuing the same task; start fresh when context or scope calls for it. There is no stage-specific requirement to create or separate threads.
 
-## Development-Orchestrator Stages
+## Result Contract and Failure Handling
 
-### Optional Origin grounding
+The relay writes `result.json`: terminal status, exit information, `codexVersion`, `threadId`, requested model/effort, selected sandbox, `finalMessage`, `touchedFiles`, and artifact paths.
 
-For product discussion only, start fresh with `--read-only`; follow-ups may resume the exact `threadId`. This thread is ephemeral and must never be passed to a Dispatcher worker or reused for Planning/Execution.
+- Wait for the process to exit and read the result with `read_file`. A progress display is not completion.
+- `completed` means transport completed, not that the requested deliverable passed acceptance. Check the report and relevant artifact/behavior evidence against the task.
+- `touchedFiles` is the final `git status --porcelain` snapshot, not attribution of the child's edits. Capture the initial working-tree state before dispatch; committed changes require Git diff/history inspection too.
+- On failure, timeout, or abort, preserve work and logs; inspect them before deciding whether to resume or retry. Do not clean or spawn a replacement blindly.
 
-### Explicit write-plan
-
-Start a fresh Planning Parent with `--sandbox workspace-write` and no Origin `--session`. Begin the brief with `$write-plan`, include the complete converged Card contract, and require the exact final Plan path plus top-level gate/artifact outcome. The target Skill owns its internal workflow and allowed planning writes.
-
-### Explicit execute-plan
-
-Start a separate fresh Execution Parent with `--sandbox workspace-write` and no Planning `--session`. Begin the brief with `$execute-plan` and include the exact accepted Plan path. Preserve the returned execution `threadId` for same-scope rework.
-
-### Behavioral rework
-
-Resume the exact execution thread with `--session <execution-id> --sandbox workspace-write` and the observed behavior-failure packet. Never replace a resumable execution thread with a fresh agent.
-
-## Result Contract
-
-The relay writes `result.json` with fields including:
-
-- terminal status and exit information;
-- `codexVersion`;
-- `threadId`;
-- requested model, effort, and sandbox;
-- `finalMessage`;
-- `touchedFiles`; and
-- paths to brief, events, and final-message artifacts.
-
-Completion means the child process exited and `result.json` exists. A progress display or final-message fragment is not completion.
-
-On timeout, abort, or failure, preserve the working tree and artifacts for the commissioning session; do not clean, retry, or start a replacement blindly.
-
-## Boundary
-
-- The target Codex parent owns repository investigation, planning, implementation, tests, internal review, and preparing the product artifact.
-- The target-discovered entry Skill owns internal subagents and domain Skills.
-- Hermes owns product discussion and real behavior acceptance.
-- This adapter owns only transport mechanics.
-
-Do not inspect code or rerun gates because this adapter says so. Do not commit unless the controlling workflow separately and explicitly authorizes a commit-only run of already-prepared changes. Never push, create a PR, release, deploy, publish, or change versions.
+For exact fields and recovery semantics, read [references/dispatch-and-poll.md](references/dispatch-and-poll.md).
 
 ## Verification
 
-A transport run is valid only when the intended repository, sandbox, outer model/effort, exact thread ID, terminal result status, and artifact paths are recorded for the commissioning session.
-
-For detailed relay failure semantics, see [references/dispatch-and-poll.md](references/dispatch-and-poll.md).
+Record the intended workspace, selected permissions, outer model/effort, terminal status, exact thread ID when emitted, and artifact paths. If no thread was created, record that fact rather than inventing an ID. Verify the requested deliverable separately using its task-specific criteria.

@@ -1,117 +1,81 @@
 ---
 name: cursor-delegate
-description: Transport Cursor Agent CLI runs: preflight, dispatch, exact-session resume, result contract.
+description: "Use when delegating tasks to Cursor Agent CLI."
 license: MIT
 compatibility: Requires the authenticated Cursor `agent` CLI, Node 18+, and git.
 metadata:
-  version: 0.5.3
+  version: 0.6.0
   hermes:
     related_skills: []
 ---
 
 # Cursor Transport Adapter
 
-Provide reliable Cursor Agent CLI transport: authentication preflight, workspace pinning, permission mode, model selection, structured artifacts, watchdogs, and exact-session resume. This adapter is not a development workflow, planner, reviewer, acceptance authority, or landing policy.
+Dispatch a brief to Cursor Agent CLI, capture artifacts, and resume an exact session. This adapter owns transport only; it does not prescribe development stages, role assignments, review gates, or landing policy.
 
 ## When to Use
 
-Load when commissioning a Cursor Agent CLI run.
+- Commission a Cursor Agent CLI task or continue a known Cursor session.
+- Inspect transport status, logs, and the child's final report.
+- Do not use this adapter to decide requirements or substitute for task-specific instructions and repository rules.
 
-Do not use this Skill to decide requirements, decide whether Origin grounding is needed, perform code review, define behavioral acceptance, or replace target-discovered Agent Skills.
+## Preflight and Model Selection
 
-## Preflight
+Use `terminal` to run `command -v agent`, `agent --version`, `agent status`, and `agent models`. Record the active binary/version and confirm authentication. Check the requested model against the live catalog before dispatch.
 
-Verify once:
+Unless the user requests another model:
+
+- **Lightweight/simple task:** pass `--model cursor-grok-4.6-high` for narrow, simple delegation, including factual retrieval and authorized commits of already-prepared changes.
+- **Substantial work:** pass `--model claude-opus-5-thinking-high` for complex, structured, mixed, or ambiguous work and tasks involving planning, review, product judgment, architecture, persistence, or migration. Verify the live label and compare `resolvedModel` with the intended model/context allocation; do not rely on an old label to assume 1M context.
+
+If discovery exposes broader coupling or consequential judgment, reclassify before expanding the task. These options configure the outer Cursor parent. Model routing is independent of permission mode.
+
+## Permissions and Brief
+
+Fresh and resumed runs default to **full access**: the relay passes `--force --sandbox disabled` plus `--trust`. Confirm the target workspace before dispatch.
+
+- For read-only tasks, state “do not modify files or perform Git writes” in the brief and inspect the working-tree diff afterward. Do not automatically switch to plan mode based on the task type.
+- Use `--read-only` (Cursor plan mode) or `--sandbox enabled` only when the user or task explicitly requires a CLI restriction.
+- Full tool access is not authorization to expand scope. Put the deliverable, repository, allowed changes, validation expectations, and authorized Git/external actions in the brief. Do not add permission-deny rules as part of dispatch. Existing Cursor deny rules may still block commands; `--force` does not override them.
+- The relay itself never commits. The child may commit, push, create a PR, or publish only when the task authorizes it; no special commit-only stage is required by this adapter.
+
+## Dispatch and Resume
+
+Use the installed skill directory reported by `skill_view`; invoke its helper through `terminal`:
 
 ```text
-agent --version
-agent status
-agent models
+node <skill-dir>/scripts/relay.mjs --brief <brief-file> --cd <repo> --model claude-opus-5-thinking-high --out-dir <artifact-dir>
 ```
 
-Classify the whole outer run by its requested deliverable before selecting the parent model. Unless the user explicitly requests another model:
-
-- **Lightweight/simple task:** for narrow lightweight direct-delegation tasks, use Cursor Grok 4.6 High explicitly with `--model cursor-grok-4.6-high`. This also covers narrow commit-only and read-only factual tasks. Confirm `cursor-grok-4.6-high` still appears in live `agent models` and record `resolvedModel`.
-- **Default for substantial work:** use Claude Opus 5 with high effort for structured, complex, mixed, or ambiguous tasks and any run involving planning, review, product judgment, architecture, persistence, migration, or other load-bearing decisions. Pass the live supported slug explicitly as `--model claude-opus-5-thinking-high`. As of Cursor CLI `2026.08.25-3e8eec8`, `agent models` labels this slug `Claude Opus 5 1M Thinking`; model labels and allocations can change, so verify the live label before dispatch and require `resolvedModel` to confirm the intended 1M allocation rather than a silent 300K fallback.
-
-If lightweight repository discovery reveals broader coupling or consequential judgment, stop expansion and reclassify the task before continuing with the Opus default. Confirm the selected ID appears in live `agent models` before dispatch.
-
-Confirm the intended repository and trust it before passing `--cd`. The relay always supplies Cursor workspace trust for headless operation.
-
-## Relay
-
-Use the bundled helper:
-
-```text
-node <this-skill>/scripts/relay.mjs --brief <file> --cd <repo> [options]
-```
-
-Important options:
+Choose an artifact directory outside the target working tree, under the Hermes scratch workspace or a task's durable artifact location. The brief goes through stdin, not argv. For long runs, use `terminal(background=true, notify=true)` and consume its completion notification rather than an estimated-duration timeout.
 
 | Option | Purpose |
 | --- | --- |
-| `--read-only` | Cursor plan mode; default for fresh runs |
-| `--force` | Explicitly allow edits and commands |
-| `--model <id>` | Outer Cursor parent model |
-| `--session <id>` | Resume one exact Cursor chat |
-| `--resume-last` | Fallback only when no exact ID exists |
-| `--sandbox enabled\|disabled` | Explicit sandbox override |
-| `--add-dir <dir>` | Additional workspace root |
-| `--plugin-dir <dir>` | Repeatable. Absolute existing directory passed through to `agent --plugin-dir` after the base flags. Recorded on the result as `pluginDirs`. |
-| `--timeout <dur>` | Optional Relay watchdog; default off. Use only when the user asks for a hard bound or the environment requires one; prefer a very long guard such as `4h` over a short task estimate. |
-| `--out-dir <dir>` | Stable artifact directory |
-| `CURSOR_AGENT_BIN` | Test/CI hook only. Overrides the `agent` binary (default `agent`) at the version probe and both spawn sites. Not a production workflow flag. |
+| `--force` | Enable writes and automatic command approval; already the default |
+| `--sandbox enabled\|disabled` | Explicit sandbox selection; default is disabled |
+| `--read-only` | Explicit opt-in to Cursor plan mode; removes `--force` |
+| `--model <id>` | Outer Cursor model |
+| `--session <sessionId>` | Resume one exact chat; send a delta brief with necessary new evidence |
+| `--resume-last` | Fallback when the exact ID is unavailable; confirm the selected chat belongs to this task |
+| `--add-dir <dir>` | Additional workspace root; inspect its changes separately |
+| `--plugin-dir <dir>` | Repeatable absolute existing plugin directory; recorded as `pluginDirs` |
+| `--timeout <dur>` | Optional watchdog, off by default; use only for a required hard bound, preferably a long guard such as `4h` |
+| `--out-dir <dir>` | Run artifacts; use a unique directory per dispatch |
+| `CURSOR_AGENT_BIN` | Test/CI-only binary override at version probe and dispatch |
 
-The brief is passed through stdin, not argv. The relay never commits.
+Preserve the returned `sessionId` for follow-ups. Resume when continuing the same task; start fresh when context or scope calls for it. There is no stage-specific requirement to create or separate sessions.
 
-## Development-Orchestrator Stages
+## Result Contract and Failure Handling
 
-### Optional Origin grounding
+The relay writes `result.json`: terminal status and exit information, `cursorAgentVersion`, `sessionId`, `resolvedModel`, reported `permissionMode`, requested sandbox/read-only/force flags, `pluginDirs`, `spawn: { argv, envKeys }`, `finalMessage`, `touchedFiles`, and artifact paths. Environment values are not persisted in `spawn`.
 
-For product discussion only, start fresh with `--read-only`; follow-ups may resume the exact `sessionId`. This Session is ephemeral and must never be passed to a Dispatcher worker or reused for Planning/Execution.
+- Wait for the process to exit and read the result with `read_file`. A progress display is not completion.
+- `completed` means transport completed, not that the requested deliverable passed acceptance. Check the report and relevant artifact/behavior evidence against the task.
+- `touchedFiles` is the final `git status --porcelain` snapshot under `--cd`, not attribution of the child's edits. Capture the initial working-tree state before dispatch; committed changes require Git diff/history inspection too. Inspect `--add-dir` roots separately.
+- On failure, timeout, or abort, preserve work and logs; inspect them before deciding whether to resume or retry. Do not clean or spawn a replacement blindly.
 
-### Explicit write-plan
-
-Start a fresh Planning Parent with `--force` and no Origin `--session`. Begin the brief with `/write-plan`, include the complete converged Card contract, and require the exact final Plan path plus top-level gate/artifact outcome. The target Skill owns its internal workflow and allowed planning writes.
-
-### Explicit execute-plan
-
-Start a separate fresh Execution Parent with `--force` and no Planning `--session`. Begin the brief with `/execute-plan` and include the exact accepted Plan path. Preserve the returned execution `sessionId` for same-scope rework.
-
-### Behavioral rework
-
-Resume the exact execution session with `--session <execution-id> --force` and the observed behavior-failure packet. Never replace a resumable execution session with a fresh agent.
-
-## Result Contract
-
-The relay writes `result.json` with fields including:
-
-- terminal status and exit information;
-- `cursorAgentVersion`;
-- `sessionId`;
-- `resolvedModel`;
-- permission and requested sandbox data;
-- `pluginDirs` (the `--plugin-dir` list; empty when none);
-- `spawn` — `{ argv, envKeys }` written on every terminal result (`completed`, `failed`, `timeout`, `aborted`, `unavailable`, and preflight failures). `argv` is the agent argument array. `envKeys` lists names of relay-relevant env vars actually consulted (`CURSOR_AGENT_BIN`, and `CURSOR_API_KEY` when present); values are never persisted;
-- `finalMessage`;
-- `touchedFiles`; and
-- paths to brief, final text, events, and stderr artifacts.
-
-Completion means the child process exited and `result.json` exists. A progress display or final-message fragment is not completion.
-
-On timeout, abort, or failure, preserve the working tree and artifacts for the commissioning session; do not clean, retry, or start a replacement blindly.
-
-## Boundary
-
-- The target Cursor parent owns repository investigation, planning, implementation, tests, internal review, and preparing the product artifact.
-- The target-discovered entry Skill owns internal subagents and domain Skills.
-- Hermes owns product discussion and real behavior acceptance.
-- This adapter owns only transport mechanics.
-
-Do not inspect code or rerun gates because this adapter says so. Do not commit unless the controlling workflow separately and explicitly authorizes a commit-only run of already-prepared changes. Never push, create a PR, release, deploy, publish, or change versions.
+For exact fields and recovery semantics, read [references/dispatch-and-poll.md](references/dispatch-and-poll.md).
 
 ## Verification
 
-A transport run is valid only when the intended repository, permission mode, outer model, exact session ID, terminal result status, and artifact paths are recorded for the commissioning session.
-
-For detailed relay failure semantics, see [references/dispatch-and-poll.md](references/dispatch-and-poll.md).
+Record the intended workspace, requested permissions, reported permission mode when available, outer requested/resolved model, terminal status, exact session ID when emitted, and artifact paths. If no session was created, record that fact rather than inventing an ID. Verify the requested deliverable separately using its task-specific criteria.

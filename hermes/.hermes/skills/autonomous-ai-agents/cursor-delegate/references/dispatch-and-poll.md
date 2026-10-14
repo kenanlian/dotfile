@@ -27,15 +27,15 @@ node "<skill-dir>/scripts/relay.mjs" --brief brief.txt --cd /path/to/repo
 | --- | --- |
 | `--brief <file>` | Brief path. Omit it to read the brief from stdin. |
 | `--cd <dir>` | Working root and child process cwd (default: current directory). |
-| `--lane <name>` | Fleet lane from `delegate-setup` config. Applies that lane's dials; fails if the lane's `implementer` is not this relay. Explicit dial flags win. |
 | `--model <name>` | Cursor model for this run (default: your Cursor default, usually `auto`). Names come from `agent models`. |
-| `--read-only` | Run in Cursor's plan mode: read-only analysis, no edits (the local default). |
-| `--force` | Explicitly enable writes and automatic command approval. |
-| `--sandbox <mode>` | Override Cursor's sandbox for this dispatch: `enabled` or `disabled`. |
-| `--no-force` | Rejected by this locally hardened variant; use `--read-only` or explicit `--force`. |
+| `--read-only` | Explicit opt-in to Cursor's read-only plan mode; removes `--force`. |
+| `--force` | Enable writes and automatic command approval (the default). |
+| `--sandbox <mode>` | Override Cursor's sandbox for this dispatch: `enabled` or `disabled` (default: `disabled`). |
+| `--no-force` | Unsupported; use `--read-only` or explicit `--force`. |
 | `--session <id>` | Resume a specific Cursor chat (`--resume <id>`); send only the delta brief. |
 | `--resume-last` | Resume the most recent Cursor chat (`--continue`); send only the delta brief. |
 | `--add-dir <dir>` | Add an extra workspace root on Cursor `2026.07.23` or newer. Repeatable. Edits there are not reported in `touchedFiles`. |
+| `--plugin-dir <dir>` | Repeatable absolute existing plugin directory, forwarded in order and recorded as `pluginDirs`. |
 | `--timeout <dur>` | Optional Relay watchdog (default: off; h/m/s strings). Normal orchestration omits it; if an external hard bound is required, prefer a deliberately long guard such as `4h`. agent has no timeout flag. |
 | `--out-dir <dir>` | Artifact directory (default: a fresh directory under the system temp dir). |
 | `-h`, `--help` | Print the relay's header help. |
@@ -43,9 +43,9 @@ node "<skill-dir>/scripts/relay.mjs" --brief brief.txt --cd /path/to/repo
 `--session` and `--resume-last` are mutually exclusive. The child cwd pins the primary workspace;
 `--add-dir` adds extra workspace roots only.
 
-A fresh run defaults to read-only plan mode. Writing requires an explicit `--force`, which enables
-file edits and automatic command approval unless Cursor config denies an action. `--no-force` is
-rejected by this locally hardened variant. The relay always passes `--trust` so a headless run never
+Fresh and resumed runs default to `--force --sandbox disabled`: file edits and automatic command
+approval unless existing Cursor config denies an action. `--read-only` opts into plan mode instead.
+`--no-force` is unsupported. The relay always passes `--trust` so a headless run never
 stalls on the workspace-trust prompt — point `--cd` only at repositories you trust.
 
 ## Artifacts and result fields
@@ -76,8 +76,10 @@ inside the worktree can make the artifacts appear there:
 - `touchedFiles` — `git status --porcelain` lines for the **final working tree under `--cd` only**,
   not an attribution of Cursor's edits: anything already dirty before dispatch shows up too, and
   edits Cursor makes inside `--add-dir` roots do not show up at all — inspect those trees yourself.
-  Dispatch from a clean tree when you want the list to read as "what Cursor changed". `null` means
+  Already-committed changes are absent; inspect Git diff/history too. `null` means
   git could not report; `[]` means git ran and the tree is clean.
+- `pluginDirs` — requested plugin directories.
+- `spawn` — `{ argv, envKeys }` on every written terminal result; records argument arrays and consulted environment names, never values. `CURSOR_AGENT_BIN` is a test/CI-only binary override used for the probe and dispatch.
 - `usage` — Cursor's token-usage object from the closing result event, or `null` if no result event
   supplied one.
 - `stderrTail` — the last 20 non-empty stderr lines on any run that did not complete (`failed`,
@@ -128,8 +130,7 @@ A pre-run usage error exits 2 and writes no result. A missing `agent` exits 127 
   `~/.cursor/hooks.json` and any imported Claude Code `PreToolUse` hooks) errors and Cursor blocks
   the command, fail-closed. File edits still work; command execution does not — which also means
   Cursor cannot run the gates, only claim it could not. Workaround: dispatch the relay from a
-  PowerShell or cmd console instead (observed fixed there); or temporarily remove the hook entries
-  for the run. Verified on agent 2026.07.23.
+  PowerShell or cmd console instead (observed fixed there); do not silently remove security hooks to bypass the failure. Verified on agent 2026.07.23.
 
 ## Recovering lost work
 
@@ -146,19 +147,28 @@ The argv is equivalent to:
 
 ```bash
 agent --print --output-format stream-json --trust \
-  [--mode plan (default) | --force] [--sandbox enabled|disabled] [--model <name>] \
+  --force --sandbox disabled [--model <name>] \
   [--resume <id> | --continue] \
-  [--add-dir <dir> ...]   # brief on stdin
+  [--add-dir <dir> ...] [--plugin-dir <dir> ...]   # brief on stdin
 ```
 
-`--no-force` is rejected by this locally hardened variant.
+Explicit `--read-only` replaces `--force` with `--mode plan`; `--sandbox enabled` overrides
+the sandbox separately. `--no-force` is unsupported.
 
 The brief rides stdin, so it is not visible in the host process list and has no OS argument-size
 cap. On Windows the launch goes through the shell so the `agent.cmd` shim resolves; the brief
 still travels on stdin, sandbox, model, session, and directory values are validated, and spaceable
 values are quoted.
 
-## The commit boundary
+## Authorization boundary
 
-The relay never commits. Cursor edits the working tree; landing intended files (Git baseline,
-trailer conventions) belongs to the commissioning workflow, not this adapter.
+The relay itself performs no Git writes. The child may perform Git/external actions only when
+authorized in the task brief. This adapter does not prescribe planning, review, acceptance, or landing
+roles. `completed` proves transport completion, not correctness of the requested deliverable.
+
+Default permissions remain full access even for ordinary read-only tasks: constrain those tasks in
+the brief and check the baseline/diff afterward. Use restricted CLI modes only when explicitly
+required. Choose a unique artifact directory per dispatch under the Hermes scratch workspace or a
+durable task location, outside the target working tree. For long Hermes runs use
+`terminal(background=true, notify=true)` and consume the completion notification, then use
+`read_file` for `result.json`.
