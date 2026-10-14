@@ -1,77 +1,64 @@
-# Dispatch and poll
+# Dispatch and results
 
-`scripts/relay.mjs` wraps `opencode run --format json --auto`, captures the event stream, exports the finished session via `opencode session export`, and writes `delegate-relay.result.v1` artifacts. Verified against OpenCode v2.0.29.
+`scripts/relay.mjs` wraps `opencode run --format json --auto`, captures the event stream, exports the session through `opencode session export`, and writes `delegate-relay.result.v1` artifacts. Verified CLI shape: OpenCode v2.0.29. It does not depend on a custom backend router or reviewer/worker tiers.
 
-## Permission posture
+## Permissions and preflight
 
-Full permissions by design: the relay always passes `--auto` and injects no deny rules, for read-only and writing tasks alike. Read-only-ness lives in the brief ("do not modify files") and relies on model instruction-following; `touchedFiles` + git diff review is the post-hoc check. This is not an OS sandbox — OpenCode has none on this machine. If a task cannot tolerate a stray write, do not route it through this relay.
+The relay always passes `--auto` and adds no permission-deny rules. Ordinary read-only tasks are constrained in the brief, then checked against an initial working-tree baseline. Existing application/project denies still apply; auto-approval does not bypass them.
 
-## Before the first run
+Use `terminal` to check `command -v opencode`, `opencode --version`, `opencode auth list`, and `opencode models`. Pass the selected model explicitly: bare `run` can select the subscription-gated Go provider. Variant is inline (`provider/model#variant`); the relay's convenience `--variant` composes the token. Session export is `opencode session export <id>`.
 
-```text
-command -v opencode
-opencode --version
-opencode auth list
-opencode models
-```
+## Dispatch and exact resume
 
-v2 model facts:
-
-- A bare `opencode run` without `--model` resolves to the opencode-go default and **403s without an active Go subscription** — pass `--model` explicitly every time.
-- Variant is inline (`--model provider/model#variant`); the standalone `--variant` CLI flag no longer exists, so the relay composes `--model` + `--variant` into one token.
-- `opencode export` is gone → `opencode session export <id>`.
-
-## Dispatching
+Use `terminal` with the installed skill path from `skill_view`:
 
 ```text
-node "<skill-dir>/scripts/relay.mjs" --brief brief.txt --cd /path/to/repo --model provider/model
+node <skill-dir>/scripts/relay.mjs --brief <brief-file> --cd <repo> --model provider/model --out-dir <artifact-dir>
+node <skill-dir>/scripts/relay.mjs --brief <delta-file> --cd <repo> --session <sessionId> --model provider/model --out-dir <new-artifact-dir>
 ```
 
-The prompt travels through stdin. `--session` and `--resume-last` are mutually exclusive; prefer the exact `sessionId` from a prior `result.json` over `--resume-last` ("last" is scoped to the project context, not to your dispatch).
+The prompt travels through stdin. `--session` and `--resume-last` are mutually exclusive; prefer the exact `sessionId` from a previous result. The latest session is project-scoped, not task-scoped.
 
-## Artifacts
+Resume for a same-task follow-up; start fresh when scope or context calls for it. There is no development-stage separation requirement. Default primary agent is OpenCode's built-in `build`; ordinary CLI `--agent` selection is not custom backend routing.
 
-- `brief.txt` — exact prompt.
-- `events.jsonl` — raw `opencode run --format json` stdout (JSONL; `text`, `step_start`, `step_finish`, `tool_use`, `error` events).
-- `final.txt` — final assistant message (from the session export, falling back to the last streamed text event).
-- `stderr.txt` — complete stderr.
-- `session.json` — parsed `opencode session export` output; v2 assistant messages carry `type: 'assistant'`, `content: [{type:'text',text}]`, `model: {id, providerID, variant}`, `agent`, `tokens`, `cost` directly on the message.
-- `result.json` — atomically published result contract.
+Use a unique artifact directory per dispatch, outside the target working tree, under the Hermes scratch workspace or a durable task location. For long runs use `terminal(background=true, notify=true)`; consume the completion notification and read `result.json` with `read_file`.
 
-## Result fields that matter
+## Artifacts and result contract
 
-- `status`: `completed` | `failed` | `timeout` | `aborted` | `unavailable` (missing binary; `sourceStatus: opencode_unavailable`).
-- `sessionId`: exact resume key.
-- `requestedModel`/`requestedVariant` vs `resolvedModel`/`resolvedVariant`/`resolvedAgent` (from the export).
-- `permissionMode: full-auto`, `effectiveAgent` (default `build`).
-- `finalMessage`, `usage`, `touchedFiles`, `exportError`, `stderrTail`, `error`.
+- `brief.txt`: exact prompt.
+- `events.jsonl`: raw CLI stdout, including JSON text/step/tool/error events.
+- `final.txt`: final assistant message from session export, falling back to the last streamed text event.
+- `stderr.txt`: complete stderr.
+- `session.json`: parsed session export. On v2, assistant messages contain `type`, text `content`, `model: {id, providerID, variant}`, and agent/token/cost fields.
+- `result.json`: atomically published `delegate-relay.result.v1` contract.
 
-## Waiting for completion
+Relevant fields:
 
-The relay blocks. For long tasks run it via `terminal(background=true)` and poll `result.json`'s existence plus terminal `status`. Completion requires child exit AND `result.json`; a streamed text fragment or an idle-looking event is not completion.
+- `status`: `completed`, `failed`, `timeout`, `aborted`, or `unavailable`; a missing binary has `sourceStatus: opencode_unavailable` and exit 127.
+- `exitCode`, `signal`, `opencodeVersion`, `sessionId`: terminal information and exact resume identity.
+- `requestedModel`, `requestedVariant`, `requestedAgent`, `resolvedModel`, `resolvedVariant`, `resolvedAgent`, `effectiveAgent`: requested/resolved selections; emitted values can be null if unavailable.
+- `permissionMode: full-auto`: relay's requested auto-approval posture, not proof that existing denies are absent.
+- `workdir`, `session`, `resumeLast`, `resumed`, `startedAt`, `finishedAt`: transport settings/timing.
+- `finalMessage`, `usage`, `touchedFiles`, `exportError`, `stderrTail`, `error`: report and diagnostics when available.
+- `briefPath`, `eventsPath`, `finalPath`, `stderrPath`, `exportPath`: artifact paths; optional files may have null paths.
 
-A usage error exits 2 before artifact creation. A missing binary exits 127 with `status: unavailable`.
+`touchedFiles` is the final `git status --porcelain` snapshot under `--cd`, not attribution of child edits. It includes pre-existing dirty files and excludes committed changes. Capture a baseline and inspect Git diff/history too. Null means Git could not report, not a clean tree.
 
-## Failure handling
+## Completion, authorization, and recovery
 
-- `failed`: inspect `error`, `stderrTail`, `events.jsonl`. Common v2 causes: provider auth (Go subscription 403), invalid model id, resuming a session created in a different project context.
-- `timeout`: watchdog SIGTERM → SIGKILL after grace. Preserve the working tree and inspect.
-- `aborted`: relay killed (SIGTERM/INT/HUP); OpenCode was terminated with it.
-- Empty `finalMessage` with exit 0: inspect `session.json`/`events.jsonl`; do not treat a zero exit as behavior acceptance.
-- `exportError`: the run itself may be fine; continuity is still possible from `sessionId`.
-- **Question masquerading as completion**: a clarifying question lands in `finalMessage` with `status: completed`, exit 0. Read `finalMessage` before treating a run as done; answer via `--session` resume or escalate to the user.
+Completion requires process exit and a terminal result. A streamed fragment is not completion; argument/empty-brief errors exit 2 before creating artifacts. `completed` proves transport, not deliverable correctness.
 
-## Exact resume
+The relay does no Git writes itself. Child Git/external actions require task authorization. There is no special commit-only stage, blanket publication ban, or assigned planning/review/acceptance roles in this adapter.
 
-```text
-node relay.mjs --brief delta.txt --cd /path/to/repo --session <sessionId> --model provider/model
-```
+- `failed`: inspect error, stderr, events, and work. Check provider auth, exact model IDs, and session/project context.
+- `timeout` or `aborted`: preserve partial work and artifacts; inspect before choosing resume/retry. Do not clean or start a replacement blindly.
+- Empty final message with exit 0: inspect export/events; do not infer a successful deliverable.
+- `exportError`: the run may have finished, but exported metadata is unverified. Continuity can remain possible using the emitted session ID.
+- A clarifying question can look like transport completion: read the message. Answer via exact-session resume if known; otherwise ask the user.
 
-Send only the delta prompt — the child retains full prior context. Preserve discussion sessions separately from execution sessions.
+## Smoke verification
 
-## Smoke verification (executed 2026-10-14, OpenCode v2.0.29, glm-5.3)
-
-1. Fresh run expecting exact token → `completed`, exact `finalMessage`, non-empty `sessionId`, matching `resolvedModel`. ✓
-2. Resume the exact session asking what it replied last time → recalled the prior token. ✓
-3. Read-only via brief wording only → no writes occurred. ✓
-4. Write task → file created with exact content under `--auto`. ✓
+1. Dispatch in an isolated scratch repository, requiring an exact reply token and no file/Git/external writes.
+2. Require `completed`, exact final message, a non-empty session ID, and the requested resolved model.
+3. Resume that exact session and ask it to recall the prior token; verify identity continuity and the expected reply.
+4. Check the workspace stayed unchanged. This validates transport, not acceptance of an unrelated product task.

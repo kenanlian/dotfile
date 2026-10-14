@@ -7,7 +7,7 @@ GNU Stow symbolic links.
 
 - `zsh`: lightweight Oh My Zsh configuration, aliases, functions, and options
 - `nvim`: LazyVim-based Neovim configuration for lightweight file editing
-- `opencode`: OpenCode user configuration and delegated-agent definitions
+- `opencode`: OpenCode user configuration; no custom delegated-agent roles or backend router
 - `pi`: Pi coding-agent `delegate_agent` routing (`~/.pi/agent/delegate-agent.json`) and a Stow-managed `~/.pi/agent/skills` symlink to the sibling `agent_skills/skills` root. `~/.pi/agent/settings.json` is not stowed.
 
 Each package mirrors its destination beneath `$HOME`. Machine-specific values
@@ -27,5 +27,6 @@ layout. To remove the managed links without deleting the source files:
 stow --delete --dir /path/to/dotfile --target "$HOME" zsh nvim opencode pi
 ```
 
-The OpenCode package owns concrete local provider/model routing. Cross-platform
-delegation semantics remain in the separate `agent_skills` repository.
+The OpenCode package retains ordinary user settings, including the built-in
+explore agent's model selection. Custom backend routing and workflow-specific
+reviewer/worker definitions are retired; OpenCode's built-in agents remain available.

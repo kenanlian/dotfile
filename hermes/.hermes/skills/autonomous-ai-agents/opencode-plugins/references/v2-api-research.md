@@ -30,7 +30,9 @@ Researched 2026-09-02 (sources: opencode.ai/v2/docs/build/plugins, /v2/docs/comp
 - Source (`packages/*/src/session/revert.ts`): revert computes the boundary, reverts file patches after it (snapshot-backed), publishes diff events; `cleanup` removes messages/parts after the boundary from the projection. Snapshots docs: "Committing a revert removes messages from the active projection, not from durable session history or existing snapshot storage."
 - 409 SessionBusyError while the session runs → idle-only. For handoff: skip file restoration (code must survive); only the conversation projection clears.
 
-## Auto-handoff plugin design (agreed with 柯楠, NOT implemented)
+## Historical auto-handoff sketch (NOT implemented)
+
+This section records an earlier discussion, not a current development/delegation workflow, backend contract, or authorization to implement it. Re-establish requirements before using the sketch; references to stage plans or old relay monitoring are historical assumptions.
 
 Requirements he fixed across two clarifications:
 1. Dual trigger: context estimate > threshold (e.g. 50%) AND a work-package boundary just completed (e.g. WP 3/6 done) — threshold is necessary, WP boundary is the timing. WP state from machine-readable markers in `.dev/plan/<slug>-plan.md` (his development-artifacts persistence system). Hard ceiling (~75%) force-triggers with a "wrap up current WP and persist" instruction as backstop (a single WP can otherwise eat the remaining window).
