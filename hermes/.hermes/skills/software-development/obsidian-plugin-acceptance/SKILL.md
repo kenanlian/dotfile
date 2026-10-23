@@ -1,7 +1,7 @@
 ---
 name: obsidian-plugin-acceptance
 description: "Use when testing Obsidian plugins via obsidian-cli eval."
-version: 1.1.0
+version: 1.2.0
 license: MIT
 platforms: [macos]
 tags: [obsidian, plugin, behavior-acceptance, eval, dom]
@@ -49,6 +49,15 @@ Invoke as `"$CLI" vault=<name> eval code="<js>"`. Prefer `subprocess.run([...])`
 - Runtime: `<plugin>.settingsStore.memory` (or the plugin's settings holder) is the normalized flat view — normalization (lowercasing, dedupe, sort, dropping stale entries) is observable here.
 - Disk: `<plugin dir>/data.json` shows the layered document (preferences / workspace / userData) exactly as persisted; remember a field may live in a different layer than you guessed (check both).
 - Wait for debounced workspace writes (a bounded ~1–2 s sleep) before asserting disk state.
+
+### 2.5. Verify third-party file creation through its consumer
+
+1. Reproduce **create → first open** without pre-opening or waiting for indexing; a fresh file can lack cached metadata even when its extension and bytes are valid. Record the immediate view type, then check later recognition separately so eventual indexing cannot conceal incorrect first-open routing.
+2. Assert the requested view **and actual editor readiness**, then create a meaningful element, save, close and reopen through the ordinary product path. A correct view-type enum can precede asynchronous editor initialization; it is not proof that the document loaded.
+3. Validate saved content through the consumer's parser before comparing semantic identifiers; compression or serialization can remove literal identifiers from raw text without losing data. Keep byte-equality checks for artifact identity, not semantic persistence across a consumer save.
+4. Exercise unavailable dependencies in an isolated vault: snapshot file paths and editor-tab identities, disable the dependency, invoke the real action, assert the notice and unchanged snapshots, then restore its original enabled state in `finally` and verify readiness. Label absent-plugin unit fixtures separately from a real disabled-plugin run; do not claim an uninstall test you did not perform.
+
+See `references/plugin-file-lifecycle.md` for the Excalidraw consumer recipe and fixture cleanup details.
 
 ### 3. Interact through the DOM
 

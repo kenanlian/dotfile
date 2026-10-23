@@ -1,7 +1,7 @@
 ---
 name: coding-agent-configuration
 description: "Use when configuring coding-agent CLI roles globally."
-version: 1.0.0
+version: 1.1.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -139,6 +139,8 @@ For configuration-only tasks, confirm the source repository still has its prior 
 ## Upgrading and Migrating Hosts
 
 Run `--version` on every binary up front and compare with the latest published version (npm `dist-tags` for npm-distributed CLIs, `brew info <tap/formula>` for tap formulas) — never assume the installed copy is current. Prefer each host's self-update command (`codex update`, `agent update`, `opencode upgrade`): it also repoints launcher symlinks. Verify by re-running `--version` afterwards, not by trusting the updater's exit message.
+
+After a major CLI version bump, re-verify the documented invocation surface against the LIVE binary before trusting stored procedures: subcommands get renamed (`opencode export` → `opencode session export`), flags get removed or folded into other tokens (standalone `--variant` → inline `--model provider/model#variant`), and internal data shapes move (session-export messages from `info.role`/`parts` to `type`/`content` with `model` on the message). The failure mode is silent: an old flag name errors, but an old subcommand that still exists with different output shape parses to empty results. Confirm each renamed surface with a one-line live probe (`opencode session export <id> | head`, a minimal `--format json` run) before rewiring configs or relays on top of it.
 
 Self-updaters wrap the package manager and hide its output (`opencode upgrade` → "Upgrade failed for brew (exit code 1)"); rerun the underlying `brew upgrade <formula>` directly to surface the real error. A common root cause on macOS is brew refusing to build against outdated Xcode Command Line Tools — fix without sudo prompts via `softwareupdate --list` then `softwareupdate --install "<exact label>"` (a ~500MB download that keeps running in the background; wait for completion before retrying brew).
 

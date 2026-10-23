@@ -1,129 +1,43 @@
 ---
 name: pi-delegate
-description: Transport Pi CLI runs: preflight, dispatch, exact-session resume, structured result contract.
+description: "Use when explicitly delegating a task to Pi CLI."
 license: MIT
-compatibility: Requires the `pi` CLI (~/.local/bin/pi) 0.84.4+, Node 18+, and git.
 metadata:
-  version: 0.5.0
+  version: 0.6.0
   hermes:
-    related_skills: [pi-coding-agent]
+    related_skills: [pi-coding-agent, project-taskflow]
 ---
 
-# Pi Transport Adapter
+# Optional Pi Transport
 
-Provide reliable Pi CLI transport: preflight, exact-cwd dispatch, read-only/write tool gating, explicit model and thinking, exact-session resume, structured artifacts, watchdog, and a truthful `delegate-relay.result.v1` result. This adapter is not a development workflow, planner, reviewer, acceptance authority, or landing policy.
-
-## When to Use
-
-Load when commissioning any Pi CLI run — a delegated relay or a one-off current-session run. This Skill provides transport only.
-
-Do not use this Skill to decide requirements, decide whether grounding is needed, perform code review, define behavioral acceptance, or replace target-discovered Agent Skills.
+The existing Pi relay is an explicit opt-in transport, not a development workflow. Kenan's default project work uses `project-taskflow` and native Codex. No automatic planner/reviewer/implementer roles, stage mounting, model-by-stage selection, fixed review rounds or custom router setup is prescribed here.
 
 ## Preflight
 
-Verify once:
-
-```text
-command -v pi
-pi --version
-pi --list-models <search>
-```
-
-An explicit model from the commissioner always wins. Otherwise, unless the user explicitly requests another model:
-
-- **Write-mode implement relays** and their same-session rework: primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`.
-- **Read-only review and grounding relays**: `zai-coding-cn/glm-5.3`, no fallback.
-
-All tiers run `--thinking high`. Models are provider-prefixed (`provider/model`), optionally with a `:thinking` suffix (`pi --model zai-coding-cn/glm-5.3:high`). If the brief's task scoping proves wrong mid-run, stop expansion and reclassify before continuing.
-
-Switch to the fallback only when the primary actually fails from quota exhaustion or provider unavailability: re-dispatch once with the fallback `--model` (and same `--thinking`), resuming the exact recorded `--session` when the failed run had one. Record the switch — `result.json`'s `resolvedModel` reflects what actually ran. glm-5.3 relays have no fallback: quota exhaustion or provider unavailability there is a terminal relay failure the commissioning Worker blocks on (typed `transient`/`capability`), never a silent model substitution.
-
-Confirm the intended repository and trust it before passing `--cd`. Pi has no permission wall. `--read-only` removes top-level shell/edit/write tools, but `delegate_agent` remains available and can request a write child; review briefs must forbid the parent and every child from writing. This is an instruction boundary, not an OS sandbox.
+Use `terminal` to check `command -v pi`, `pi --version`, `pi --list-models <search>` and the helper's `--help`. Record the confirmed cwd, model and allowed side effects. An explicit user model wins. Do not substitute historical role-model tables or quota fallbacks for a current decision.
 
 ## Relay
 
-Use the bundled helper:
+The retained helper is `scripts/relay.mjs` in this Skill's real directory. Invoke through `terminal`:
 
 ```text
-node <this-skill>/scripts/relay.mjs --brief <file> --cd <repo> [options]
+node <skill-dir>/scripts/relay.mjs --brief <file> --cd <repo> --write --model <provider/model> --thinking high --out-dir <artifact-dir>
 ```
 
-| Option | Purpose |
-| --- | --- |
-| `--brief <file>` | Brief path. Omit to read the brief from stdin. |
-| `--cd <dir>` | Exact working root and child cwd (default: relay cwd). |
-| `--read-only` | Tool allowlist `read,grep,find,ls,delegate_agent`. Default for fresh runs. |
-| `--write` | Tool allowlist `read,grep,find,ls,bash,edit,write,delegate_agent`. |
-| `--model <id>` | Explicit `provider/model[:thinking]` id. |
-| `--thinking <level>` | `off\|minimal\|low\|medium\|high\|xhigh\|max`. Default `high`. |
-| `--session <id>` | Resume one existing exact Pi session via Pi `--session`; fail if missing or mismatched. |
-| `--timeout <dur>` | Optional relay watchdog; default off. Prefer a long guard (`4h`) over a task estimate. |
-| `--out-dir <dir>` | Artifact directory (default: fresh dir under the system temp dir). |
-| `--auto-handoff-plan <file>` | Enable top-level Auto Handoff: one additional `-e` plus child-process `PI_AUTO_HANDOFF_PLAN_FILE` (the exact validated plan path) and `PI_AUTO_HANDOFF_HANDOFF_DIR` (`<actual out dir>/auto-handoff`). `<file>` must be an absolute readable non-empty regular file. Absence disables atomically. |
-| `--review-output plan\|execute` | Review relays only (never with `--write`). Loads the review-submit extension via `-e`, adds exactly the stage submit tool (`submit_plan_review` or `submit_execute_review`) to the read-only allowlist, and captures exactly one successful expected-tool result into `structuredOutput`. Mutually exclusive with `--structured-output-*`. |
-| `--review-output-recovery` | Single output-only recovery turn. Requires `--session` and `--review-output`. Child allowlist is only the stage submit tool; an output-only instruction is appended. |
-| `--structured-output-tool <name>` | Trusted/Harness transport surface. Capture exactly one successful result from this submit tool. Must be paired with `--structured-output-extension`. Allowed with `--write`. Mutually exclusive with `--review-output`. |
-| `--structured-output-extension <dir>` | Absolute extension root containing `index.ts` or `index.js`. Must be paired with `--structured-output-tool`. |
-| `--structured-output-recovery` | Single output-only recovery turn. Requires `--session` plus the generic tool/extension pair. Child allowlist is only that submit tool. |
-| `--extension <dir>` | Additional absolute extension root; repeatable. Path must exist. Loaded as an extra `-e` after delegate-agent / auto-handoff / structured-output roots. Does not replace `--auto-handoff-plan`. |
-| `--env KEY=VALUE` | Inject `KEY` into the pi child environment; repeatable. Cannot override `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`/`TEMP`/`TMP`, `PWD`/`OLDPWD`, `NODE_OPTIONS`/`NODE_PATH`, `LD_PRELOAD`/`LD_LIBRARY_PATH`, `DYLD_*`, `PI_BIN`, `PI_AUTO_HANDOFF_PLAN_FILE`, or `PI_AUTO_HANDOFF_HANDOFF_DIR`. Duplicate keys fail. Env **values** are never written to `result.json`. |
-| `--skill <dir>` | Additional absolute Skill directory containing `SKILL.md`; repeatable. Passed through as Pi `--skill`. Additive even under `--no-skills`. Relative or missing paths, or a directory without `SKILL.md`, fail at parse time (exit 2). |
-| `--no-skills`, `-ns` | Pass Pi `-ns`: disable Skill auto-discovery (`~/.pi/agent/skills`, project `.agents/skills`, and the rest). Explicit `--skill` paths still load. Omit both flags to keep Pi's default discovery. |
-| `--extra-tools <names>` | Comma-separated extra `--tools` names; repeatable, de-duplicated. Required for extension-registered tools (e.g. `todo`): Pi's `-t` whitelist filters them the same as builtins, and unknown names are silently ignored. Recovery turns do not append them (allowlist stays the submit tool). Empty lists or invalid names fail at parse time (exit 2). |
-| `-h`, `--help` | Relay header help. |
+Full tool access is the default commissioning policy; pass `--write` explicitly because this legacy helper otherwise defaults to a read-tool allowlist. State read-only scope in the brief and inspect the diff. Use `--read-only` only when a restriction was explicitly requested. No brief grants commit/push/PR/publication unless the user authorized those actions.
 
-The brief is passed to Pi on the child's stdin (no positional argument; pi consumes piped stdin as the initial prompt), never in argv; a first line of `/skill:<name> ` (name, then a space on the same line) is expanded by Pi into the full Skill even when that Skill is hidden by `disable-model-invocation: true` — always address commissioning Skills this way instead of prose-only references. The relay validates the `/skill:` first line shape and fails fast on a malformed one; the relay never commits.
+The helper has an existing structural requirement: its brief begins with `/skill:<existing-skill-name> ` followed by the task. Verify the selected Skill exists and is appropriate; do not resurrect deleted workflow entries to satisfy the prefix. For a one-off run with no selected Skill, use native Pi via `pi-coding-agent` instead. Do not silently patch the helper at runtime.
 
-Extension loading is deterministic: `--no-extensions` plus explicit `-e <delegate-agent-root>` so the `delegate_agent` tool exists and nothing implicit loads. When `--auto-handoff-plan` is present, the relay loads one additional `-e` for the auto-handoff extension root (discovery: `PI_AUTO_HANDOFF_ROOT`, then `~/Secret-Projects/pi-auto-handoff`; `PI_AUTO_HANDOFF_ROOT` is a relay-internal discovery override, not a workflow-facing parameter) and injects child-process-scoped `PI_AUTO_HANDOFF_PLAN_FILE` and `PI_AUTO_HANDOFF_HANDOFF_DIR`; it never mutates the relay's own environment. Additional `--extension <abs>` roots are appended as further `-e` flags (existence-checked at parse time). `--env KEY=VALUE` injects into the child env subject to the blacklist above. When `--review-output` is present, the relay loads one additional `-e` for the review-submit extension root (bundled at `extensions/review-submit/`; override `PI_REVIEW_SUBMIT_ROOT`) and enables exactly the stage submit tool. When `--structured-output-tool` and `--structured-output-extension` are present, the relay loads that absolute extension root via `-e` and enables exactly that submit tool (including in `--write` mode). The two structured-output flag families are mutually exclusive. Delegated children keep `--no-extensions` and never receive the auto-handoff, review-submit, generic structured-output, or extra `--extension` roots. Skills: `--no-skills`/`-ns` plus repeatable `--skill <abs>` assemble the same way as extensions (all-or-nothing discovery off, then explicit mounts). Without those flags, Pi's default Skill discovery stays on. The relay never copies or mirrors Skills; paths come from the caller (Harness profiles resolve `skills/<name>` against the agent_skills repo root). `--extra-tools` appends names onto the child `--tools` allowlist so extension tools survive `-t`; recovery still uses only the submit tool.
+Use a unique repo-external artifact directory. Preserve result.json, final.txt, raw events and stderr. `--session <exact-id>` continues an existing known session; verify it belongs to the task. Resume the same task with delta evidence, never blindly replace its failed session. Watchdog is optional; do not invent short duration bounds.
 
-Harness runs also inject `PI_HARNESS_EXPECT_EXTENSIONS` (comma-separated extension ids). The stage-submit extension writes a grep-stable `harnessAttestation` JSON line onto the Pi NDJSON stream at `session_start`; the Harness fail-closes with `extension_manifest_mismatch` when that record is missing or disagrees with the stage profile. This is presence proof that stage-submit actually loaded — argv `-e` alone is not enough.
+## Completion and Recovery
 
-## Common run patterns
+Success requires actual terminal exit plus a completed structured result, correct session and agent_settled evidence. The result is transport completion, not human acceptance. Record model/effort/permissions, exact session and touched-file inventory, including index, untracked and committed changes where applicable.
 
-### Read-only grounding run
+On failure, preserve work and evidence, confirm the previous writer is dead, and inspect the cause before continuation. No blind retry loop, automatic role fallback, cleanup, commit or publication. Unknown outcomes are not permission to replay.
 
-Start fresh with `--read-only`; follow-ups may resume the exact `sessionId`. Never pass `--auto-handoff-plan` to a read-only run.
+## Retained Legacy Features
 
-### Write-mode implement run
+Scripts still support advanced extension/structured-output switches for explicitly commissioned compatibility work. Their historical tests and [reference](references/dispatch-and-poll.md) document mechanisms, not current orchestration policy. Do not auto-load auto-handoff/review-submit/stage-submit extensions or output-only recovery just because options exist. Old custom-router/model defaults and stage recipes in retained references are non-authoritative.
 
-Start a fresh parent with `--write` under the implement model (primary `kimi-coding/k3`, fallback `zai-coding-cn/glm-5.3`). Begin the brief with the first line `/skill:<entry-skill> ` (trailing space, then the task body), include the complete task contract, and require the exact deliverable plus top-level outcome. Preserve the returned `sessionId` for same-scope rework.
-
-### Read-only review run with structured output
-
-Start every review relay fresh with `--read-only --review-output plan|execute` under `zai-coding-cn/glm-5.3` (no fallback); never pass an implement `--session`. Begin with the first line `/skill:<review-skill> ` (trailing space) plus exact review inputs, and explicitly forbid the reviewer and every delegated child from writing or invoking write-access children. Give each relay a unique run-scoped out dir/result path, wait for process exit, and consume `structuredOutput` (tool + payload); `finalMessage` is diagnostic only and is not parsed. If a terminal review result lacks a valid `structuredOutput`, re-issue one `--review-output-recovery --session <id>` turn. Review relays never pass `--auto-handoff-plan`.
-
-### Session resume for rework
-
-Resume the exact recorded Pi `sessionId` with `--session <session-id> --write` plus the observed failure packet and the implement model of its relay family. The relay fails when that Session is absent or the observed ID differs; never replace it silently.
-
-## Result Contract
-
-The relay writes `result.json` (`delegate-relay.result.v1`):
-
-- `schema`, `tool: "pi"`, `status` (`completed` | `failed` | `timeout` | `aborted` | `unavailable`), optional tool-specific `sourceStatus` (for example `pi_unavailable`), `exitCode`, `signal`.
-- `piVersion`, `sessionId`, `cwd`, `mode` (`read-only` | `write`), `requestedModel`, `resolvedModel`, `thinking`, `resumed`.
-- `startedAt`, `finishedAt`, `finalMessage`, `touchedFiles` (git porcelain snapshot under `--cd`), `usage` (last message usage when present).
-- `structuredOutput` — `{ tool, payload }` when `--review-output` or `--structured-output-tool` captured exactly one successful expected-tool result; otherwise `null`. Absent those flags, always `null`.
-- `structuredOutputError` — diagnostic string when a structured-output capture is requested and is not exactly one successful expected-tool result (missing, duplicate, or any error result from the expected tool); otherwise `null`.
-- `briefPath`, `finalPath`, `eventsPath`, `stderrPath`, and `error`/`stderrTail` on failure.
-- `autoHandoff` — `{ enabled, planFile, handoffDir, extensionRoot }` on every terminal path. Enabled: `{ enabled: true, planFile: "<abs>", handoffDir: "<abs>/auto-handoff", extensionRoot: "<root or null>" }`. Disabled: `{ enabled: false, planFile: null, handoffDir: null, extensionRoot: null }`.
-- `spawn` — `{ argv, envKeys }` for the dispatched `pi` child (`null` if pi was never spawned). `argv` may include paths. `envKeys` lists injected child-env key names only; values are never persisted.
-
-`completed` requires: child process exit, exit code 0, Pi `agent_settled` observed in the event stream, a valid session id, and the atomically written result. Anything else is `failed`/`timeout`/`aborted` with artifacts and the working tree preserved. On failure the relay exits non-zero and never cleans artifacts.
-
-Completion means the Pi process exited and `result.json` exists. A progress display or final-message fragment is not completion.
-
-## Boundary
-
-- The target Pi parent owns repository investigation, planning/implementation, tests, internal delegation, and preparing the product artifact. When the commissioning brief declares an outer native Card review, `write-plan`/`execute-plan` skip only their duplicate internal final-review cycles.
-- The target-discovered entry Skill (e.g. `write-plan`) owns internal subagents and domain Skills.
-- Hermes owns product discussion and real behavior acceptance.
-- This adapter owns only transport mechanics.
-
-Do not inspect code or rerun gates because this adapter says so. The relay never commits, pushes, creates PRs, releases, deploys, publishes, or changes versions.
-
-## Verification
-
-A transport run is valid only when the intended repository, mode, model, thinking, exact session id, terminal result status, and artifact paths are recorded for the commissioning session.
-
-For detailed relay failure semantics, see [references/dispatch-and-poll.md](references/dispatch-and-poll.md).
+Project orchestration, native plan choices, version-bound human acceptance and serial integration belong to `project-taskflow`. This change retires prescriptions without changing executable helper behavior or Pi configuration.

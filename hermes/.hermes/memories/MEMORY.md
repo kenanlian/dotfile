@@ -20,4 +20,8 @@ Card Workspace 插件仓库为 `~/Secret-Projects/obsidian-card-workspace`；对
 §
 本机 Wi-Fi DNS 2026-09-28 由 1.1.1.1/8.8.8.8 改为 223.5.5.5/119.29.29.29：旧境外 DNS 经 MonoProxy 代理解析，feishu GeoDNS 返回境外 CDN IP 致直连 RST、收不到消息。排查直连故障先看解析 IP 是否境内。
 §
-旧开发流程（计划→Pi 委派→独立验收→评审→返工→授权落地的整条流水线）已于 2026-10-14 整体退役，相关记忆约定已清除；新流程待与柯楠从 0 讨论定案。定案前遇到开发任务不自动沿用旧流程/旧 skill（pi-delegate 等），先问柯楠；旧 skill 文件仍在库中，等新流程定型后一并清理替换。
+柯楠已确认默认项目开发入口为 project-taskflow（用户级 Skill 已安装）：Hermes 编排/转接，Codex 原生规划与实施。旧 Pi/Harness 固定流水线已拆除；Pi/Cursor/OpenCode 保留为显式选用的通用工具。真实项目须先明确登记仓库、集成分支与本地 Git 授权；不因启用流程自动接入产品、提交或发布。
+§
+委派 CLI coding agent（opencode/codex/cursor）默认全权限：不做 permission deny、不设只读沙箱；只读任务靠 brief 文字约束模型，事后用 touchedFiles/git diff 核查。2026-10 柯楠明确确认。SKILL.md 的 description 含冒号时必须加引号，否则 YAML 解析回退成行解析、platforms 变字符串、skill 被判 unsupported（已实证）。
+§
+project-taskflow 源码/运行现场为 `~/Secret-Projects/project-taskflow` 主工作区 main；固定入口 `~/.local/bin/project-taskflow` 指向主工作区 `scripts/taskflow.mjs`；start 管 runner 复用与身份。自身注册目录是 `~/Secret-Projects/development-artifacts/project-taskflow/self-hosted/project`。Codex 默认，Pi 1.3.0 可选（新登记 backend:"pi"，无迁移）；统一 Controller/direct，无 Kanban。主工作区集成需 primaryWorktreeIntegration 授权；其他项目可兼容既有 _integration。development-artifacts 有用户遗留 stash@{0} 与 `.git/search-benchmark-untracked-draft-v1.md.bak`，不要清理。

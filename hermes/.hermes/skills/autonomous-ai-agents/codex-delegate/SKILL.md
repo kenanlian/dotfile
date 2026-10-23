@@ -4,7 +4,7 @@ description: "Use when delegating tasks to Codex CLI."
 license: MIT
 compatibility: Requires the authenticated OpenAI Codex CLI, Node 18+, and git.
 metadata:
-  version: 0.6.0
+  version: 0.6.1
   hermes:
     related_skills: []
 ---
@@ -12,6 +12,8 @@ metadata:
 # Codex Transport Adapter
 
 Dispatch a brief to Codex CLI, capture artifacts, and resume an exact thread. This adapter owns transport only; it does not prescribe development stages, role assignments, review gates, or landing policy.
+
+Kenan's project development uses Project Taskflow Controller, including its direct fast lane for small fixes. Do not select this Brief relay as a fallback for Controller blockers. Use this adapter only for a genuinely explicit one-off external-delegation request; a generic request to implement a project fix is not that exception.
 
 ## When to Use
 
@@ -23,12 +25,12 @@ Dispatch a brief to Codex CLI, capture artifacts, and resume an exact thread. Th
 
 Use `terminal` to run `command -v codex`, `codex --version`, and `codex login status`. Record the active binary and version; multiple installations can shadow each other. Do not dispatch until authentication is available.
 
-Classify the whole deliverable. Unless the user requests another model or effort:
+Unless the user explicitly requests another model or effort, use **`gpt-6.1-sol`** for Codex delegation:
 
-- **Default:** pass `--model gpt-5.6-sol --effort high`.
-- **Narrow lightweight exception:** pass `--model gpt-5.6-terra --effort high` only for an authorized local Git commit of already-prepared changes, or read-only factual retrieval. Neither exception includes implementation, planning, review, design, recommendations, or behavioral judgment.
+- **Ordinary delegation and native Default-mode development:** pass `--model gpt-6.1-sol --effort high` or the equivalent app-server settings.
+- **Native Plan Mode:** keep model `gpt-6.1-sol`, but leave planning-effort selection and restoration to Codex's native mode behavior. Do not manually force `xhigh`, and do not add adapter-owned effort overrides on entering or leaving Plan Mode. Record the effective model/effort observed without changing it to match an assumption.
 
-Use Sol for mixed or ambiguous work and exploration that feeds implementation. These options configure the outer Codex parent, not its built-in subagents. Model routing is independent of permission mode.
+These options configure the outer Codex parent, not its built-in subagents. Model routing is independent of permission mode. Historical runs retain the model/effort actually used; do not rewrite their evidence.
 
 ## Permissions and Brief
 
@@ -44,7 +46,7 @@ Fresh and resumed runs default to **full access**: the relay uses Codex's `--dan
 Use the installed skill directory reported by `skill_view`; invoke its helper through `terminal`:
 
 ```text
-node <skill-dir>/scripts/relay.mjs --brief <brief-file> --cd <repo> --model gpt-5.6-sol --effort high --out-dir <artifact-dir>
+node <skill-dir>/scripts/relay.mjs --brief <brief-file> --cd <repo> --model gpt-6.1-sol --effort high --out-dir <artifact-dir>
 ```
 
 Choose an artifact directory outside the target working tree, under the Hermes scratch workspace or a task's durable artifact location. The brief goes through stdin, not argv. For long runs, use `terminal(background=true, notify=true)` and consume its completion notification rather than an estimated-duration timeout.
