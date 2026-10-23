@@ -1,12 +1,12 @@
 ---
 name: project-taskflow
 description: "Use for project analysis and development via Taskflow."
-version: 1.5.1
+version: 1.5.2
 author: "柯楠, Hermes Agent"
 license: MIT
 platforms: [macos, linux]
 metadata:
-  version: 1.5.1
+  version: 1.5.2
   hermes:
     tags: [development, codex, taskflow, workflow]
     related_skills: [delegated-development-acceptance]
@@ -36,7 +36,7 @@ Use the Controller for all Kenan project development, including small fixes. Her
 
 Use this when Kenan requests agent-led feasibility/risk/complexity analysis. Read current `docs/analysis.md`. Reuse the identified runner and project backend; do not launch a standalone agent.
 
-Analysis method belongs to this channel, not a separate exploration Skill. In the analysis brief, require reading repository guidance first, checking claims against code with file/symbol evidence, looking for related interaction traps, and sizing changes through shared policy seams and their consumers. Distinguish verified facts from estimates and unknowns. Keep interim answers focused; for a requested consolidated report cover current behavior, feasibility, risks/complexity, alternatives with one recommendation, and concrete unresolved decisions. Clarify ambiguous replies before routing them among concurrent topics. Do not persist a settled development requirement without the user's explicit request.
+Delegate the user's requirement and necessary constraints, not a prescribed analysis method or report template. Trust Codex/Pi to choose how to investigate and fulfill the requirement; provide a specific method only when the user explicitly requests it. Retain workflow authorization, read-only scope and exact session/question routing as constraints, not an analysis recipe.
 
 1. Record the user's analysis question with `task add`, `kind:"analysis"`, no dependencies. This is a discussion topic, not a settled development requirement. Use existing project registration; do not register new repositories or broaden Git authorization implicitly. Analysis does not require a clean integration site; do not treat its integration-only permissionStatus blocker as a reason to create a worktree.
 2. Copy current `templates.analyze`, replace commandId, and invoke `analyze --wait` through `terminal(background=true,notify=true)`. Analysis runs in config.repo with only prompt-based read-only constraints: no worktree/branch/commit, sandbox, role-tool matrix or file-fingerprint guard. Preserve the user's existing workspace. Controller recording evidence outside the repo is expected.
