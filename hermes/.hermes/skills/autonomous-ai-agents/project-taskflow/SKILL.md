@@ -1,12 +1,12 @@
 ---
 name: project-taskflow
-description: "Use for project development via native Codex taskflow."
-version: 1.4.0
+description: "Use for project analysis and development via Taskflow."
+version: 1.5.1
 author: "柯楠, Hermes Agent"
 license: MIT
 platforms: [macos, linux]
 metadata:
-  version: 1.4.0
+  version: 1.5.1
   hermes:
     tags: [development, codex, taskflow, workflow]
     related_skills: [delegated-development-acceptance]
@@ -18,8 +18,8 @@ Use the Controller for all Kenan project development, including small fixes. Her
 
 ## When to Use
 
-- Start or continue project tasks, direct fixes, planning, acceptance, integration or recovery.
-- Stay read-only when the user asks to discuss. Do not turn discussion into tasks or Skill edits.
+- Start or continue independent functional analysis, project tasks, direct fixes, planning, acceptance, integration or recovery.
+- Keep workflow-design discussion read-only; do not create work or edit Skills until authorized. An explicit request for agent-led functional analysis uses the independent analysis channel, not development.
 - No Hermes Kanban calls, heartbeat, board comments or mirrored task state in this workflow. Controller tasks are not Kanban cards.
 - Do not switch to standalone Brief/relay when blocked, regardless of task size. Explain and resolve the blocker on the original task. Explicit one-off use of another coding tool requires the user's actual request, not an operator workaround.
 
@@ -32,7 +32,22 @@ Use the Controller for all Kenan project development, including small fixes. Her
 - Inspect `permissionStatus`, exact registration path/commonDir/branch and genuine authorization evidence. A remote never grants network, push, PR, tag, release or deployment permission.
 - Explicitly requested runtime-layout migrations follow [primary-worktree migration](references/primary-worktree-migration.md): move Git checkout, entry and all affected idle runners as one verified operation, then retire the old site. Never assume enabling primary-worktree support already migrated an existing project.
 
-## Procedure
+## Independent Analysis Channel
+
+Use this when Kenan requests agent-led feasibility/risk/complexity analysis. Read current `docs/analysis.md`. Reuse the identified runner and project backend; do not launch a standalone agent.
+
+Analysis method belongs to this channel, not a separate exploration Skill. In the analysis brief, require reading repository guidance first, checking claims against code with file/symbol evidence, looking for related interaction traps, and sizing changes through shared policy seams and their consumers. Distinguish verified facts from estimates and unknowns. Keep interim answers focused; for a requested consolidated report cover current behavior, feasibility, risks/complexity, alternatives with one recommendation, and concrete unresolved decisions. Clarify ambiguous replies before routing them among concurrent topics. Do not persist a settled development requirement without the user's explicit request.
+
+1. Record the user's analysis question with `task add`, `kind:"analysis"`, no dependencies. This is a discussion topic, not a settled development requirement. Use existing project registration; do not register new repositories or broaden Git authorization implicitly. Analysis does not require a clean integration site; do not treat its integration-only permissionStatus blocker as a reason to create a worktree.
+2. Copy current `templates.analyze`, replace commandId, and invoke `analyze --wait` through `terminal(background=true,notify=true)`. Analysis runs in config.repo with only prompt-based read-only constraints: no worktree/branch/commit, sandbox, role-tool matrix or file-fingerprint guard. Preserve the user's existing workspace. Controller recording evidence outside the repo is expected.
+3. Relay full formal questions and actual answers via current `templates.answer` and `answer --wait`. Prompts to the agent say “需要澄清时向我提问”, not “ask the user/Kenan” or an explanation of Hermes relaying.
+4. `wait.kind=analysis` contains the full Markdown result and version/run/session identity. Show the conclusion and uncertainties. A round's report is not the end of discussion or development permission. For the user's follow-up, copy current `templates.feedback`, keep previousRunId and submit actual feedback with a new commandId using `feedback --wait`; preserve the exact analysis session. Do not translate feedback into formal planning.
+5. Only on the user's explicit finish use `templates.close` with genuine source/reason and outcome:analysis-completed. Read back closed/resolution; no accept, integration or cleanup. Active/uncertain runs need stop/resume reconciliation first. A cancelled topic is explicitly cancelled, not a completed analysis report.
+6. Later development starts only from the user's newly supplied feature requirement in a separate planning/direct task. Do not automatically cite, link, inject or bind the analysis report, create dependencies, or infer execution authorization from feasibility approval.
+
+Codex uses Plan mode + custom analysis developer instructions (xhigh) to retain structured questions, not formal-plan choice. Pi uses configured planning thinking and native assistant text. Reports are human-facing Markdown, saved from exact native final text with host-owned identity; do not parse prose verdicts into decisions. Missing final text and failed runs are failures, not reports. Native completion can precede report persistence: wait for analysis.ready or an explicit failure; do not restart reasoning in that gap. No true-service smoke is implied by SYNTHETIC fixtures.
+
+## Development Procedure
 
 1. **Identify and preflight.** Query the exact registered project. Read `permissionStatus`, `directEligibility.reason/next`, runner identity and task state before starting reasoning. Empty templates do not authorize an alternate workflow. New repositories require explicit registration/local Git scope.
 2. **One identified runner.** Use `project-taskflow start --project <dir> --json`. It starts an exclusive runner with a unique log or confirms/reuses the exact healthy instance. Read back `runner.runtime` (source root/commit/fingerprint, Node), PID, instance and logFile. Legacy/mismatching runner or uncertain lock: inspect; explicitly stop only a confirmed idle old runner, then start. Never steal locks or restart active healthy work.
@@ -57,13 +72,13 @@ The current user policy is technical verification → user operational acceptanc
 
 ## Monitoring
 
-Use the integrated single-command wait contract in `docs/notifications.md`. For `plan/choose/answer/feedback/reject/accept/integrate/resume`, call `terminal(command="project-taskflow <operation> --project <dir> --input <file> --wait --timeout-ms 600000 --json", background=true, notify=true)`. The CLI rejects missing wait/no-wait before dispatch; do not add a second shell polling loop or long-lived output-pattern monitor. `--no-wait` is intentionally silent and only for an explicit diagnostic/automation need, never an unnoticed default. Keep the terminal notification attached to the actual invoking session, not a fixed home chat. The CLI cannot enforce the Hermes tool's notify flag or prove platform delivery.
+Use the integrated single-command wait contract in `docs/notifications.md`. For `analyze/plan/choose/answer/feedback/reject/accept/integrate/resume`, call `terminal(command="project-taskflow <operation> --project <dir> --input <file> --wait --timeout-ms 600000 --json", background=true, notify=true)`. The CLI rejects missing wait/no-wait before dispatch; do not add a second shell polling loop or long-lived output-pattern monitor. `--no-wait` is intentionally silent and only for an explicit diagnostic/automation need, never an unnoticed default. Keep the terminal notification attached to the actual invoking session, not a fixed home chat. The CLI cannot enforce the Hermes tool's notify flag or prove platform delivery.
 
-The result contains the exact `receipt` and a live `wait` projection. Preserve and read both. `wait` failure/timeout does not invalidate a successful command: inspect exact state/receipt; repair transport only with the same commandId, never launch a duplicate with a new UUID. `wait.kind=timeout` (exit 2) does not cancel development. Resume notification only with `project-taskflow wait --project <dir> --task <id> --cursor <returned seq> --timeout-ms 600000 --json`, again with background/notify. It backfills current unresolved questions/plans/deliveries even at that cursor. Runner changes, stale questions, failures and uncertain runs require reconciliation, not more blind waiting. Do not assume this watcher survives Hermes/gateway/machine restart; reattach on conversation recovery.
+The result contains the exact `receipt` and a live `wait` projection. Preserve and read both. `wait` failure/timeout does not invalidate a successful command: inspect exact state/receipt; repair transport only with the same commandId, never launch a duplicate with a new UUID. `wait.kind=timeout` (exit 2) does not cancel development. Resume notification only with `project-taskflow wait --project <dir> --task <id> --cursor <returned seq> --timeout-ms 600000 --json`, again with background/notify. It backfills current unresolved questions/analysis reports/plans/deliveries even at that cursor. Runner changes, stale questions, failures and uncertain runs require reconciliation, not more blind waiting. Do not assume this watcher survives Hermes/gateway/machine restart; reattach on conversation recovery.
 
 On `question`, relay the full question and every option to Kenan, label project/task and keep the exact identity/requestId type. Advice is not a user decision. Answer only after his real response, unless he explicitly authorized that class of delegated decisions; record that provenance rather than inventing a human answer. Re-read `task show` and use the CURRENT `templates.answer` before submission. Use `answer --wait` to attach the next wait in the same operation. Deduplicate displayed notifications by project/task/run/notificationKey and cursor; a still-pending repeated key remains unresolved, not silently answered.
 
-`turn.finished` is reasoning termination; `delivery.ready` is only a candidate; `task.completed` proves integration, not successful cleanup. Read cleanup independently (failed/skipped/null must be reported). `operation.failed` after a finished turn requires inspection. Report milestones and blockers, never generic Kanban heartbeat. Long waits should report elapsed time and the actual checkpoint without re-launching healthy work.
+`turn.finished` is reasoning termination; `analysis.ready` is a discussion result, not development approval; `delivery.ready` is only a candidate; `task.completed` proves integration, not successful cleanup. Read cleanup independently (failed/skipped/null must be reported). `operation.failed` after a finished turn requires inspection. Report milestones and blockers, never generic Kanban heartbeat. Long waits should report elapsed time and the actual checkpoint without re-launching healthy work.
 
 ## Optional Pi Backend
 
