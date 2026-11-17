@@ -32,6 +32,8 @@ Researched 2026-09-02 (sources: opencode.ai/v2/docs/build/plugins, /v2/docs/comp
 
 ## Historical auto-handoff sketch (NOT implemented)
 
+The `.dev` paths in this sketch are retired historical aliases, not current dependencies or setup instructions; do not recreate them. Current project records are addressed directly in development-artifacts or through the tool's explicit configured paths.
+
 This section records an earlier discussion, not a current development/delegation workflow, backend contract, or authorization to implement it. Re-establish requirements before using the sketch; references to stage plans or old relay monitoring are historical assumptions.
 
 Requirements he fixed across two clarifications:

@@ -49,9 +49,9 @@ Verified in `packages/opencode/src/util/wildcard.ts`, `src/permission/index.ts`,
 - Patterns compile to an anchored regex (`^...$`): `*` → `.*` (crosses `/`, so it also matches nested directories), `?` → `.` (exactly one character, not digit-restricted). A trailing ` *` becomes optional, so `git status *` also matches bare `git status`.
 - Evaluation is `findLast` over the merged ruleset: the LAST matching rule wins. Put `"*": deny` first and narrow allows after it.
 - The `edit` permission governs the `edit`, `write`, AND `apply_patch` tools — a path allowlist therefore also permits creating new files under it.
-- Edit/write permission is checked against `path.relative(worktree, filePath)`: config patterns must be worktree-relative (e.g. `.dev/review/*/round-??-review.md`). Paths outside the worktree become `../…` and cannot be allowlisted by in-repo patterns.
+- Edit/write permission is checked against `path.relative(worktree, filePath)`: config patterns must be worktree-relative (e.g. `.opencode/review/*/round-??-review.md`). Paths outside the worktree become `../…` and cannot be allowlisted by in-repo patterns.
 
-This enables a narrow `audit-write` reviewer: catch-all `edit`/`bash` deny plus one allow per exact artifact path pattern, e.g. `".dev/review/*/round-??-review-patch.md": allow`. Caveats: `??` accepts any two characters (not just digits), and `*` matching across `/` makes the boundary slightly wider than the literal path suggests. Port `Wildcard.match` to a local script to dry-run candidate paths against a ruleset before installing it.
+This enables a narrow `audit-write` reviewer: catch-all `edit`/`bash` deny plus one allow per exact artifact path pattern, e.g. `".opencode/review/*/round-??-review-patch.md": allow`. Caveats: `??` accepts any two characters (not just digits), and `*` matching across `/` makes the boundary slightly wider than the literal path suggests. Port `Wildcard.match` to a local script to dry-run candidate paths against a ruleset before installing it.
 
 Bounded worker example:
 

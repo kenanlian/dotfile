@@ -1,7 +1,7 @@
 ---
 name: opencode-plugins
 description: "Use when building OpenCode V2 plugins or context hooks."
-version: 0.1.3
+version: 0.1.4
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]

@@ -1,10 +1,12 @@
 # Delegated writes through sibling artifact symlinks
 
-Use this when a project exposes an agent-owned artifact directory through a relative symlink, for example:
+Use this when a project exposes an agent-owned artifact directory through a relative symlink that still exists or was explicitly requested, for example:
 
 ```text
-<project>/.dev -> ../development-artifacts/<project>/.dev
+<project>/artifacts -> ../companion-repo/<project>/records
 ```
+
+The historical `<project>/.dev -> ../development-artifacts/<project>/.dev` layout is retired: durable records now live directly under `development-artifacts/<project>/` and no `.dev` link is created by default. Apply this pattern only to remaining or explicitly requested links.
 
 ## Preflight
 

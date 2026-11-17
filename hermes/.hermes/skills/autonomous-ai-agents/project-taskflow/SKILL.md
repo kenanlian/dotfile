@@ -1,12 +1,12 @@
 ---
 name: project-taskflow
 description: "Use for project analysis and development via Taskflow."
-version: 1.5.2
+version: 1.8.0
 author: "柯楠, Hermes Agent"
 license: MIT
 platforms: [macos, linux]
 metadata:
-  version: 1.5.2
+  version: 1.8.0
   hermes:
     tags: [development, codex, taskflow, workflow]
     related_skills: [delegated-development-acceptance]
@@ -31,6 +31,10 @@ Use the Controller for all Kenan project development, including small fixes. Her
 - Inspect actual Node/Git/backend versions. Node >=22; no Controller runtime dependencies. Verify Codex authentication only when using Codex. Do not infer version/effort from old evidence.
 - Inspect `permissionStatus`, exact registration path/commonDir/branch and genuine authorization evidence. A remote never grants network, push, PR, tag, release or deployment permission.
 - Explicitly requested runtime-layout migrations follow [primary-worktree migration](references/primary-worktree-migration.md): move Git checkout, entry and all affected idle runners as one verified operation, then retire the old site. Never assume enabling primary-worktree support already migrated an existing project.
+
+## Project Record Locations
+
+Durable records live directly under `development-artifacts/<project>/`; the Controller resolves them through the registered `artifactsDir` and `projectId`, not through a repository `.dev` link. The historical `.dev` link convention is retired: do not create or recreate these project-local links by default. Preserve historical records; use their direct locations instead.
 
 ## Independent Analysis Channel
 

@@ -1,7 +1,7 @@
 ---
 name: coding-agent-configuration
 description: "Use when configuring coding-agent CLI roles globally."
-version: 1.1.0
+version: 1.1.1
 platforms: [linux, macos, windows]
 metadata:
   hermes:

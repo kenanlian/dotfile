@@ -1,6 +1,6 @@
 柯楠产品视觉：浅色为主、优秀暗色可备选；极简如 Otty 干净，以背景/灰阶分层替代大量边框；圆润小按钮、克制微交互、细腻质感。页面篇幅适中（Otty/VMark），忌 omp 式超长。Zed 硬朗工程风仅限需极度凸显工程精密感的产品。
 §
-个人项目开发：持久化到 ~/Secret-Projects/development-artifacts；项目根 `.dev` 用相对软链，两个仓库分别 commit/push；`initiatives/` 只读退役。
+个人项目资料持久化到 ~/Secret-Projects/development-artifacts/<项目>/；不再默认建立项目 `.dev` 软链接，Taskflow 直接使用登记的 artifactsDir/projectId；历史资料保留，不作为当前实现权威；`initiatives/` 只读退役。
 §
 Chrome Profile `Hermes` 华生专用；browser_exec 可用。
 §
