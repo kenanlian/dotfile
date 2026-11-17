@@ -1,7 +1,7 @@
 ---
 name: multi-repository-workspace-maintenance
 description: "Use when synchronizing Git repositories and workspace links."
-version: 1.2.1
+version: 1.3.0
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -64,6 +64,33 @@ Do not declare a checkout current from `git status` or `git rev-list HEAD...@{u}
 A dirty worktree is not automatically a blocker: Git can fast-forward when upstream changes do not overwrite local edits. Preserve and report those edits. Do not stash or discard them merely to make the batch clean.
 
 Track success per repository. One failure must not be hidden by a loop that exits successfully because a later repository succeeded.
+
+### Publishing remaining changes across repositories
+
+Apply only with an explicit commit/push grant for the named repositories and
+branches; a prior narrower cleanup grant does not include old dirty work.
+
+1. Save each HEAD, remote identity, index/working-tree inventory and hashes of
+   pre-existing edits. Inspect upstream directly before claiming no unpublished
+   commits; a cached remote-tracking ref is not fresh remote evidence.
+2. Classify companion-repository untracked content before staging. Downloaded
+   runtimes, disposable fixture repositories, raw event streams and active
+   Controller state are not automatically durable reports. Agree the boundary
+   with the user when "all changes" would otherwise include them; ignore and
+   preserve these paths rather than deleting them or staging embedded gitlinks.
+3. With mixed old/new edits in one file, stage the authorized hunks through an
+   isolated index/candidate tree and test that exact tree. When all remaining
+   edits are explicitly authorized instead, verify the complete current tree;
+   do not preserve an obsolete narrower publication boundary by accident.
+4. Scan all candidate content for credential material, reject unexpected
+   nonregular files/gitlinks and oversized blobs, and keep complete manifests
+   and actual check exits. Preserve user stashes and ignored historical data.
+5. Push each verified full commit with an exact branch refspec and
+   `push.followTags=false`; read the exact remote ref back after every push.
+   Record partial success rather than hiding earlier failures in a batch.
+6. Recheck tracked/index/untracked cleanliness and untouched file hashes.
+   Distinguish intentionally ignored local data from a clean Git tree, and
+   restart only confirmed-idle Controller runners whose source identity changed.
 
 ### 3. Resolve rewritten upstream history deliberately
 

@@ -1,7 +1,7 @@
 ---
 name: obsidian-plugin-acceptance
 description: "Use when testing Obsidian plugins via obsidian-cli eval."
-version: 1.2.0
+version: 1.2.1
 license: MIT
 platforms: [macos]
 tags: [obsidian, plugin, behavior-acceptance, eval, dom]
@@ -31,7 +31,7 @@ Not for note/vault content management — that is the `obsidian` skill.
 
 ## Core eval patterns
 
-Invoke as `"$CLI" vault=<name> eval code="<js>"`. Prefer `subprocess.run([...])` from execute_code to avoid shell-quoting hell; for long probes, write the JS to a file and pass its contents as the `code=` argument. Return values print as `=> <json>`; write probes as IIFE-style `(() => {...})()` or `(async () => {...})()` returning `JSON.stringify(...)`.
+Invoke as `"$CLI" vault=<name> eval code="<js>"`. Prefer `subprocess.run([...])` from execute_code to avoid shell-quoting hell; for long probes, write the JS to a file and pass its contents as the `code=` argument. For machine-readable results, wrap an expression as `(async()=>JSON.stringify(await (<expression>)))()` and parse its `=> ` result; returning a bare object can produce multiline pretty output instead of one JSON record. Construct embedded JavaScript string literals with `json.dumps(text, ensure_ascii=False)` so Python does not turn escaped newlines into invalid JavaScript. Preserve raw stdout/stderr alongside parsed assertions. Save the exact executable probe and helper definitions before running it, including any fault injection and `finally` restoration; output-only logs cannot reconstruct an intermittent failure. For pane-routing and chooser probes, record the active window identity, active leaf, candidate leaf IDs/windows and relevant state immediately before the call and after settlement, because later snapshots can miss the failing lifecycle condition.
 
 ### 0.5. When docs are ambiguous: read the Obsidian core bundle
 
@@ -39,10 +39,16 @@ Invoke as `"$CLI" vault=<name> eval code="<js>"`. Prefer `subprocess.run([...])`
 
 ### 1. Prove build identity before deriving scenarios
 
-1. Hash the built artifact (e.g. `shasum -a 256 main.js`) and copy it into `<vault>/.obsidian/plugins/<id>/`.
+1. Copy the candidate's complete runtime set (`main.js`, `manifest.json`, and any external `styles.css`) into `<vault>/.obsidian/plugins/<id>/`, then compare source and installed bytes or SHA-256 for every copied file. Record the accepted commit/tree with these hashes; a matching version label or bundle alone does not prove that styles and manifest belong to the same candidate.
 2. Reload the plugin through the app's own API: `await app.plugins.disablePlugin('<id>'); await app.plugins.enablePlugin('<id>')`.
-3. Probe for a field only the new build has (new settings key, new command id). Absent → old code is still running; stop and fix reload before testing.
+3. Probe for a field only the new build has (new settings key, new command id). Absent → old code is still running; stop and fix reload before testing. If the new code marker exists but `plugin.manifest.version` still reports the previous installation, refresh the app's cached manifest with `app:reload`, wait for plugin readiness, and rebind all plugin/view references before checking again; plugin disable/enable alone can retain cached manifest metadata.
 4. Minified-bundle pitfall: production `main.js` unicode-escapes CJK literals, so grepping for the Chinese copy of a new UI string yields 0 in BOTH old and new bundles. Grep ASCII identifiers instead (i18n key names like `propertiesDisabledInBox`, new method names): require count >0 in the new bundle and 0 in the installed one.
+
+### 1.5. Prove visible preview readiness after reload
+
+1. After loading/reloading, rebind plugin and view references, then inspect `document.visibilityState`, native window visibility/focus and the plugin's work-gate/preview diagnostics before judging skeletons or taking the handoff screenshot. Foreground-load completion can legitimately precede preview hydration when a hidden document pauses its work gate.
+2. If the dedicated acceptance window may be brought forward, use its own native window handle: `const w = window.electronWindow; w.show(); if (w.isMinimized?.()) w.restore(); w.focus();`. Then boundedly wait for the gate to resume and assert actual note content replaces placeholders. CDP `Page.bringToFront` alone is not proof of native visibility. Keep this intervention scoped to the isolated fixture, not another user window.
+3. Capture the product-handoff screenshot only after content is visibly loaded. Treat preview-gate recovery separately from native-menu rendering; showing a window does not establish that every menu or physical input path works.
 
 ### 2. Read state from both surfaces
 
@@ -70,6 +76,13 @@ See `references/plugin-file-lifecycle.md` for the Excalidraw consumer recipe and
 - **Native `Menu` never mounts while the Obsidian window is off-Space / not frontmost.** `new Menu().showAtPosition()` from ANY caller (your plugin, card context menus, even Obsidian's own file-explorer right-click) silently creates nothing: no DOM node, no console error, no unhandled rejection. Custom DOM-anchored layers (e.g. Svelte popovers) in the same window still open, so a popover-to-native-Menu refactor looks like a code regression when it is the environment. Before filing one: (a) trigger one of Obsidian's OWN native menus in the same session — if it also fails, stop blaming the plugin; (b) A/B the previous build through the identical click path; (c) check the signature `window.electronWindow?.isFocused?.() === false` while `document.hasFocus()` reports `true`. Synthetic `Input.dispatchMouseEvent` clicks DO reach the button (verify with a capture-phase listener) yet the menu still will not mount; `Page.bringToFront`, `Emulation.setFocusEmulationEnabled`, `open -a`, and cua foreground CGEvents did not recover it cross-Space. Batch the visual check for the user. Full probe chain and recovery attempts: `references/off-space-native-menus.md`.
 - **macOS native-menus mode (default on): native Menu renders as a real NSMenu with ZERO DOM** — `document.querySelector('.menu')` is null even when the menu is open and focused. Never assert menu content via DOM on macOS without first checking `app.vault.getConfig('nativeMenus')` (null = native ON on macOS) or forcing `app.vault.setConfig('nativeMenus', false)`. In native mode `MenuItem.setIcon()` is silently dropped (template maps only label/enabled/checked/type/click) — selection marks must use `setChecked()`, never `setIcon('check')`. Details: `references/off-space-native-menus.md`.
 
+### 3.5. Native draft editors and presentation-specific smoke
+
+1. Open the actual product entry in a dedicated test vault and obtain the live draft/editor through its owning manager. For auxiliary windows, construct input/composition events with `element.ownerDocument.defaultView`, not the main window's constructors.
+2. When the draft exposes no setter, use `draft.editor.focus()` and its owning document's `execCommand('insertText', false, text)`. To replace this draft's entire contents, issue `execCommand('selectAll')` only after focusing that isolated editor. Wait for the host editor's update before reading `editor.getValue()`; same-frame reads can still contain the previous document.
+3. Exercise Send through the real button: assert composition blocks submission, end composition, then click twice. Read the created note through `app.vault.read`, assert exact text and exactly one matching file, and repeat for same-name append. When boxes are selected, independently assert persisted membership rather than treating note creation as complete submission.
+4. For a plugin with an injected presentation contract, temporarily selecting its mobile Modal in the real desktop host can verify native-editor, folder/box chooser and coordinator integration. Snapshot the original contract/settings, restore them in `finally`, trash only owned fixtures, and verify restoration. Label this **desktop-host presentation injection**, never mobile-device, keyboard, touch, resource-policy or performance acceptance; retain applicable real-device product checks.
+
 ### 4. Checkbox truth
 
 Obsidian modal checkboxes are class-driven: read `.checkbox-container.is-enabled`. The `input.checked` DOM property desyncs and reports false for visibly checked boxes — do not file defects from it.
@@ -84,7 +97,15 @@ Edit through the app pipeline so metadataCache events fire: `await app.vault.pro
 
 ### 7. Multiple views
 
+Measure the actual pane/content dimensions before asserting how many regions should remain visible; a wide browser viewport does not guarantee enough space after adjacent editors and navigation consume it. For virtualized reading-position checks, compare the contract's semantic anchor (item identity plus viewport offset) after remount and measurement settle, not absolute `scrollTop`, because row-height remeasurement can change pixel totals while preserving the reader's position.
+
 Open another leaf: `const leaf = app.workspace.getRightLeaf(false); await leaf.setViewState({type, active: true}); app.workspace.revealLeaf(leaf)`. Disambiguate each view root by its scope label text (e.g. `[class*=scope]` → `当前范围 X`), not DOM order. Shared settings changes must appear in every root; facet counts stay per-source. Detach extras with `leaf.detach()` when done.
+
+### 7.5. Workspace ownership vs native popup windows
+
+- Do not equate Obsidian's global `activeWindow` with a workspace window: a native Settings popup can become `activeWindow` while owning no workspace leaves. Verify focused-window ownership against real leaves; a non-workspace popup must route through its owning active view/workspace window, without collapsing a genuine floating workspace window into main.
+- For global target selection, reproduce the FIRST call with Settings still open, then verify cancel leaves exact leaf/stream identities unchanged, choosing changes only one target, and a single candidate is reused. A/B the old and candidate bundles in the same isolated host before declaring root cause; an original incident without sampled window identity remains unproven even if the same symptom is reproduced.
+- Use the exact saved probes required by Core eval patterns for old/new comparisons; preserve their setup and restoration rather than reconstructing an allegedly equivalent reproducer from output alone.
 
 ### 8. Fixture hygiene
 
@@ -104,7 +125,7 @@ Create fixtures through the CLI (`create path=... content=...`) so the app index
 - `app.workspace.iterateAllLeaves` does NOT enumerate sidebar leaves. To find a sidebar view instance walk `app.workspace.leftSplit.children[].children[]` (and `rightSplit` likewise) matching `l.view.getViewType()`.
 - Prefer the plugin's own action layer over DOM/menu driving when it exists: view instances commonly expose `view.modules.*` (controllers/actions such as `boxActions`, `propertyActions`, `scopeController`) and TypeScript-`private` methods survive esbuild minification and remain callable by name (e.g. `view.selectFolderFromNav(path)`). Read the source first to learn the real signatures (e.g. `applyValueFilter(key, {kind:'text',value:...}, additive)`).
 - Contract paths matter: two routes that look equivalent can have deliberately different semantics (observed: `exitBoxScope()` did not clear workspace filters while `selectFolderFromNav()` did — a documented parity decision, not a bug). Before filing a defect from a surprising observation, grep the plan/tests for the exact entry point the contract names.
-- Full-app reload round trip (restart-persistence scenarios): `app.commands.executeCommandById('app:reload')`, then poll a cheap eval (`app.plugins.enabledPlugins.has('<id>')`) until true, and re-bind every cached view/DOM reference afterward — old references are stale across reload.
+- Distinguish app reload from full process restart in persistence evidence. For reload, run `app.commands.executeCommandById('app:reload')`, poll plugin readiness, and rebind every cached plugin/view/DOM reference. For full restart, first save the workspace and snapshot the compared fields, verify the exact isolated profile/vault, close only that process, reopen the same profile, and compare restored state. Re-observe the actual host version and loaded candidate identity after either operation, because the restarted app can load a different host version; earlier probes do not establish coverage of that version or the declared minimum.
 
 ### 10. Parallel-session collision in the shared vault
 
