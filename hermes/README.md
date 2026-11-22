@@ -8,7 +8,7 @@ symlinks per custom skill:
 - `scripts/feishu.py`, `scripts/development_external_guard.py`
 - focused workflow tests under `tests/`
 - standalone Harness plugin `plugins/development-workflow/` (`devflow_*` tools + safety hook)
-- self-authored/overridden skills under `skills/<category>/<name>/`
+- remaining legacy custom/overridden skills under `skills/<category>/<name>/`
 - `profiles/executor/skills/devops/feishu-messaging/`
 
 ## Apply / refresh
@@ -64,23 +64,16 @@ load after each Hermes update.
 - `config.yaml` — machine-local; DR archive covers it
 - Bundled skills (82) — reinstallable; tracked by `.bundled_manifest`
 
-## Known limitations (verified 2026-09-06)
+## Default-profile custom skills
 
-Hermes' session scanner uses `os.walk(followlinks=True)`, so loading,
-`skills_list`, and `skill_view` work through symlinks, and memory writes
-follow symlinks into this repo (`atomic_replace` resolves links, GitHub
-#16743). However `skill_manage` patch/delete resolve skills via
-`Path.rglob`, which does not follow symlinked directories:
+The sibling `hermes-skills` checkout is the source for newly created Skills and
+the migrated `project-taskflow` and `delegated-development-acceptance` Skills.
+Configure `skills.create_dir` in the default profile to point to that checkout's
+`skills/` directory; Hermes discovers it directly. Do not add Stow copies or
+profile-local copies of these Skills: a same-named profile-local Skill takes
+precedence. See the `hermes-skills` repository's `README.md` for setup and
+verification.
 
-- **patch / write_file / delete on a symlinked skill fail with "not found"**
-  (delete is additionally refused by an explicit symlink guard — it can never
-  wipe the repo). Edit these skills with ordinary file tools (`patch`,
-  `write_file`) instead, which follow symlinks fine.
-- **New skills** created via `skill_manage` land as real dirs in
-  `~/.hermes/skills/`. Adopt them:
-
-  ```sh
-  mv ~/.hermes/skills/<cat>/<name> hermes/.hermes/skills/<cat>/<name>
-  ln -s "../../../Secret-Projects/dotfile/hermes/.hermes/skills/<cat>/<name>" \
-     ~/.hermes/skills/<cat>/<name>
-  ```
+The remaining legacy skills stay in their existing locations until individually
+reviewed. This change does not migrate the executor profile or change bundled
+and Hub skill management.

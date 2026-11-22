@@ -14,7 +14,7 @@ Feishu 发消息/@人：~/.hermes/scripts/feishu.py send --chat 群名 --at 名�
 §
 opencode 走本地代理挂死已加直连规则；复发查代理路由。
 §
-skill_manage 对软链 skill 不可写（patch/write 报 not found，重试一次即止；skill_view 读子文件正常）；自定义/覆盖 Skill 的学习改动走前台编辑 dotfile 仓。
+默认 Hermes profile 的自建 Skill 源码目录是 `~/Secret-Projects/hermes-skills/skills`（`skills.create_dir`）。已纳管 Skills 不再存 dotfile 或 Controller 副本；未迁移旧 Skills 仍保留原位。
 §
 Card Workspace 插件仓库为 `~/Secret-Projects/obsidian-card-workspace`；对应 Kanban board slug 是 `obsidian-card-workspace`（不是空的 `card-workspace`）。
 §
