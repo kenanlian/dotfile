@@ -1,0 +1,24 @@
+# A local list replaces the Stow defaults, so preserve those rules.
+RCS
+.+,v
+CVS
+\.\#.+
+\.cvsignore
+\.svn
+_darcs
+\.hg
+\.git
+\.gitignore
+\.gitmodules
+.+~
+\#.*\#
+^/README.*
+^/LICENSE.*
+^/COPYING
+
+# Legacy autodev sources: existing profile links still point here. Do not
+# Stow these back into the default profile; it loads them from hermes-skills.
+^/\.hermes/skills/autonomous-ai-agents/(codex-delegate|cursor-delegate|opencode-delegate|pi-delegate)$
+^/\.hermes/skills/creative/kenan-ui-ux-design$
+^/\.hermes/skills/research/current-product-research$
+^/\.hermes/skills/software-development/(multi-repository-workspace-maintenance|obsidian-plugin-acceptance)$

@@ -14,8 +14,11 @@ symlinks per custom skill:
 ## Apply / refresh
 
 ```sh
-stow --dir "$PWD" --target "$HOME" hermes
+stow --no-folding --dir "$PWD" --target "$HOME" hermes
 ```
+
+Keep `--no-folding`: otherwise Stow can link a whole parent directory and
+expose Skill directories that this package's `.stow-local-ignore` excludes.
 
 ## Development workflow Harness
 
@@ -66,14 +69,13 @@ load after each Hermes update.
 
 ## Default-profile custom skills
 
-The sibling `hermes-skills` checkout is the source for newly created Skills and
-the migrated `project-taskflow` and `delegated-development-acceptance` Skills.
-Configure `skills.create_dir` in the default profile to point to that checkout's
-`skills/` directory; Hermes discovers it directly. Do not add Stow copies or
-profile-local copies of these Skills: a same-named profile-local Skill takes
-precedence. See the `hermes-skills` repository's `README.md` for setup and
-verification.
+The sibling `hermes-skills` checkout is the source for newly created and
+migrated default-profile Skills. Configure `skills.create_dir` to point to
+its `skills/` directory; Hermes discovers it directly. A same-named profile-local
+copy would take precedence. See the `hermes-skills` README for verification.
 
-The remaining legacy skills stay in their existing locations until individually
-reviewed. This change does not migrate the executor profile or change bundled
-and Hub skill management.
+The eight directories excluded in `.stow-local-ignore` are legacy sources for
+existing `autodev` links. Keep them in place for that profile; do not Stow them
+back into the default profile. Archival and upstream overrides not included in
+the migration, the executor profile, and bundled/Hub skill management are
+unchanged.
